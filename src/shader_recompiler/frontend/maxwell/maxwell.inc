@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+INST(TENSOR_MUL_ADD, "TENSOR_MUL_ADD", "0101 1101 0011 0---")
 INST(CCTLT,        "CCTLT",          "1110 1011 1111 0--0")
 INST(AL2P,         "AL2P",           "1110 1111 1010 0---")
 INST(ALD,          "ALD",            "1110 1111 1101 1---")

@@ -8,6 +8,8 @@
 #include <chrono>
 #include <climits>
 #include <cstdlib>
+#include <deque>
+#include <mutex>
 #include <regex>
 #include <thread>
 
@@ -29,6 +31,7 @@
 #include "common/fs/fs_paths.h"
 #include "common/fs/path_util.h"
 #include "common/literals.h"
+#include "common/log_ring.h"
 #include "common/polyfill_thread.h"
 #include "common/thread.h"
 
@@ -300,6 +303,33 @@ private:
     bool enabled = true;
 };
 #endif
+/// @brief Backend that keeps the last lines in memory, off unless the debug server turns it on
+struct RingBackend final : public Backend {
+    void Write(const Entry& entry) noexcept override {
+        if (capacity.load(std::memory_order_relaxed) == 0) {
+            return;
+        }
+        try {
+            std::string text = FormatLogMessage(entry);
+            if (!text.empty() && text.back() == '\n') {
+                text.pop_back();
+            }
+            std::scoped_lock lock{mutex};
+            lines.push_back({next_sequence++, std::move(text)});
+            while (lines.size() > capacity.load(std::memory_order_relaxed)) {
+                lines.pop_front();
+            }
+        } catch (const std::exception&) {
+            // Out of memory: drop the line rather than the process.
+        }
+    }
+    void Flush() noexcept override {}
+
+    std::atomic<std::size_t> capacity{};
+    std::mutex mutex;
+    std::deque<RingLine> lines;
+    u64 next_sequence = 1;
+};
 #ifdef _WIN32
 /// @brief Backend that writes to Visual Studio's output window
 struct DebuggerBackend final : public Backend {
@@ -343,6 +373,7 @@ struct Impl {
     template<typename F>
     void ForEachBackend(F&& lambda) noexcept {
         lambda(static_cast<Backend&>(color_console_backend));
+        lambda(static_cast<Backend&>(ring_backend));
 #ifndef __OPENORBIS__
         if (file_backend)
             lambda(static_cast<Backend&>(*file_backend));
@@ -357,6 +388,7 @@ struct Impl {
 
     Filter filter;
     ColorConsoleBackend color_console_backend{};
+    RingBackend ring_backend{};
 #ifndef __OPENORBIS__
     std::optional<FileBackend> file_backend;
 #endif
@@ -421,6 +453,31 @@ void SetGlobalFilter(const Filter& filter) {
 void SetColorConsoleBackendEnabled(bool enabled) {
     if (logging_instance)
         logging_instance->color_console_backend.enabled = enabled;
+}
+
+void SetRingCapacity(std::size_t capacity) {
+    if (!logging_instance)
+        return;
+    auto& ring = logging_instance->ring_backend;
+    std::scoped_lock lock{ring.mutex};
+    ring.capacity.store(capacity, std::memory_order_relaxed);
+    while (ring.lines.size() > capacity) {
+        ring.lines.pop_front();
+    }
+}
+
+std::vector<RingLine> ReadRing(u64 after) {
+    std::vector<RingLine> result;
+    if (!logging_instance)
+        return result;
+    auto& ring = logging_instance->ring_backend;
+    std::scoped_lock lock{ring.mutex};
+    for (const RingLine& line : ring.lines) {
+        if (line.sequence > after) {
+            result.push_back(line);
+        }
+    }
+    return result;
 }
 
 bool IsLevelEnabled(Class log_class, Level log_level) {

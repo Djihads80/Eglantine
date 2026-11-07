@@ -132,9 +132,16 @@ void MeshEpilogue(EmitContext& ctx) {
     const bool convert_depth{ctx.runtime_info.convert_depth_mode && !ctx.profile.support_native_ndc &&
                              Sirit::ValidId(ctx.output_position)};
     const u32 vertex_lines{static_cast<u32>(mesh.vertex_lines.size())};
+    // Points need a size per vertex: the fixed state one, unless the program writes its own.
+    const bool points{mesh.PrimitiveVertices() == 1};
+    const Id point_size{ctx.Const(ctx.runtime_info.fixed_state_point_size.value_or(1.0f))};
     for (u32 first = 0; first < mesh.max_vertices; first += threads) {
         const Id vertex{ctx.OpIAdd(ctx.U32[1], invocation, ctx.Const(first))};
         const auto copy = [&] {
+            if (points) {
+                ctx.OpStore(ctx.OpAccessChain(ctx.output_f32, ctx.mesh_point_size, vertex),
+                            point_size);
+            }
             CopyLines(ctx, vertex, 0, vertex_lines, ctx.mesh_vertex_targets);
             if (convert_depth) {
                 ConvertDepth(ctx, vertex);
@@ -147,20 +154,27 @@ void MeshEpilogue(EmitContext& ctx) {
         }
     }
     const u32 primitive_lines{static_cast<u32>(mesh.primitive_lines.size())};
+    const u32 primitive_vertices{mesh.PrimitiveVertices()};
     for (u32 first = 0; first < mesh.max_primitives; first += threads) {
         const Id primitive{ctx.OpIAdd(ctx.U32[1], invocation, ctx.Const(first))};
         If(ctx, ctx.OpULessThan(ctx.U1, primitive, count), [&] {
-            // Vertex indices: map bytes 4 + 3 * primitive.
-            const Id byte{ctx.OpIAdd(ctx.U32[1], ctx.OpIMul(ctx.U32[1], primitive, ctx.Const(3U)),
-                                     ctx.Const(4U))};
+            // Vertex indices: map bytes 4 + primitive_vertices * primitive.
+            const Id byte{ctx.OpIAdd(
+                ctx.U32[1], ctx.OpIMul(ctx.U32[1], primitive, ctx.Const(primitive_vertices)),
+                ctx.Const(4U))};
             std::array<Id, 3> indices;
-            for (u32 element = 0; element < 3; ++element) {
+            for (u32 element = 0; element < primitive_vertices; ++element) {
                 const Id address{ctx.OpIAdd(ctx.U32[1], byte, ctx.Const(element))};
                 indices[element] = ctx.OpLoad(ctx.U32[1], SharedWord(ctx, ctx.mesh_map, address));
             }
-            const Id output_indices{ctx.TypePointer(spv::StorageClass::Output, ctx.U32[3])};
+            const Id index_type{ctx.U32[primitive_vertices]};
+            const Id output_indices{ctx.TypePointer(spv::StorageClass::Output, index_type)};
             ctx.OpStore(ctx.OpAccessChain(output_indices, ctx.mesh_primitive_indices, primitive),
-                        ctx.OpCompositeConstruct(ctx.U32[3], std::span<const Id>(indices)));
+                        primitive_vertices == 1
+                            ? indices[0]
+                            : ctx.OpCompositeConstruct(
+                                  index_type,
+                                  std::span<const Id>(indices.data(), primitive_vertices)));
             CopyLines(ctx, primitive, ctx.mesh_primitive_base, primitive_lines,
                       ctx.mesh_primitive_targets);
         });

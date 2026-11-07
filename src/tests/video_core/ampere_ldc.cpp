@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <array>
+#include <algorithm>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -37,4 +38,27 @@ TEST_CASE("Ampere indexed constant loads retain narrow sizes", "[video_core][amp
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{unsupported, exit})));
     unsupported.words[2] = 1U << 14;
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{unsupported, exit})));
+}
+
+TEST_CASE("Ampere uniform constant loads retain narrow sizes", "[video_core][ampere]") {
+    using Shader::Ampere::Instruction;
+    using Shader::Ampere::LowerToMaxwell;
+    const Instruction exit{{0x0000794d, 0, 0x03800000, 0}};
+    // Star Fox: ULDC.U16 UR4, c[6][0x20].
+    Instruction load{{0x00047ab9, 0x01800800, 0x00000400, 0x000fe200}};
+    auto lowered = LowerToMaxwell(std::array{load, exit});
+    REQUIRE(static_cast<bool>(lowered));
+    REQUIRE(std::find(lowered.instructions.begin(), lowered.instructions.end(),
+                      0xef9200600207ffdcULL) != lowered.instructions.end());
+    for (u32 width : {0U, 1U, 2U, 3U, 5U}) {
+        load.words[2] = width << 9;
+        lowered = LowerToMaxwell(std::array{load, exit});
+        REQUIRE(static_cast<bool>(lowered));
+        REQUIRE(((lowered.instructions[0] >> 48) & 7) == width);
+    }
+    load.words[2] = 6U << 9;
+    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{load, exit})));
+    load.words[2] = 2U << 9;
+    load.words[1] |= 1U << 6;
+    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{load, exit})));
 }

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <filesystem>
 #include <algorithm>
 #include <array>
 #include <thread>
@@ -32,6 +33,7 @@
 #include "common/thread.h"
 #include "core/core.h"
 #include "core/device_memory.h"
+#include "video_core/nx2_diag.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 #include "core/frontend/framebuffer_layout.h"
@@ -1742,10 +1744,14 @@ private:
         // Donkey Kong Bananza's channels wait on each other every frame, so it always ran a frame
         // ahead, where it rewrote memory the GPU thread hadn't read yet (misread commands, then
         // a freeze or crash; rubberbanding while moving). Title 1 runs ahead without either.
+        // Ocarina of Time a frame ahead rewrote data the GPU thread still read for this frame, and
+        // the frame rendered with the next one's (one-frame white or overexposed flashes).
         constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
+        constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
         int frames_ahead = frames_ahead_setting;
-        if (frames_ahead == -1 &&
-            system.GetApplicationProcessProgramID() == DonkeyKongBananzaProgramId) {
+        const u64 app_program_id = system.GetApplicationProcessProgramID();
+        if (frames_ahead == -1 && (app_program_id == DonkeyKongBananzaProgramId ||
+                                   app_program_id == OcarinaOfTimeProgramId)) {
             frames_ahead = 0;
         }
         const auto entered = std::chrono::steady_clock::now();
@@ -2047,19 +2053,59 @@ private:
 
     // EDEN_NX2_FRAME_CAPTURE=<dir>: every 120th present, save what the renderer shows as
     // nx2-frame-<n>.tga in <dir> (lets hidden test runs check the output; idea from changes.patch).
+    // With EDEN_NX2_DIAG_DIR a draw-list capture also saves the next present as capture-<n>.tga there.
     void CaptureFrame() {
         static const char* const directory = std::getenv("EDEN_NX2_FRAME_CAPTURE");
-        if (directory == nullptr || (m_presents % 120) != 1 || m_capture_pending->exchange(true)) {
+        if (m_capture_pending->load()) {
+            return;
+        }
+        std::string path;
+        if (VideoCommon::Nx2Diag::Active() && !VideoCommon::Nx2Diag::DrawListDir().empty()) {
+            if (const auto id = VideoCommon::Nx2Diag::Diagnostics::Get().TakeScreenshotRequest()) {
+                path = fmt::format("{}/capture-{}.tga", VideoCommon::Nx2Diag::DrawListDir().string(), *id);
+            }
+        }
+        // A "burst" file holding N in <dir> saves the next N presents instead (one-frame artifacts).
+        if (directory != nullptr && (m_presents % 30) == 0) {
+            const auto burst = std::filesystem::path{directory} / "burst";
+            if (std::FILE* file = std::fopen(burst.string().c_str(), "r")) {
+                int count = 0;
+                if (std::fscanf(file, "%d", &count) == 1 && count > 0) {
+                    m_burst_left = static_cast<u32>(count);
+                }
+                std::fclose(file);
+                std::error_code ec;
+                std::filesystem::remove(burst, ec);
+            }
+        }
+        if (path.empty() && directory != nullptr &&
+            (m_burst_left > 0 || (m_presents % 120) == 1)) {
+            path = fmt::format("{}/nx2-frame-{:05}.tga", directory, m_presents);
+            if (m_burst_left > 0 && !m_capture_pending->load()) {
+                m_burst_left--;
+            }
+        }
+        // EDEN_NX2_FLASH_WATCH=1: examine every present instead of saving them, and keep only the
+        // frames with a burst of near-white pixels (a one-frame white flash of a lit surface).
+        static const bool flash_watch = std::getenv("EDEN_NX2_FLASH_WATCH") != nullptr;
+        std::string watch_dir;
+        if (flash_watch && directory != nullptr && m_burst_left == 0) {
+            watch_dir = directory;
+            path = watch_dir + "/flash-watch.tga";
+            if (m_last_capture == nullptr) {
+                m_last_capture = std::make_shared<std::vector<u8>>();
+            }
+        }
+        if (path.empty() || m_capture_pending->exchange(true)) {
             return;
         }
         const auto layout = Layout::DefaultFrameLayout(1280, 720);
         auto pixels = std::make_shared<std::vector<u8>>(layout.width * layout.height * 4);
-        const std::string path =
-            fmt::format("{}/nx2-frame-{:05}.tga", directory, m_presents);
         auto pending = m_capture_pending; // the screenshot callback can outlive the session
         system.GPU().Renderer().RequestScreenshot(
             pixels->data(),
-            [pixels, layout, path, pending](bool invert_y) {
+            [pixels, layout, path, watch_dir, present = m_presents, white_state = m_white_state,
+             last_capture = m_last_capture, pending](bool invert_y) {
                 std::array<u8, 18> header{};
                 header[2] = 2; // uncompressed true colour
                 header[12] = static_cast<u8>(layout.width);
@@ -2069,6 +2115,43 @@ private:
                 header[16] = 32;
                 // Descriptor bit 5: rows top to bottom. invert_y means the data is bottom-up.
                 header[17] = invert_y ? 0x08 : 0x28;
+                // A white flash is a spike of near-white pixels; a normal frame of this game has
+                // none (measured: 0 against 7175 on a flashed frame), so a saved frame is a flash.
+                u32 white = 0;
+                for (size_t i = 0; i + 3 < pixels->size(); i += 4) {
+                    const u8* const p = pixels->data() + i;
+                    white += std::min({p[0], p[1], p[2]}) > 245;
+                }
+                if (!watch_dir.empty()) {
+                    // The scene's own mist is bright, so a flash is a spike against the last
+                    // presents, not a high count on its own.
+                    const u32 median = white_state->Median();
+                    const bool flash = white > 1500 && white > 2 * median + 200;
+                    if (flash) {
+                        LOG_INFO(Service,
+                                 "nx2: flash watch: present {} has {} near-white pixels (median {})",
+                                 present, white, median);
+                        const auto saved = fmt::format("{}/flash-{:05}.tga", watch_dir, present);
+                        if (std::FILE* file = std::fopen(saved.c_str(), "wb")) {
+                            std::fwrite(header.data(), 1, header.size(), file);
+                            std::fwrite(pixels->data(), 1, pixels->size(), file);
+                            std::fclose(file);
+                        }
+                        // The present before it, to diff against.
+                        if (last_capture != nullptr && last_capture->size() == pixels->size()) {
+                            const auto before = fmt::format("{}/before-{:05}.tga", watch_dir, present);
+                            if (std::FILE* file = std::fopen(before.c_str(), "wb")) {
+                                std::fwrite(header.data(), 1, header.size(), file);
+                                std::fwrite(last_capture->data(), 1, last_capture->size(), file);
+                                std::fclose(file);
+                            }
+                        }
+                    }
+                    white_state->Push(white);
+                    last_capture->assign(pixels->begin(), pixels->end());
+                    pending->store(false);
+                    return;
+                }
                 if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
                     std::fwrite(header.data(), 1, header.size(), file);
                     std::fwrite(pixels->data(), 1, pixels->size(), file);
@@ -2339,6 +2422,24 @@ private:
     u64 m_presents{};
     u64 m_shown_layout{}; // image and crop size last logged
     std::shared_ptr<std::atomic<bool>> m_capture_pending = std::make_shared<std::atomic<bool>>(false);
+    u32 m_burst_left{}; // presents still to save for a burst capture
+    // Near-white pixel counts of the last presents, for the flash watcher's spike test.
+    struct WhiteHistory {
+        std::array<u32, 16> counts{};
+        size_t next{};
+        u32 last{};
+        void Push(u32 white) {
+            std::swap(counts[next], last);
+            next = (next + 1) % counts.size();
+        }
+        u32 Median() const {
+            std::array<u32, 16> sorted = counts;
+            std::sort(sorted.begin(), sorted.end());
+            return sorted[sorted.size() / 2];
+        }
+    };
+    std::shared_ptr<WhiteHistory> m_white_state = std::make_shared<WhiteHistory>();
+    std::shared_ptr<std::vector<u8>> m_last_capture; // pixels of the previous present (flash watch)
 };
 
 // True the first time a Switch 2 video command is seen, so each one is logged once in full and new
@@ -2453,6 +2554,11 @@ private:
     static constexpr size_t MaxQueuedInputs = 8;
     static constexpr size_t MaxDecodedAhead = 2; // decoded frames held while no image is free
     static constexpr u32 HostSyncpoints = 192;   // Tegra::Host1x::SyncpointManager
+    // Movie pacing (see DropOvertakenFrames): a longer gap between acquires is a pause, a longer
+    // lag a jump in the stream; both restart the clock instead of dropping frames.
+    static constexpr s64 PauseGap = 1'000'000;   // us
+    static constexpr s64 MaxCatchUp = 3'000'000; // us
+    static constexpr u32 MaxDroppedInARow = 30;
 
     void Log(HLERequestContext& ctx, std::string_view what) {
         const auto* w = ctx.CommandBuffer();
@@ -2525,6 +2631,7 @@ private:
             m_codec = std::move(codec);
             m_width = w[5];
             m_height = w[6];
+            m_clock_offset.reset();
         }
         if (!m_worker.joinable()) {
             m_worker = std::thread{[this] { DecodeLoop(); }};
@@ -2658,6 +2765,7 @@ private:
             m_inputs.clear();
             m_flush = true;
             m_stream_ended = false;
+            m_clock_offset.reset();
             m_ready->room.store(true, std::memory_order_relaxed);
             // Only Stop: Bananza flushes (8) after its movies end and treats every completed
             // fence as a frame to acquire.
@@ -2674,8 +2782,80 @@ private:
         {
             std::scoped_lock lk{m_mutex};
             CompleteHandedFences();
+            m_clock_offset.reset();
         }
         TipcReplyWords(ctx, {});
+    }
+
+    static bool PacingEnabled() {
+        // EDEN_NX2_VDEC_PACE=0: hand out every decoded frame, however late.
+        static const bool enabled = [] {
+            const char* value = std::getenv("EDEN_NX2_VDEC_PACE");
+            return value == nullptr || value[0] != '0';
+        }();
+        return enabled;
+    }
+
+    static s64 HostTimeUs() {
+        return std::chrono::duration_cast<std::chrono::microseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    }
+
+    // Starts or corrects the movie clock from a frame the client just acquired (m_mutex held).
+    // The clock never runs behind a frame the client already shows.
+    void AnchorClock(u64 pts) {
+        const s64 now = HostTimeUs();
+        const s64 offset = now - static_cast<s64>(pts);
+        if (!m_clock_offset || now - m_last_acquire > PauseGap || pts < m_last_acquired_pts ||
+            offset < *m_clock_offset || offset - *m_clock_offset > MaxCatchUp) {
+            m_clock_offset = offset;
+        }
+        m_last_acquire = now;
+        m_last_acquired_pts = pts;
+    }
+
+    // The pts the movie's audio has reached, if the client shows frames yet (m_mutex held).
+    std::optional<u64> DuePts() {
+        if (!m_clock_offset) {
+            return std::nullopt;
+        }
+        const s64 now = HostTimeUs();
+        const s64 due = now - *m_clock_offset;
+        // Nothing acquired for a while: paused; the next acquire restarts the clock.
+        if (due < 0 || now - m_last_acquire > PauseGap) {
+            return std::nullopt;
+        }
+        return static_cast<u64>(due);
+    }
+
+    // Games such as Ocarina of Time show one decoded frame per frame they draw and never skip
+    // one, while the movie's audio plays in real time: below the movie's frame rate the picture
+    // falls further behind the sound. Drop decoded frames a later frame has already overtaken
+    // (m_mutex held). Returns true when the only frame left is late and more input is queued:
+    // decode on before filling an image.
+    bool DropOvertakenFrames() {
+        if (!PacingEnabled() || m_decoded.empty()) {
+            return false;
+        }
+        const auto due = DuePts();
+        if (!due) {
+            m_dropped_in_a_row = 0;
+            return false;
+        }
+        while (m_decoded.size() >= 2 && m_dropped_in_a_row < MaxDroppedInARow) {
+            const Decoded& front = m_decoded[0];
+            const Decoded& next = m_decoded[1];
+            if (front.end || !front.picture || next.pts <= front.pts || next.pts > *due) {
+                break;
+            }
+            m_decoded.pop_front();
+            ++m_frames_dropped;
+            ++m_dropped_in_a_row;
+        }
+        const Decoded& front = m_decoded.front();
+        return m_decoded.size() == 1 && !m_inputs.empty() && !front.end &&
+               m_dropped_in_a_row < MaxDroppedInARow && front.pts + m_frame_interval < *due;
     }
 
     // Advances the decoder's syncpoint to the last value handed out (m_mutex held).
@@ -2700,6 +2880,7 @@ private:
             if (!m_outputs.empty()) {
                 output = m_outputs.front();
                 m_outputs.pop_front();
+                AnchorClock(output->pts);
             }
         }
         if (!output) {
@@ -2734,6 +2915,8 @@ private:
             if (m_flush) {
                 m_flush = false;
                 m_decoded.clear();
+                m_last_decoded_pts = 0;
+                m_dropped_in_a_row = 0;
                 if (decoder) {
                     lk.unlock();
                     decoder->Reset();
@@ -2741,7 +2924,8 @@ private:
                 }
                 continue;
             }
-            if (!m_decoded.empty() && !m_free.empty()) {
+            if (!m_decoded.empty() && !m_free.empty() && !DropOvertakenFrames()) {
+                m_dropped_in_a_row = 0;
                 Decoded frame = std::move(m_decoded.front());
                 m_decoded.pop_front();
                 const u32 image = m_free.front();
@@ -2766,9 +2950,10 @@ private:
                 system.Host1x().GetSyncpointManager().IncrementGuest(m_syncpoint);
                 ++m_frames_out;
                 if (m_frames_out == 1 || (m_frames_out % 600) == 0 || frame.end) {
-                    LOG_INFO(Service, "{} frame {} ({}x{}, pts {} us{}) in image {}",
+                    LOG_INFO(Service,
+                             "{} frame {} ({}x{}, pts {} us{}) in image {}, {} late dropped",
                              GetServiceName(), m_frames_out, width, height, frame.pts,
-                             frame.end ? ", end of stream" : "", image);
+                             frame.end ? ", end of stream" : "", image, m_frames_dropped);
                 }
                 continue;
             }
@@ -2799,6 +2984,10 @@ private:
             }
             for (auto& picture : pictures) {
                 const u64 pts = picture.pts;
+                if (pts > m_last_decoded_pts && pts - m_last_decoded_pts <= 100'000) {
+                    m_frame_interval = pts - m_last_decoded_pts;
+                }
+                m_last_decoded_pts = pts;
                 m_decoded.push_back({std::move(picture), pts, false});
             }
             if (input.end) {
@@ -2932,6 +3121,13 @@ private:
     u32 m_height{};
     u32 m_handed{}; ///< Output images handed out (registered or released) so far
     u64 m_frames_out{};
+    u64 m_frames_dropped{};
+    std::optional<s64> m_clock_offset; ///< Host time minus pts (us) of the frames the client shows
+    s64 m_last_acquire{};              ///< Host time (us) of the client's last acquire
+    u64 m_last_acquired_pts{};
+    u64 m_frame_interval{16667}; ///< us, from consecutive decoded frames
+    u64 m_last_decoded_pts{};
+    u32 m_dropped_in_a_row{};
     std::deque<Input> m_inputs;
     std::deque<Decoded> m_decoded;     ///< Waiting for a free output image
     std::deque<u32> m_free;            ///< Output images, in the order the client acquires them
@@ -3312,7 +3508,12 @@ private:
     // size, u64 alignment; the client raises the alignment to at least 4 KiB and rounds the size.
     void CalculateRequirements(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
-        const auto layout = Nx2CalculateImageLayout(w + 2);
+        auto layout = Nx2CalculateImageLayout(w + 2);
+        // Star Fox's NVN window textures use 4 KiB pool offsets. Reporting the block-linear
+        // layout's 8 KiB alignment makes NativeWindow::Acquire reject those textures.
+        if (system.GetApplicationProcessProgramID() == 0x0400E88025B1A000ULL) {
+            layout.alignment = 0x1000;
+        }
         LOG_DEBUG(Service, "nx2:gsv 1510 kind={} {}x{} block={} pitch={:#x} format={} -> size={:#x} align={:#x}",
                   w[3], layout.width, layout.height, layout.block_height_log2, layout.pitch, w[8],
                   layout.size, layout.alignment);

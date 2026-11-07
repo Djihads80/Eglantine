@@ -298,13 +298,26 @@ Node SiblingFromNephew(Node uncle, Node nephew) noexcept {
 }
 
 bool AreOrdered(Node left_sibling, Node right_sibling) noexcept {
+    if (left_sibling == right_sibling) {
+        return false;
+    }
+    // Walk forward from both siblings at once: whichever meets the other or the end first
+    // decides, so the cost is the shorter walk instead of everything after right_sibling.
     const Node end{right_sibling->up->children.end()};
-    for (auto it = right_sibling; it != end; ++it) {
-        if (it == left_sibling) {
+    for (Node left = left_sibling, right = right_sibling;;) {
+        if (++right == left_sibling) {
+            return false;
+        }
+        if (right == end) {
+            return true;
+        }
+        if (++left == right_sibling) {
+            return true;
+        }
+        if (left == end) {
             return false;
         }
     }
-    return true;
 }
 
 bool NeedsLift(Node goto_stmt, Node label_stmt) noexcept {
@@ -904,16 +917,18 @@ private:
             if (node.type != Type::Block) {
                 continue;
             }
-            if (branch_depth > 1) {
-                // Skip reordering nested demote branches.
-                continue;
-            }
             for (const IR::Inst& inst : node.data.block->Instructions()) {
                 const IR::Opcode op{inst.GetOpcode()};
                 if (op == IR::Opcode::DemoteToHelperInvocation) {
-                    demote_blocks.push_back(node.data.block);
+                    // Skip reordering nested demote branches.
+                    if (branch_depth <= 1) {
+                        demote_blocks.push_back(node.data.block);
+                    }
                     break;
                 }
+                // Returns count at any depth: a nested early return (an EXIT under two
+                // conditions, as native fragment programs end their discarded invocations) would
+                // otherwise leave before the demote moved to the end, and write its colours.
                 if (op == IR::Opcode::Epilogue) {
                     ++num_epilogues;
                 }

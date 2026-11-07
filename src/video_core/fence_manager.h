@@ -152,6 +152,9 @@ public:
                 wait_cv.notify_all();
             });
             SignalFence(std::move(func));
+            // With delayed fence operations the callback waits for this fence's tick, whose
+            // submission may be deferred to the waiting thread itself (the GPU split's back).
+            SubmitDeferred();
             std::unique_lock lk(wait_mutex);
             wait_cv.wait(
                 lk, [&wait_finished] { return wait_finished.load(std::memory_order_relaxed); });
@@ -187,6 +190,8 @@ protected:
     virtual bool IsFenceSignaled(TFence& fence) const = 0;
     /// Waits until a fence has been signalled by the host GPU.
     virtual void WaitFence(TFence& fence) = 0;
+    /// Submits command work whose submission was deferred (Vulkan: Scheduler::DeferFlush).
+    virtual void SubmitDeferred() {}
 
     VideoCore::RasterizerInterface& rasterizer;
     Tegra::GPU& gpu;

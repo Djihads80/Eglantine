@@ -149,6 +149,16 @@ void Swapchain::Create(
         return;
     }
 
+    // Submitted work may still wait on the old acquire/present semaphores; destroying them under
+    // it loses the device on MoltenVK (window moved to a display with a different scale).
+    if (swapchain) {
+        std::scoped_lock lock{scheduler.submit_mutex};
+        const VkResult result = device.GetLogical().WaitIdle();
+        if (result == VK_ERROR_DEVICE_LOST) {
+            device.ReportLoss();
+        }
+        vk::Check(result);
+    }
     Destroy();
 
     CreateSwapchain(capabilities);
@@ -211,7 +221,9 @@ bool Swapchain::AcquireNextImage(bool may_flush) {
 
     resource_ticks[image_index] = scheduler.CurrentTick();
 
-    return is_suboptimal || is_outdated;
+    // A suboptimal acquire still acquired an image and signals its semaphore: present it, and let
+    // NeedsRecreation() recreate at the next frame. Out of date acquired nothing.
+    return is_outdated;
 }
 
 void Swapchain::Present(VkSemaphore render_semaphore) {

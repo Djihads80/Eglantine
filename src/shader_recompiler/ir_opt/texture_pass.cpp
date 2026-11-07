@@ -18,6 +18,7 @@
 
 #include "common/scope_exit.h"
 #include "common/settings.h"
+#include "common/env_gate.h"
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
 #include "shader_recompiler/frontend/ir/breadth_first_search.h"
@@ -1330,7 +1331,11 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                 });
             } else {
                 count = std::min(count, sampled_dynamic_cap);
-                const bool is_integer{is_texture_pixel_format_integer(cbuf)};
+                // Depth-compare sampling returns a float in Vulkan, so its image must be float
+                // even when a garbage or unknown descriptor reads as an integer format.
+                static const bool depth_float_fix{Common::EnvGate("EGLANTINE_DEPTH_FLOAT_FIX")};
+                const bool is_integer{(!depth_float_fix || flags.is_depth == 0) &&
+                                      is_texture_pixel_format_integer(cbuf)};
                 index = descriptors.Add(TextureDescriptor{
                     .type = flags.type,
                     .is_depth = flags.is_depth != 0,
