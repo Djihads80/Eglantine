@@ -45,7 +45,7 @@ A list of supported games will be available in future. Please be patient.
 
 ## Development
 
-For development discussions, please join us on [Discord](https://discord.gg/jCCZ58VExk)
+For development discussions, please join us on [Discord](https://discord.gg/XkS5NVPTUY)
 
 If you would like to contribute, we are open to new developers and pull requests. Please ensure that your work is of a high standard and properly documented. You can also contact any of the developers on Discord or Stoat to learn more about the current state of the emulator.
 
@@ -67,7 +67,7 @@ You can download the latest releases from [here](https://github.com/Djihads80/Eg
 
 We currently do not take in any donations for the time being
 
-If you would prefer to support us in a different way, please join our [Discord](https://discord.gg/jCCZ58VExk)
+If you would prefer to support us in a different way, please join our [Discord](https://discord.gg/XkS5NVPTUY)
 
 ## Star History
 
