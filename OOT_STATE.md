@@ -2,8 +2,8 @@
 
 This branch is a work in progress toward running **The Legend of Zelda: Ocarina of Time**
 (`0400486024DEC000`) at a locked 60 FPS. It is shared so others can test it and read the code.
-It is not a pull request: it is ahead of upstream `nx2` by a few hundred commits, including work
-picked from other forks.
+It is not a pull request: it merges `upstream/nx2-experimental` (`db093d7325`, merge commit
+`6f03cf1324`) and is ahead by a few hundred commits, including work picked from other forks.
 
 Last updated: 2026-11-07.
 

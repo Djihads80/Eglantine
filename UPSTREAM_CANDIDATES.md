@@ -5,7 +5,8 @@ Which commits on this branch (`oot-60fps-wip`) are worth sending to upstream Egl
 what order.
 
 - **Compared against:** upstream `nx2` at `ae9d3eb8d2` and `nx2-experimental` at `db093d7325`,
-  2026-11-07. They differ by only 7 commits.
+  2026-11-07 (`upstream/nx2-experimental` `db093d7325` is now merged into `local-combined` as
+  `6f03cf1324`). They differ by only 7 commits.
 - **What was checked:**
   - all 399 non-merge commits here that upstream lacks; 303 of them are code;
   - whether upstream already has each change, by its content rather than its hash;

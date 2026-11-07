@@ -1,9 +1,14 @@
 # STATUS (shared, local-only; update it whenever a result changes the picture)
 
-Last updated: 2026-11-06 23:20 local (handoff from the long day session to a fresh one).
+Last updated: 2026-11-07 17:10 local (merged `upstream/nx2-experimental` `db093d7325` into `local-combined`).
 
 ## Goal
 Play The Legend of Zelda: Ocarina of Time (`0400486024DEC000`) at a locked 60 FPS without crashes.
+
+## MERGE COMPLETED 2026-11-07 ~17:10 (`upstream/nx2-experimental` `db093d7325` -> `local-combined` `6f03cf1324`)
+- Merged `upstream/nx2-experimental` (`db093d7325`) into `local-combined` (`b24f76070b`) as merge commit `6f03cf1324` following the agreed plan in `.agent/plan-review/nx2exp-merge-negotiation.md` (`D1`–`D14`, `R1`–`R4`) and `.agent/plan-review/nx2exp-merge-appendix.md` (all 70 conflicted files resolved).
+- Preserved all 5 local invariants: `frames_ahead` and `present_one_ahead` stay OFF (`DefaultOffMask` and `always_off`), OoT visual workaround stays opt-in (`EDEN_NX2_OOT_VISUAL_WORKAROUND`), `Nx2Perf` tables consistent, lock-free/allocation-free per-draw hot path, and 64 SSBO slots.
+- Built `eglantine.exe`, `eden-cli.exe`, and `tests.exe` cleanly; unit tests 410/411 pass (only pre-existing `nup_writer` fails). `AGENTS.md` local `skip-worktree` overlay restored.
 
 ## LOOP PAUSED 2026-11-07 ~11:10 (user wants to test the results): stopped during round 14 implementation (selected run_ahead_overlay, front_delay_probe, pipeline_key_memo; no code produced; empty worktrees a42-118..120 removed). HEAD 2ee32a120b, eglantine.exe current. Accepted overnight: pending_wake (r9, ~+1.5 FPS, ~1 ms/frame less fence wait) and diag_draw_lite (r11, lab-only: removes EDEN_NX2_DIAG overhead the user's game never has). Lab spawn ~40-41 FPS (with the diag overhead removed). Resume from round 14 only when the user asks (edit FIRST_ROUND/history in r7plus.js).
 
