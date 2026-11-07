@@ -28,6 +28,7 @@
 #define BreakFromRunCodeSignal SIGURG
 #define GuestAccessFaultSignal SIGSEGV
 #define GuestAlignmentFaultSignal SIGBUS
+#define GuestIllegalInstructionSignal SIGILL
 
 #define GuestContextSp 0xF8
 #define GuestContextHostContext 0x320
