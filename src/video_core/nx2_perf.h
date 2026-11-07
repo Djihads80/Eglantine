@@ -223,6 +223,9 @@ enum class Opt : unsigned {
     /// writes (fencing thread, split back, query results, downloads) and splits the front_macro
     /// residual and unarmed_changed pages into GPU-own and guest writes
     RunAheadOwnWriteProbe,
+    /// Native uniform banks: a page is compared only when a write hook, a trap of its
+    /// write-protected guest page or the tracker marked it since its last compare (nx2_bank_dirty.h)
+    BankDirtySkip,
     Count,
 };
 
@@ -285,6 +288,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "exec_same_drop",
     "state_dead_store",
     "run_ahead_own_write_probe",
+    "bank_dirty_skip",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -375,7 +379,8 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::AcquireDrainLite,
                           Opt::ExecSameDrop,
                           Opt::StateDeadStore,
-                          Opt::RunAheadOwnWriteProbe}) {
+                          Opt::RunAheadOwnWriteProbe,
+                          Opt::BankDirtySkip}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -406,7 +411,8 @@ inline constexpr OffMask DefaultOffMask() {
 /// report_submit_early (submit timing; round 11),
 /// dma_forward_tape (+0.35 FPS; round 11), run_ahead_overlay_budget (measurement; round 12),
 /// acquire_drain_lite (-0.2 FPS; round 12), exec_same_drop (~4.7k binds/s left out; round 12),
-/// state_dead_store (~950 folds/s; round 12), run_ahead_own_write_probe (measurement; round 13).
+/// state_dead_store (~950 folds/s; round 12), run_ahead_own_write_probe (measurement; round 13),
+/// bank_dirty_skip (unmeasured; round 13).
 /// dma_forward and draw_begin_coalesce (round 5), pending_wake (round 9) and diag_draw_lite
 /// (round 11) are on by default; SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
@@ -445,7 +451,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::AcquireDrainLite) |
                                   Bit(Opt::ExecSameDrop) |
                                   Bit(Opt::StateDeadStore) |
-                                  Bit(Opt::RunAheadOwnWriteProbe);
+                                  Bit(Opt::RunAheadOwnWriteProbe) |
+                                  Bit(Opt::BankDirtySkip);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -557,6 +564,9 @@ static_assert(static_cast<unsigned>(Opt::StateDeadStore) == 86 &&
 static_assert(static_cast<unsigned>(Opt::RunAheadOwnWriteProbe) == 87 &&
               IsOff(always_off, static_cast<size_t>(Opt::RunAheadOwnWriteProbe)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::RunAheadOwnWriteProbe)));
+static_assert(static_cast<unsigned>(Opt::BankDirtySkip) == 88 &&
+              IsOff(always_off, static_cast<size_t>(Opt::BankDirtySkip)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::BankDirtySkip)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.

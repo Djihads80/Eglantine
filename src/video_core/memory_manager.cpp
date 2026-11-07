@@ -342,10 +342,14 @@ u32 MemoryManager::ReadU32(GPUVAddr addr, ReadPageCache& cache) const {
 
 template <typename T>
 void MemoryManager::Write(GPUVAddr addr, T data) {
-    if (VideoCommon::Nx2Cow::g_enabled.load(std::memory_order_relaxed)) [[unlikely]] {
-        // run_ahead_cow_probe: a host write, not an unsized read.
+    if (VideoCommon::Nx2Cow::g_enabled.load(std::memory_order_relaxed) ||
+        VideoCommon::Nx2BankDirty::g_on.load(std::memory_order_relaxed)) [[unlikely]] {
+        // run_ahead_cow_probe: a host write, not an unsized read (bank_dirty_skip: a write hook).
         if (const auto device = GpuToCpuAddress(addr)) {
-            VideoCommon::Nx2Cow::HostWriteSlow(*device, sizeof(T), &data, NX2_RETURN_ADDRESS());
+            VideoCommon::Nx2BankDirty::HostWrite(*device, sizeof(T));
+            if (VideoCommon::Nx2Cow::g_enabled.load(std::memory_order_relaxed)) {
+                VideoCommon::Nx2Cow::HostWriteSlow(*device, sizeof(T), &data, NX2_RETURN_ADDRESS());
+            }
         }
         VideoCommon::Nx2Cow::SkipNextPointer();
     }

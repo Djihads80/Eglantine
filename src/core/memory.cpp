@@ -101,6 +101,12 @@ struct Memory::Impl {
                 VideoCommon::Nx2Raw::SetModuleBase(Nx2ModuleBase());
             }
         }
+        bank_on = war_capable && VideoCommon::Nx2BankDirty::On();
+        if (bank_on) {
+            VideoCommon::Nx2BankDirty::EnsureInit();
+            bank_armed.Init();
+        }
+        war_writes = war_probe || bank_on;
         snap_on = cow_on && VideoCommon::Nx2Snap::On();
         if (snap_on) {
             VideoCommon::Nx2Snap::SetModuleBase(Nx2ModuleBase());
@@ -115,7 +121,7 @@ struct Memory::Impl {
         ASSERT_MSG(target >= DramMemoryMap::Base, "Out of bounds target: {:016X}",
                    GetInteger(target));
         std::unique_lock war_lock{war_mutex, std::defer_lock};
-        if (war_probe && &page_table == current_page_table) [[unlikely]] {
+        if ((war_probe || bank_on) && &page_table == current_page_table) [[unlikely]] {
             war_lock.lock();
             WarForget(GetInteger(base), size);
         }
@@ -132,7 +138,7 @@ struct Memory::Impl {
         ASSERT_MSG((size & YUZU_PAGEMASK) == 0, "non-page aligned size: {:016X}", size);
         ASSERT_MSG((base & YUZU_PAGEMASK) == 0, "non-page aligned base: {:016X}", GetInteger(base));
         std::unique_lock war_lock{war_mutex, std::defer_lock};
-        if (war_probe && &page_table == current_page_table) [[unlikely]] {
+        if ((war_probe || bank_on) && &page_table == current_page_table) [[unlikely]] {
             war_lock.lock();
             WarForget(GetInteger(base), size);
         }
@@ -153,7 +159,7 @@ struct Memory::Impl {
             return;
         }
         std::unique_lock war_lock{war_mutex, std::defer_lock};
-        if (war_probe && &page_table == current_page_table) [[unlikely]] {
+        if ((war_probe || bank_on) && &page_table == current_page_table) [[unlikely]] {
             war_lock.lock();
             WarForget(vaddr, size);
         }
@@ -382,7 +388,7 @@ struct Memory::Impl {
     }
 
     bool WriteBlockImpl(const Common::ProcessAddress addr, const void* buffer, const std::size_t size, bool unsafe) {
-        if (war_inflight || cow_on) [[unlikely]] {
+        if (war_inflight || cow_on || bank_on) [[unlikely]] {
             WarOnWrite(GetInteger(addr), size);
         }
         return WalkBlock(addr, size,
@@ -395,13 +401,16 @@ struct Memory::Impl {
         [&](const Common::ProcessAddress current_vaddr, const std::size_t offset, const std::size_t copy_amount, u8* const ptr) {
             if (!unsafe) {
                 HandleRasterizerWrite(GetInteger(current_vaddr), copy_amount);
+            } else if (bank_on) [[unlikely]] {
+                // bank_dirty_skip: an unsafe write of a tracker-protected page skips the tracker.
+                BankMarkRange(GetInteger(current_vaddr), copy_amount);
             }
             std::memcpy(ptr, reinterpret_cast<u8 const*>(buffer) + offset, copy_amount);
         });
     }
 
     bool ZeroBlock(const Common::ProcessAddress addr, const std::size_t size) {
-        if (war_inflight || cow_on) [[unlikely]] {
+        if (war_inflight || cow_on || bank_on) [[unlikely]] {
             WarOnWrite(GetInteger(addr), size);
         }
         return WalkBlock(addr, size,
@@ -478,7 +487,7 @@ struct Memory::Impl {
             return;
         }
         std::unique_lock war_lock{war_mutex, std::defer_lock};
-        if (war_probe) [[unlikely]] {
+        if (war_probe || bank_on) [[unlikely]] {
             war_lock.lock();
             WarForget(vaddr, size);
         }
@@ -542,8 +551,12 @@ struct Memory::Impl {
         // war_guard_probe: arming and trap restores never interleave with the tracker's changes.
         std::unique_lock war_lock{war_mutex, std::defer_lock};
         const u64 war_vaddr = vaddr;
-        if (war_probe) [[unlikely]] {
+        if (war_probe || bank_on) [[unlikely]] {
             war_lock.lock();
+            if (bank_on && !cached) {
+                // bank_dirty_skip: the tracker is about to give these pages write access.
+                BankMarkRange(vaddr, size);
+            }
         }
         SCOPE_EXIT {
             if (war_lock.owns_lock()) {
@@ -886,7 +899,7 @@ struct Memory::Impl {
     template <typename T>
     inline void Write(Common::ProcessAddress vaddr, const T data) noexcept requires(std::is_trivially_copyable_v<T>) {
         const u64 addr = GetInteger(vaddr);
-        if (war_probe) [[unlikely]] {
+        if (war_writes) [[unlikely]] {
             WarOnWrite(addr, sizeof(T));
         }
         if (auto const ptr = GetPointerImpl(addr, [addr, data]() {
@@ -897,7 +910,7 @@ struct Memory::Impl {
 
     template <typename T>
     bool WriteExclusive(Common::ProcessAddress vaddr, const T data, const T expected) {
-        if (war_probe) [[unlikely]] {
+        if (war_writes) [[unlikely]] {
             WarOnWrite(GetInteger(vaddr), sizeof(T));
         }
         u8* const ptr = GetPointerImpl(
@@ -914,7 +927,7 @@ struct Memory::Impl {
     }
 
     bool WriteExclusive128(Common::ProcessAddress vaddr, const u128 data, const u128 expected) {
-        if (war_probe) [[unlikely]] {
+        if (war_writes) [[unlikely]] {
             WarOnWrite(GetInteger(vaddr), sizeof(u128));
         }
         u8* const ptr = GetPointerImpl(
@@ -1006,6 +1019,9 @@ struct Memory::Impl {
         }
         if (cow_on) [[unlikely]] {
             CowTrackedWrite(v_address, size);
+        }
+        if (bank_on) [[unlikely]] {
+            BankMarkRange(v_address, size);
         }
         const auto* p = GetPointerImpl(
             v_address, []() {}, []() {});
@@ -1189,14 +1205,20 @@ struct Memory::Impl {
             // run_ahead_cow_probe: the next arm checks these pages again (still Memory, re-armed).
             WarForgetIn(cow_armed, first, end, true);
         }
+        if (bank_on) {
+            WarForgetIn(bank_armed, first, end, false, true);
+        }
     }
 
     template <typename Set>
-    void WarForgetIn(Set& set, u64 first, u64 end, bool cow_rearm_page) {
+    void WarForgetIn(Set& set, u64 first, u64 end, bool cow_rearm_page, bool bank_page = false) {
         if (set.count == 0) {
             return;
         }
         const auto forget = [&](u64 page) {
+            if (bank_page) {
+                BankMarkPage(page, VideoCommon::Nx2BankDirty::Source::Tracker);
+            }
             WarUnguard(page);
             set.Erase(page);
             if (cow_rearm_page) {
@@ -1230,12 +1252,18 @@ struct Memory::Impl {
                 if (cow_on) {
                     cow_armed.Erase(page);
                 }
+                if (bank_on) {
+                    // bank_dirty_skip: the tracker traps its writes from now on.
+                    bank_armed.Erase(page);
+                }
                 continue;
             }
             auto& entry = current_page_table->entries.GetUnchecked(page);
             auto [pointer, type, block] = entry.PointerTypeBlock(true);
             const bool cow = cow_on && cow_armed.Contains(page);
-            if (type == Common::PageType::DebugMemory && (war_unprotected.Contains(page) || cow)) {
+            const bool bank = bank_on && bank_armed.Contains(page);
+            if (type == Common::PageType::DebugMemory &&
+                (war_unprotected.Contains(page) || cow || bank)) {
                 // Read/write is set already; an uncached page's type is Memory.
                 entry.Store(false, Common::PageType::Memory, block, pointer);
                 type = Common::PageType::Memory;
@@ -1243,7 +1271,10 @@ struct Memory::Impl {
             if (cow) {
                 cow_armed.Erase(page);
             }
-            if (type == Common::PageType::Memory) {
+            if (bank) {
+                bank_armed.Erase(page);
+            }
+            if (type == Common::PageType::Memory && war_probe) {
                 war_unprotected.Insert(page);
                 if (cow_on) {
                     // run_ahead_cow_probe: writable now, armed again at the next reply.
@@ -1272,8 +1303,14 @@ struct Memory::Impl {
             std::scoped_lock lk{war_mutex};
             const bool war = war_unprotected.Contains(page);
             const bool cow = cow_on && cow_armed.Contains(page);
-            if (!war && !cow) {
+            const bool bank = bank_on && bank_armed.Contains(page);
+            if (!war && !cow && !bank) {
                 continue; // A debugger's page, or given back meanwhile
+            }
+            if (bank_on) {
+                // bank_dirty_skip: marks the page before the write lands.
+                BankMarkPage(page, bank ? VideoCommon::Nx2BankDirty::Source::Trap
+                                        : VideoCommon::Nx2BankDirty::Source::Tracker);
             }
             bool cow_first = false;
             if (cow) {
@@ -1285,6 +1322,9 @@ struct Memory::Impl {
                 }
             }
             const bool unguarded = WarUnguard(page);
+            if (bank) {
+                bank_armed.Erase(page);
+            }
             if (cow) {
                 cow_armed.Erase(page);
                 CowRearmPush(page);
@@ -1407,6 +1447,70 @@ struct Memory::Impl {
         cow_rearm[cow_rearm_count++] = static_cast<u32>(page);
     }
 
+    // Nx2Perf bank_dirty_skip (video_core/nx2_bank_dirty.h).
+
+    /// A write of guest page `page` may land without a trap: marks its physical page.
+    void BankMarkPage(u64 page, VideoCommon::Nx2BankDirty::Source source) {
+        const auto [pointer, type, block] =
+            std::as_const(current_page_table->entries)[page].PointerTypeBlock(true);
+        if (pointer == 0 || type == Common::PageType::Unmapped) {
+            return;
+        }
+        const u8* const host = reinterpret_cast<const u8*>(pointer) + (page << YUZU_PAGEBITS);
+        VideoCommon::Nx2BankDirty::Mark(CowPhysPage(host), source);
+    }
+
+    void BankMarkRange(u64 vaddr, u64 size) {
+        vaddr &= 0xffffffffffffULL;
+        if (size == 0 || !AddressSpaceContains(*current_page_table, vaddr, size)) {
+            return;
+        }
+        const u64 end = ((vaddr + size - 1) >> YUZU_PAGEBITS) + 1;
+        for (u64 page = vaddr >> YUZU_PAGEBITS; page != end; ++page) {
+            BankMarkPage(page, VideoCommon::Nx2BankDirty::Source::Tracker);
+        }
+    }
+
+    /// See Memory::Nx2BankDirtyArm.
+    bool BankArm(u64 vaddr, u64 phys) {
+        vaddr &= 0xffffffffffffULL;
+        if (!bank_on || vaddr == 0 || !AddressSpaceContains(*current_page_table, vaddr, 1)) {
+            return false;
+        }
+        const u64 page = vaddr >> YUZU_PAGEBITS;
+        std::scoped_lock lk{war_mutex};
+        auto& entry = current_page_table->entries.GetUnchecked(page);
+        const auto [pointer, type, block] = entry.PointerTypeBlock(true);
+        if (pointer == 0 ||
+            CowPhysPage(reinterpret_cast<const u8*>(pointer) + (page << YUZU_PAGEBITS)) != phys) {
+            return false;
+        }
+        switch (type) {
+        case Common::PageType::RasterizerCachedMemory:
+            return true; // Writes take HandleRasterizerWrite
+        case Common::PageType::DebugMemory:
+            if (bank_armed.Contains(page)) {
+                return true;
+            }
+            if (!war_unprotected.Contains(page) && !(cow_on && cow_armed.Contains(page))) {
+                return false; // A debugger's page
+            }
+            bank_armed.Insert(page);
+            return bank_armed.Contains(page);
+        case Common::PageType::Memory:
+            if (bank_armed.count == WarPageSet::MaxEntries) {
+                return false;
+            }
+            entry.Store(true, Common::PageType::DebugMemory, block, pointer);
+            bank_armed.Insert(page);
+            host_buffer->Protect(page << YUZU_PAGEBITS, YUZU_PAGESIZE,
+                                 Common::MemoryPermission::Read);
+            return true;
+        default:
+            return false;
+        }
+    }
+
     /// HandleRasterizerWrite: a write of tracker-protected pages traps anyway; its first one in
     /// the epoch takes the page's pre-image before it lands.
     void CowTrackedWrite(u64 vaddr, size_t size) {
@@ -1470,6 +1574,10 @@ struct Memory::Impl {
             }
             if (std::as_const(current_page_table->entries)[page].Type() !=
                 Common::PageType::Memory) {
+                if (bank_on && bank_armed.Contains(page) &&
+                    cow_armed.count != CowPageSet::MaxEntries) {
+                    cow_armed.Insert(page); // bank_dirty_skip protects it already
+                }
                 return; // Tracker-protected pages trap through HandleRasterizerWrite
             }
             auto& entry = current_page_table->entries.GetUnchecked(page);
@@ -1608,6 +1716,10 @@ struct Memory::Impl {
             const auto [pointer, type, block] = entry.PointerTypeBlock(true);
             if (type != Common::PageType::DebugMemory) {
                 continue;
+            }
+            if (bank_on && bank_armed.Contains(page)) {
+                BankMarkPage(page, VideoCommon::Nx2BankDirty::Source::Tracker);
+                bank_armed.Erase(page);
             }
             entry.Store(false, Common::PageType::Memory, block, pointer);
             war_unprotected.scratch[count++] = static_cast<u32>(page);
@@ -2149,6 +2261,10 @@ struct Memory::Impl {
     u32 cow_rearm_count = 0;
     u64 cow_rearm_overflow = 0;
     bool cow_full_pending = true;
+    // bank_dirty_skip (war_mutex): guest pages the bank compare write-protected.
+    bool bank_on = false;
+    WarPageSet bank_armed;
+    bool war_writes = false; ///< war_probe or bank_on: slow-path writes call WarOnWrite
     // run_ahead_snapshot_probe: whether each core's kept read area holds GPU-written data, and
     // the cow epoch it was kept in.
     bool snap_on = false;
@@ -2352,6 +2468,10 @@ void Memory::RasterizerArmReadTraps(Common::ProcessAddress vaddr, u64 size) {
 
 Memory::Nx2WarProbeArmResult Memory::Nx2WarProbeArm(std::span<const u64> bank_cpu_pages) {
     return impl->WarArm(bank_cpu_pages);
+}
+
+bool Memory::Nx2BankDirtyArm(Common::ProcessAddress vaddr, u64 phys) {
+    return impl->BankArm(GetInteger(vaddr), phys);
 }
 
 bool Memory::Nx2CoverClassify(std::span<const u64> cpu_pages, std::span<u8> classes) {

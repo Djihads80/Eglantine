@@ -24,6 +24,7 @@
 
 #include "common/common_types.h"
 #include "common/logging.h"
+#include "video_core/nx2_bank_dirty.h"
 #include "video_core/nx2_perf.h"
 
 #ifdef _MSC_VER
@@ -2331,6 +2332,7 @@ inline void HostWriteSlow(u64 device_addr, u64 size, const void* src = nullptr,
 
 /// Device memory and the GPU's memory manager: a host write of src's bytes is about to land.
 inline void HostWrite(u64 device_addr, u64 size, const void* src = nullptr) {
+    Nx2BankDirty::HostWrite(device_addr, size);
     if (g_enabled.load(std::memory_order_relaxed)) [[unlikely]] {
         HostWriteSlow(device_addr, size, src);
     }

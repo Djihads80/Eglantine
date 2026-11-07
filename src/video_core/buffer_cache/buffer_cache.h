@@ -112,6 +112,9 @@ void BufferCache<P>::TickFrame() {
         return;
     }
     runtime.TickFrame(slot_buffers);
+    if (Nx2BankDirty::On()) [[unlikely]] {
+        Nx2BankDirty::MaybeLog();
+    }
     if (Nx2WarProbe::On()) [[unlikely]] {
         // war_guard_probe: the native uniform bank pages bound this frame or the one before, for
         // vi2 to label traps and snapshot (the map holds at most ~256 banks).
@@ -1665,6 +1668,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                                     Nx2Perf::On(Nx2Perf::Opt::BankOncePerFrame);
         const bool skip_this_frame = once_per_frame && !Nx2Perf::Verify();
         static const bool hash_shadow = Nx2Perf::On(Nx2Perf::Opt::BankHashShadow);
+        static const bool dirty_skip = Nx2BankDirty::On();
         const bool seen_this_frame = shadow->last_frame_tick == frame_tick;
         if (Nx2WarProbe::On() && !seen_this_frame) [[unlikely]] {
             // war_guard_probe: bank pages the guest rewrote between vi2's reply and this bind.
@@ -1711,6 +1715,34 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                     const bool already_cpu_modified =
                         memory_tracker.IsRegionCpuModified(cur_addr, chunk_size);
                     u8* const shadow_dst = shadow->bytes.data() + offset_in_bank;
+                    if (dirty_skip) [[unlikely]] {
+                        // bank_dirty_skip: no mark since the last compare means unchanged.
+                        auto& dirty = Nx2BankDirty::Get();
+                        const u64 phys = Nx2BankDirty::PhysOf(ptr);
+                        bool skip = page_initialized && !already_cpu_modified &&
+                                    Nx2BankDirty::CanSkip(dirty.table, shadow->dirty, page_idx,
+                                                          phys);
+                        if (skip && Nx2Perf::Verify() &&
+                            std::memcmp(shadow_dst, ptr, chunk_size) != 0) [[unlikely]] {
+                            Nx2BankDirty::NoteNoMark(device_addr, page_idx);
+                            skip = false;
+                        }
+                        if (skip) {
+                            Nx2BankDirty::Add(Nx2BankDirty::Avoided);
+                            offset_in_bank += chunk_size;
+                            ++page_idx;
+                            continue;
+                        }
+                        Nx2BankDirty::Add(Nx2BankDirty::Compared);
+                        // Armed before the bytes are read: a later write traps and marks it.
+                        if (Nx2BankDirty::BeforeCompare(dirty.table, shadow->dirty, page_idx,
+                                                        phys)) {
+                            const bool armed = device_memory.Nx2BankArm(cur_addr, phys);
+                            Nx2BankDirty::Add(armed ? Nx2BankDirty::Rearms
+                                                    : Nx2BankDirty::ArmFailures);
+                            Nx2BankDirty::Armed(shadow->dirty, page_idx, armed);
+                        }
+                    }
                     bool changed;
                     bool bytes_changed = false;
                     if (!hash_shadow) {
@@ -1771,7 +1803,13 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                     offset_in_bank += chunk_size;
                     ++page_idx;
                 }
+                if (dirty_skip) [[unlikely]] {
+                    Nx2BankDirty::EndPass(shadow->dirty, frame_tick);
+                }
             }
+        } else if (dirty_skip) [[unlikely]] {
+            // GPU-modified: the next compare checks every page.
+            shadow->dirty.force = true;
         }
     }
     const bool use_fast_buffer = needs_alignment_stream

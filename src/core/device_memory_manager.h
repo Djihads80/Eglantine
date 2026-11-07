@@ -151,6 +151,11 @@ public:
     /// guest address vaddr (true when that record overflowed).
     bool Nx2CowMappedSinceCollect(VAddr vaddr);
 
+    /// bank_dirty_skip (video_core/nx2_bank_dirty.h): write-protects the guest page behind device
+    /// address while it still maps physical page phys (>> 12). Returns whether a guest write of
+    /// that page now traps (or reaches the tracker's write path).
+    bool Nx2BankArm(DAddr address, u64 phys);
+
 private:
     struct TranslationEntry {
         DAddr guest_page{};

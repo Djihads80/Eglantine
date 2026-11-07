@@ -533,6 +533,13 @@ public:
     Nx2CowArmResult Nx2CowArm();
 
     /**
+     * bank_dirty_skip (video_core/nx2_bank_dirty.h): write-protects guest page vaddr while it maps
+     * physical page phys (>> 12), so its next guest write traps once and marks the page. Returns
+     * whether a write of it now traps or takes the tracker's write path.
+     */
+    bool Nx2BankDirtyArm(Common::ProcessAddress vaddr, u64 phys);
+
+    /**
      * run_ahead_raw_probe (video_core/nx2_war_probe.h, measurement only), at vi2's reply: ORs into
      * info each guest page's (vaddr >> 12) type (Nx2Raw::InfoTypeMask) and Nx2Raw::InfoArmed
      * when the cow arm holds it.

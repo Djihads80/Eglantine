@@ -43,6 +43,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_bank_dirty.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_war_probe.h"
 #include "video_core/surface.h"
@@ -539,6 +540,7 @@ public:
         u32 initialized_mask{};
         /// bank_hash_shadow: PageHash of each page's last bytes (17: an unaligned bank spans 17)
         std::array<u64, 17> page_hash{};
+        Nx2BankDirty::ShadowPages dirty{}; ///< bank_dirty_skip
         std::array<u8, 0x10000> bytes{};  ///< With bank_hash_shadow, written only under Verify
     };
     std::unordered_map<DAddr, NativeUniformBankShadow> native_indirect_uniform_shadow;
