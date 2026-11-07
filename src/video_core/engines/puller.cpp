@@ -200,6 +200,17 @@ void NoteEarlyMetSync() {
     }
 }
 
+// EDEN_NX2_PERF_VERIFY with sync_free_fetch: every other early-met acquire skips the drain (and
+// VerifyTriggerEarly). Otherwise the drain leaves no fetch sync wait to skip, and the
+// sync_free_fetch verify in DmaPusher::WaitForListFetchSync never runs.
+bool SyncFreeVerifySkipsDrain() {
+    if (!VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SyncFreeFetch)) {
+        return false;
+    }
+    static std::atomic<u64> met{};
+    return (met.fetch_add(1, std::memory_order_relaxed) & 1) != 0;
+}
+
 // MacroReadWriterSet: whether the proven draws queued past `consumed` still store nothing, as
 // checked in Maxwell3D::FrontDmaReadEarly. `exact`: Opt::ExactNotedWrites.
 bool QueuedDrawProofsHold(const VideoCommon::GpuSplit& split, u64 consumed, bool exact) {
@@ -837,7 +848,7 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                                            Nx2Perf::On(Nx2Perf::Opt::MacroReadWriterSet),
                                            &proof_changed);
             const bool met = early && acquire.Matches(*early);
-            if (met && !Nx2Perf::Verify()) {
+            if (met && (!Nx2Perf::Verify() || SyncFreeVerifySkipsDrain())) {
                 VideoCommon::Nx2Profile::Add(
                     VideoCommon::Nx2Profile::Counter::AcquireTriggerEarly, 1);
                 NoteEarlyMetSync();
