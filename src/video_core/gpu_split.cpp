@@ -1032,6 +1032,9 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     Common::SetCurrentThreadName("GPUBack");
     on_back_thread = true;
     Nx2Ledger::StartBackThread();
+    if (Nx2Snap::OwnOn()) [[unlikely]] {
+        Nx2Snap::t_gpu_own = true; // run_ahead_own_write_probe: the back's writes are GPU writes
+    }
     back_running.store(true, std::memory_order_release);
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();

@@ -1568,6 +1568,7 @@ void TextureCache<P>::PopAsyncFlushes() {
             return;
         }
         auto download_map = std::move(async_buffers.front());
+        const Nx2Snap::OwnScope own_scope; // run_ahead_own_write_probe: downloads
         for (size_t i = download_ids.size(); i > 0; i--) {
             auto& download_info = download_ids[i - 1];
             auto& download_buffer = download_map[download_info.async_buffer_id];

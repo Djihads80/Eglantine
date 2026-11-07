@@ -369,12 +369,51 @@ inline thread_local bool t_front_macro = false;
 inline thread_local const void* t_site = nullptr;
 inline void NotePreImage(u32 pool_slot, bool tracked);
 inline void Hazard(u64 phys, u32 pool_slot, const u8* pre, u64 bytes, size_t role,
-                   size_t category, u32 touch_bits, u32 gen, u64 device_addr);
+                   size_t category, u32 touch_bits, u32 gen, u64 device_addr, u64 len);
 /// run_ahead_overlay_budget (with the snapshot probe).
 inline bool BudgetOn();
 /// The read Nx2Cow::ReadSlow is classifying is a GetSpan over several pages.
 inline thread_local bool t_span = false;
 inline void HostWritePages(u64 device_addr, u64 size);
+
+/// run_ahead_own_write_probe (with the overlay budget).
+inline bool OwnOn();
+/// Set once the own-write tables exist; every hook site tests it first.
+inline std::atomic<bool> g_own{false};
+/// The calling thread writes guest memory as the emulated GPU (fencing thread, split back,
+/// OwnScope sites).
+inline thread_local bool t_gpu_own = false;
+inline void OwnHostWrite(u64 device_addr, u64 size, const void* src, const void* site);
+inline void OwnPointerWrite(const void* host, u64 size, const void* src);
+
+/// A host write site that stores GPU results (downloads): its writes count as GPU-own.
+class OwnScope {
+public:
+    OwnScope() : on{g_own.load(std::memory_order_relaxed)} {
+        if (on) [[unlikely]] {
+            previous = t_gpu_own;
+            t_gpu_own = true;
+        }
+    }
+    ~OwnScope() {
+        if (on) [[unlikely]] {
+            t_gpu_own = previous;
+        }
+    }
+    OwnScope(const OwnScope&) = delete;
+    OwnScope& operator=(const OwnScope&) = delete;
+
+private:
+    bool on;
+    bool previous = false;
+};
+
+/// A raw store of GPU results into guest memory (host pointer) that bypasses Nx2Cow::HostWrite.
+inline void NoteOwnPointer(const void* host, u64 size, const void* src) {
+    if (g_own.load(std::memory_order_relaxed)) [[unlikely]] {
+        OwnPointerWrite(host, size, src);
+    }
+}
 } // namespace VideoCommon::Nx2Snap
 
 // Nx2Perf run_ahead_ledger (measurement only): the device pages the split back reads for frame N
@@ -2177,7 +2216,7 @@ inline bool ReadPage(size_t role, size_t category, u64 phys, const u8* host, u64
         AddCat(role, category, HazardBytes, hazard);
         if (hazard != 0 && Nx2Snap::On()) [[unlikely]] {
             Nx2Snap::Hazard(phys, entry - 1, pre, hazard, role, category, old, gen,
-                            (device_page << PageBits) + offset);
+                            (device_page << PageBits) + offset, len);
         }
     }
     if (check) {
@@ -2248,11 +2287,17 @@ inline void ReadSlow(u64 device_addr, u64 size, Nx2Ledger::NoteKind kind, const 
     }
 }
 
-/// Device memory, before a host write of [device_addr, device_addr + size) lands.
-inline void HostWriteSlow(u64 device_addr, u64 size) {
+/// Device memory, before a host write of [device_addr, device_addr + size) lands. src: the bytes
+/// it writes (or nullptr), site: its caller (run_ahead_own_write_probe).
+inline void HostWriteSlow(u64 device_addr, u64 size, const void* src = nullptr,
+                          const void* site = nullptr) {
     State& s = Get();
     if (Nx2Snap::BudgetOn()) [[unlikely]] {
         Nx2Snap::HostWritePages(device_addr, size);
+    }
+    if (Nx2Snap::g_own.load(std::memory_order_relaxed)) [[unlikely]] {
+        Nx2Snap::OwnHostWrite(device_addr, size, src,
+                              site != nullptr ? site : NX2_RETURN_ADDRESS());
     }
     if (size == 0 || !s.open.load(std::memory_order_acquire)) {
         return;
@@ -2284,10 +2329,10 @@ inline void HostWriteSlow(u64 device_addr, u64 size) {
     }
 }
 
-/// Device memory and the GPU's memory manager: a host write is about to land.
-inline void HostWrite(u64 device_addr, u64 size) {
+/// Device memory and the GPU's memory manager: a host write of src's bytes is about to land.
+inline void HostWrite(u64 device_addr, u64 size, const void* src = nullptr) {
     if (g_enabled.load(std::memory_order_relaxed)) [[unlikely]] {
-        HostWriteSlow(device_addr, size);
+        HostWriteSlow(device_addr, size, src);
     }
 }
 
@@ -3724,6 +3769,551 @@ inline void NoteVi2Delta(u64 phys) {
     Get().vi2_delta_phys.store(phys, std::memory_order_relaxed);
 }
 
+// Nx2Perf run_ahead_own_write_probe (measurement only, with the overlay budget): the byte ranges
+// the emulated GPU writes into guest memory each epoch (the fencing thread, the split back, query
+// results, downloads). The front_macro residual and the unarmed_changed pages are split into
+// bytes inside those ranges (GPU-own, a write-through overlay covers them) and the rest (guest).
+inline bool OwnOn() {
+    static const bool on = [] {
+        if (!Nx2Perf::On(Nx2Perf::Opt::RunAheadOwnWriteProbe)) {
+            return false;
+        }
+        if (!BudgetOn()) {
+            LOG_WARNING(HW_GPU, "Nx2Perf run_ahead_own_write_probe: needs frames_ahead, "
+                                "run_ahead_ledger, run_ahead_cow_probe, run_ahead_snapshot_probe "
+                                "and run_ahead_overlay_budget on; the probe stays off");
+            return false;
+        }
+        return true;
+    }();
+    return on;
+}
+
+enum class OwnClass : u8 { Own, Guest, Unknown };
+
+/// The own ranges of one page in one epoch, as OwnRangeTable::Find saw them.
+struct OwnPage {
+    static constexpr u32 MaxRanges = 8;
+    std::array<u16, MaxRanges> begin{};
+    std::array<u16, MaxRanges> end{};
+    u32 count = 0;
+    bool overflow = false; ///< The page had more ranges than it keeps
+    bool lost = false;     ///< Not found, and an insert found no slot this epoch
+
+    bool Contains(u32 offset) const {
+        for (u32 i = 0; i < count; ++i) {
+            if (offset >= begin[i] && offset < end[i]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    OwnClass Classify(u32 offset) const {
+        if (Contains(offset)) {
+            return OwnClass::Own;
+        }
+        return overflow || lost ? OwnClass::Unknown : OwnClass::Guest;
+    }
+};
+
+/// Byte ranges GPU-own writers wrote, keyed by physical page and epoch: open addressing,
+/// lock-free inserts, fixed size. Overlapping or touching ranges merge.
+struct OwnRangeTable {
+    static constexpr u32 Slots = 4096;
+    static constexpr u32 MaxProbes = 64;
+    static constexpr u32 MaxRanges = OwnPage::MaxRanges;
+    static constexpr u32 PageBytes = 4096;
+
+    struct Slot {
+        std::atomic<u64> key{0}; ///< gen << 32 | phys + 1, 0 when empty
+        std::atomic<u32> count{0};
+        std::atomic<u32> overflow{0};
+        std::array<std::atomic<u32>, MaxRanges> range{}; ///< Pack(gen, begin, end), 0 unset
+    };
+
+    std::array<Slot, Slots> slots{};
+    std::array<std::atomic<u32>, Slots> used{};
+    std::atomic<u32> used_count{0};
+    std::atomic<u32> lost_gen{0}; ///< gen + 1 of an insert that found no slot
+    std::atomic<u64> table_overflow{0};
+    std::atomic<u64> range_overflow{0};
+
+    static u64 Key(u64 phys, u32 gen) {
+        return (u64{gen} << 32) | (phys + 1);
+    }
+    static u32 Home(u64 key) {
+        static_assert(Slots == 1U << 12);
+        return static_cast<u32>((key * 0x9E3779B97F4A7C15ULL) >> 52);
+    }
+    static u32 Pack(u32 gen, u32 begin, u32 end) {
+        return ((gen & 63) << 26) | (begin << 13) | end;
+    }
+    static u32 Tag(u32 range) {
+        return range >> 26;
+    }
+    static u32 Begin(u32 range) {
+        return (range >> 13) & 0x1fff;
+    }
+    static u32 End(u32 range) {
+        return range & 0x1fff;
+    }
+
+    /// [begin, end) of phys was written in gen. Returns false when no slot was free.
+    bool Insert(u64 phys, u32 gen, u32 begin, u32 end) {
+        if (begin >= end || end > PageBytes) {
+            return true;
+        }
+        const u64 want = Key(phys, gen);
+        u32 slot = Home(want);
+        for (u32 probes = 0; probes < MaxProbes; ++probes, slot = (slot + 1) & (Slots - 1)) {
+            u64 current = slots[slot].key.load(std::memory_order_acquire);
+            if (current == 0 &&
+                slots[slot].key.compare_exchange_strong(current, want, std::memory_order_acq_rel)) {
+                const u32 n = used_count.fetch_add(1, std::memory_order_acq_rel);
+                used[n & (Slots - 1)].store(slot, std::memory_order_release);
+                current = want;
+            }
+            if (current == want) {
+                AddRange(slots[slot], gen, begin, end);
+                return true;
+            }
+        }
+        table_overflow.fetch_add(1, std::memory_order_relaxed);
+        lost_gen.store(gen + 1, std::memory_order_release);
+        return false;
+    }
+
+    OwnPage Find(u64 phys, u32 gen) const {
+        OwnPage page;
+        const u64 want = Key(phys, gen);
+        u32 slot = Home(want);
+        for (u32 probes = 0; probes < MaxProbes; ++probes, slot = (slot + 1) & (Slots - 1)) {
+            const u64 current = slots[slot].key.load(std::memory_order_acquire);
+            if (current == want) {
+                const Slot& e = slots[slot];
+                page.overflow = e.overflow.load(std::memory_order_acquire) != 0;
+                const u32 n = (std::min)(e.count.load(std::memory_order_acquire), MaxRanges);
+                for (u32 i = 0; i < n; ++i) {
+                    const u32 range = e.range[i].load(std::memory_order_acquire);
+                    if (range == 0 || Tag(range) != (gen & 63)) {
+                        continue;
+                    }
+                    page.begin[page.count] = static_cast<u16>(Begin(range));
+                    page.end[page.count] = static_cast<u16>(End(range));
+                    ++page.count;
+                }
+                return page;
+            }
+            if (current == 0) {
+                break;
+            }
+        }
+        page.lost = lost_gen.load(std::memory_order_acquire) == gen + 1;
+        return page;
+    }
+
+    /// vi2, for a table no writer of the epoch it holds is expected to use any more.
+    void Clear() {
+        const u32 n = (std::min)(used_count.load(std::memory_order_acquire), Slots);
+        for (u32 i = 0; i < n; ++i) {
+            Slot& e = slots[used[i].load(std::memory_order_acquire)];
+            e.count.store(0, std::memory_order_relaxed);
+            e.overflow.store(0, std::memory_order_relaxed);
+            for (auto& range : e.range) {
+                range.store(0, std::memory_order_relaxed);
+            }
+            e.key.store(0, std::memory_order_release);
+        }
+        used_count.store(0, std::memory_order_release);
+        lost_gen.store(0, std::memory_order_release);
+    }
+
+private:
+    void AddRange(Slot& e, u32 gen, u32 begin, u32 end) {
+        const u32 tag = gen & 63;
+        const u32 n = (std::min)(e.count.load(std::memory_order_acquire), MaxRanges);
+        for (u32 i = 0; i < n; ++i) {
+            u32 range = e.range[i].load(std::memory_order_acquire);
+            while (range != 0 && Tag(range) == tag && begin <= End(range) && end >= Begin(range)) {
+                const u32 merged_begin = (std::min)(begin, Begin(range));
+                const u32 merged_end = (std::max)(end, End(range));
+                if (merged_begin == Begin(range) && merged_end == End(range)) {
+                    return;
+                }
+                if (e.range[i].compare_exchange_weak(range, Pack(gen, merged_begin, merged_end),
+                                                     std::memory_order_acq_rel)) {
+                    return;
+                }
+            }
+        }
+        const u32 index = e.count.fetch_add(1, std::memory_order_acq_rel);
+        if (index >= MaxRanges) {
+            e.overflow.store(1, std::memory_order_release);
+            range_overflow.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        e.range[index].store(Pack(gen, begin, end), std::memory_order_release);
+    }
+};
+
+/// The ring's own writes of one page in one epoch, newest first (Verify).
+struct OwnRefs {
+    static constexpr u32 Max = 64;
+    std::array<u16, Max> begin{};
+    std::array<u16, Max> end{};
+    std::array<u64, Max> data{};
+    u32 count = 0;
+    bool complete = false; ///< Every own write of the page in the epoch is here
+
+    int Covering(u32 offset) const {
+        for (u32 i = 0; i < count; ++i) {
+            if (offset >= begin[i] && offset < end[i]) {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    }
+};
+
+/// Verify: each own write's page, range and bytes, newest last; old writes are overwritten.
+struct OwnRing {
+    static constexpr u64 Entries = 65536;
+    static constexpr u64 Bytes = u64{8} << 20;
+    static constexpr u64 NoData = ~u64{0};
+
+    struct Entry {
+        std::atomic<u64> seq{0}; ///< Claim index + 1 once written
+        std::atomic<u64> key{0};
+        std::atomic<u32> range{0}; ///< begin << 16 | end
+        std::atomic<u64> data{0};  ///< Byte position, or NoData
+    };
+
+    std::unique_ptr<Entry[]> entries = std::make_unique<Entry[]>(Entries);
+    std::unique_ptr<u8[]> bytes = std::make_unique<u8[]>(Bytes);
+    std::atomic<u64> claim{0};
+    std::atomic<u64> byte_claim{0};
+
+    void Push(u64 phys, u32 gen, u32 begin, u32 end, const u8* src) {
+        const u64 n = claim.fetch_add(1, std::memory_order_acq_rel);
+        u64 data = NoData;
+        if (src != nullptr) {
+            const u64 len = end - begin;
+            data = byte_claim.fetch_add(len, std::memory_order_acq_rel);
+            const u64 at = data % Bytes;
+            const u64 first = (std::min)(len, Bytes - at);
+            std::memcpy(bytes.get() + at, src, first);
+            std::memcpy(bytes.get(), src + first, len - first);
+        }
+        Entry& e = entries[n % Entries];
+        e.seq.store(0, std::memory_order_release);
+        e.key.store(OwnRangeTable::Key(phys, gen), std::memory_order_relaxed);
+        e.range.store((begin << 16) | end, std::memory_order_relaxed);
+        e.data.store(data, std::memory_order_relaxed);
+        e.seq.store(n + 1, std::memory_order_release);
+    }
+
+    OwnRefs Collect(u64 phys, u32 gen) const {
+        OwnRefs refs;
+        const u64 want = OwnRangeTable::Key(phys, gen);
+        const u64 head = claim.load(std::memory_order_acquire);
+        const u64 oldest = head > Entries ? head - Entries : 0;
+        refs.complete = oldest == 0;
+        for (u64 n = head; n > oldest; --n) {
+            const Entry& e = entries[(n - 1) % Entries];
+            if (e.seq.load(std::memory_order_acquire) != n) {
+                continue;
+            }
+            const u64 key = e.key.load(std::memory_order_relaxed);
+            const u32 range = e.range.load(std::memory_order_relaxed);
+            const u64 data = e.data.load(std::memory_order_relaxed);
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (e.seq.load(std::memory_order_relaxed) != n) {
+                continue;
+            }
+            // A writer that read gen - 1 just before vi2's Begin can push after early gen
+            // writes (fence releases land right at the reply): stop two epochs back.
+            if (static_cast<u32>(key >> 32) + 1 < gen) {
+                refs.complete = true; // Reached an older epoch
+                break;
+            }
+            if (key != want) {
+                continue;
+            }
+            if (refs.count == OwnRefs::Max) {
+                refs.complete = false;
+                break;
+            }
+            refs.begin[refs.count] = static_cast<u16>(range >> 16);
+            refs.end[refs.count] = static_cast<u16>(range & 0xffff);
+            refs.data[refs.count] = data;
+            ++refs.count;
+        }
+        return refs;
+    }
+
+    /// The byte the ref's write stored at offset; false when not kept or overwritten since.
+    bool ByteOf(const OwnRefs& refs, int ref, u32 offset, u8& out) const {
+        const u64 data = refs.data[ref];
+        if (data == NoData) {
+            return false;
+        }
+        const u64 position = data + (offset - refs.begin[ref]);
+        out = bytes[position % Bytes];
+        std::atomic_thread_fence(std::memory_order_acquire);
+        return byte_claim.load(std::memory_order_acquire) <= position + Bytes;
+    }
+};
+
+inline constexpr size_t NumOwnTables = 3; ///< By gen % 3: late readers keep their table
+
+enum OwnCounter : size_t {
+    OwnWrites,
+    OwnBytes,
+    OwnPointerWrites,
+    OwnPointerBytes,
+    OwnOutsideBytes, ///< Own bytes outside the physical backing (not recorded)
+    OwnResidOwn,
+    OwnResidGuest,
+    OwnResidUnknown,
+    Who2Writes, ///< Host writes by a thread without a GPU role, not GPU-own, epoch open
+    Who2Bytes,
+    Who2SiteOverflow,
+    FrontNonOwnBytes,
+    OwnVerifyChecked,
+    OwnVerifyUnchecked,
+    OwnVerifyDifferences,
+    NumOwnCounters,
+};
+
+struct OwnState {
+    std::mutex init_mutex;
+    std::array<std::unique_ptr<OwnRangeTable>, NumOwnTables> tables;
+    std::unique_ptr<OwnRing> ring; ///< Verify only
+    std::array<std::atomic<u64>, NumOwnCounters> c{};
+    std::array<std::atomic<uintptr_t>, NumSites> site_addr{};
+    std::array<std::atomic<u64>, NumSites> site_bytes{};
+};
+
+inline OwnState& OwnGet() {
+    static OwnState state;
+    return state;
+}
+
+inline void OwnAdd(OwnCounter counter, u64 amount = 1) {
+    OwnGet().c[counter].fetch_add(amount, std::memory_order_relaxed);
+}
+
+template <typename... Args>
+void OwnVerifyDifference(fmt::format_string<Args...> format, Args&&... args) {
+    const u64 count =
+        OwnGet().c[OwnVerifyDifferences].fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 64) {
+        LOG_ERROR(HW_GPU, "Nx2Perf run_ahead_own_write_probe: {} ({} so far)",
+                  fmt::format(format, std::forward<Args>(args)...), count);
+    }
+}
+
+/// vi2, once: the tables (and the Verify ring); the hooks record from then on.
+inline void OwnInit() {
+    OwnState& o = OwnGet();
+    std::scoped_lock lock{o.init_mutex};
+    if (g_own.load(std::memory_order_acquire)) {
+        return;
+    }
+    for (auto& table : o.tables) {
+        table = std::make_unique<OwnRangeTable>();
+    }
+    if (Nx2Perf::Verify()) {
+        o.ring = std::make_unique<OwnRing>();
+    }
+    g_own.store(true, std::memory_order_release);
+}
+
+inline void OwnRecord(u64 phys, u64 begin, u64 end, const u8* src) {
+    OwnState& o = OwnGet();
+    const u32 gen = Nx2Cow::Get().gen.load(std::memory_order_acquire);
+    o.tables[gen % NumOwnTables]->Insert(phys, gen, static_cast<u32>(begin),
+                                         static_cast<u32>(end));
+    if (o.ring) [[unlikely]] {
+        o.ring->Push(phys, gen, static_cast<u32>(begin), static_cast<u32>(end), src);
+    }
+}
+
+inline void NoteWho2Site(const void* site, u64 bytes) {
+    OwnState& o = OwnGet();
+    const uintptr_t address = site == nullptr ? 1 : reinterpret_cast<uintptr_t>(site);
+    size_t i = static_cast<size_t>((u64{address} * 0x9E3779B97F4A7C15ULL) >> 59);
+    for (size_t probes = 0; probes < NumSites; ++probes, i = (i + 1) % NumSites) {
+        uintptr_t current = o.site_addr[i].load(std::memory_order_acquire);
+        if (current == 0 &&
+            o.site_addr[i].compare_exchange_strong(current, address, std::memory_order_acq_rel)) {
+            current = address;
+        }
+        if (current == address) {
+            o.site_bytes[i].fetch_add(bytes, std::memory_order_relaxed);
+            return;
+        }
+    }
+    OwnAdd(Who2SiteOverflow);
+}
+
+/// Nx2Cow::HostWriteSlow: GPU-own writes record their ranges; the others count by site.
+inline void OwnHostWrite(u64 device_addr, u64 size, const void* src, const void* site) {
+    if (size == 0 || !g_own.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (!t_gpu_own) {
+        if (Nx2Cow::Get().open.load(std::memory_order_acquire)) {
+            if (Nx2Cow::t_role == Nx2Cow::Role::None) {
+                OwnAdd(Who2Writes);
+                OwnAdd(Who2Bytes, size);
+                NoteWho2Site(site, size);
+            } else if (Nx2Cow::t_role == Nx2Cow::Role::Front) {
+                OwnAdd(FrontNonOwnBytes, size);
+            }
+        }
+        return;
+    }
+    OwnAdd(OwnWrites);
+    OwnAdd(OwnBytes, size);
+    const u8* const bytes = static_cast<const u8*>(src);
+    const u64 end = device_addr + size;
+    for (u64 page = device_addr >> PageBits; page <= (end - 1) >> PageBits; ++page) {
+        const u64 first = (std::max)(device_addr, page << PageBits);
+        const u64 last = (std::min)(end, (page + 1) << PageBits);
+        const u8* const host = Nx2Cow::DevicePointer(page << PageBits);
+        const u64 phys = host != nullptr ? Nx2Cow::PhysOf(host) : Nx2Cow::NumPhysPages;
+        if (phys >= Nx2Cow::NumPhysPages) {
+            OwnAdd(OwnOutsideBytes, last - first);
+            continue;
+        }
+        OwnRecord(phys, first - (page << PageBits), last - (page << PageBits),
+                  bytes != nullptr ? bytes + (first - device_addr) : nullptr);
+    }
+}
+
+/// NoteOwnPointer: a raw store of GPU results at a host pointer into the physical backing.
+inline void OwnPointerWrite(const void* host, u64 size, const void* src) {
+    if (host == nullptr || size == 0 || !g_own.load(std::memory_order_acquire)) {
+        return;
+    }
+    OwnAdd(OwnPointerWrites);
+    OwnAdd(OwnPointerBytes, size);
+    const uintptr_t base = Nx2Cow::Get().physical_base.load(std::memory_order_relaxed);
+    const uintptr_t at = reinterpret_cast<uintptr_t>(host);
+    if (base == 0 || at < base) {
+        OwnAdd(OwnOutsideBytes, size);
+        return;
+    }
+    const u8* const bytes = static_cast<const u8*>(src);
+    const u64 offset = at - base;
+    const u64 end = offset + size;
+    for (u64 page = offset >> PageBits; page <= (end - 1) >> PageBits; ++page) {
+        const u64 first = (std::max)(offset, page << PageBits);
+        const u64 last = (std::min)(end, (page + 1) << PageBits);
+        if (page >= Nx2Cow::NumPhysPages) {
+            OwnAdd(OwnOutsideBytes, last - first);
+            continue;
+        }
+        OwnRecord(page, first - (page << PageBits), last - (page << PageBits),
+                  bytes != nullptr ? bytes + (first - offset) : nullptr);
+    }
+}
+
+/// The class of each byte of one page that differs from its reference copy. Under Verify the
+/// ring's newest own write of the byte is the old answer: a byte classed own must still hold
+/// what that write stored.
+class OwnPageCheck {
+public:
+    OwnPageCheck(u64 phys_, u32 gen_)
+        : phys{phys_}, gen{gen_}, page{OwnGet().tables[gen_ % NumOwnTables]->Find(phys_, gen_)} {}
+
+    OwnClass Byte(u32 offset, u8 now) {
+        const OwnClass cls = page.Classify(offset);
+        const OwnState& o = OwnGet();
+        if (!o.ring || cls == OwnClass::Unknown) [[likely]] {
+            return cls;
+        }
+        if (!have_refs) {
+            refs = o.ring->Collect(phys, gen);
+            have_refs = true;
+        }
+        const int ref = refs.Covering(offset);
+        if (ref < 0) {
+            if (cls == OwnClass::Own) {
+                if (refs.complete) {
+                    OwnVerifyDifference("page {:#x}+{:#x} epoch {}: the range table says own, "
+                                        "the write ring has no own write of it",
+                                        phys << PageBits, offset, gen);
+                    return OwnClass::Guest;
+                }
+                OwnAdd(OwnVerifyUnchecked);
+            }
+            return cls;
+        }
+        if (cls == OwnClass::Guest) {
+            OwnVerifyDifference("page {:#x}+{:#x} epoch {}: the range table says guest, the "
+                                "write ring has an own write of it",
+                                phys << PageBits, offset, gen);
+        }
+        u8 stored = 0;
+        if (!o.ring->ByteOf(refs, ref, offset, stored)) {
+            OwnAdd(OwnVerifyUnchecked);
+            return OwnClass::Own;
+        }
+        if (stored != now) {
+            OwnVerifyDifference("page {:#x}+{:#x} epoch {}: classed own but holds {:#04x}, the "
+                                "newest own write stored {:#04x}",
+                                phys << PageBits, offset, gen, now, stored);
+            return OwnClass::Guest;
+        }
+        OwnAdd(OwnVerifyChecked);
+        return OwnClass::Own;
+    }
+
+private:
+    u64 phys;
+    u32 gen;
+    OwnPage page;
+    OwnRefs refs{};
+    bool have_refs = false;
+};
+
+/// BudgetResidual: the front_macro residual's differing bytes (pre-image vs now over the read)
+/// by writer. Bytes that no longer differ when re-read count as unknown, so the classes sum to
+/// the residual.
+inline void OwnResidual(u64 phys, u32 gen, const u8* pre, u64 offset, u64 len, u64 bytes) {
+    const uintptr_t base = Nx2Cow::Get().physical_base.load(std::memory_order_relaxed);
+    u64 counted = 0;
+    u64 own = 0;
+    u64 guest = 0;
+    if (base != 0 && phys < Nx2Cow::NumPhysPages && offset + len <= PageSize) {
+        const u8* const now = reinterpret_cast<const u8*>(base) + (phys << PageBits);
+        OwnPageCheck check{phys, gen};
+        for (u64 i = offset; i < offset + len && counted < bytes; ++i) {
+            const u8 value = now[i];
+            if (pre[i] == value) {
+                continue;
+            }
+            ++counted;
+            switch (check.Byte(static_cast<u32>(i), value)) {
+            case OwnClass::Own:
+                ++own;
+                break;
+            case OwnClass::Guest:
+                ++guest;
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    OwnAdd(OwnResidOwn, own);
+    OwnAdd(OwnResidGuest, guest);
+    OwnAdd(OwnResidUnknown, bytes - own - guest);
+}
+
 inline void Add(size_t counter, u64 amount = 1) {
     Get().c[counter].fetch_add(amount, std::memory_order_relaxed);
 }
@@ -3829,8 +4419,11 @@ inline void BudgetSpan(size_t role, size_t category, u64 bytes) {
 
 /// run_ahead_overlay_budget: a front_macro residual's page category and its record.
 inline void BudgetResidual(u64 phys, u32 pool_slot, u64 bytes, u32 touch_bits, u32 gen,
-                           u64 device_addr) {
+                           u64 device_addr, const u8* pre, u64 len) {
     State& s = Get();
+    if (g_own.load(std::memory_order_relaxed)) [[unlikely]] {
+        OwnResidual(phys, gen, pre, device_addr & (PageSize - 1), len, bytes);
+    }
     ResidCat cat = OtherResid;
     if (phys == s.vi2_delta_phys.load(std::memory_order_relaxed)) {
         cat = Vi2Delta;
@@ -3858,10 +4451,10 @@ inline void BudgetResidual(u64 phys, u32 pool_slot, u64 bytes, u32 touch_bits, u
     record.ready.store(true, std::memory_order_release);
 }
 
-/// Nx2Cow::ReadPage: an epoch-gen read of phys (at device_addr) got `bytes` bytes that differ
-/// from its pre-image (cow pool slot pool_slot, bytes pre).
+/// Nx2Cow::ReadPage: an epoch-gen read of len bytes of phys (at device_addr) got `bytes` bytes
+/// that differ from its pre-image (cow pool slot pool_slot, page pre).
 inline void Hazard(u64 phys, u32 pool_slot, const u8* pre, u64 bytes, size_t role,
-                   size_t category, u32 touch_bits, u32 gen, u64 device_addr) {
+                   size_t category, u32 touch_bits, u32 gen, u64 device_addr, u64 len) {
     State& s = Get();
     const bool budget = BudgetOn();
     if (budget) [[unlikely]] {
@@ -3946,7 +4539,7 @@ inline void Hazard(u64 phys, u32 pool_slot, const u8* pre, u64 bytes, size_t rol
     Add(ResReason0 + reason, bytes);
     NoteSite(t_site, bytes);
     if (budget && ResCatOf(role, category) == FrontMacro) [[unlikely]] {
-        BudgetResidual(phys, pool_slot, bytes, touch_bits, gen, device_addr);
+        BudgetResidual(phys, pool_slot, bytes, touch_bits, gen, device_addr, pre, len);
     }
 }
 
@@ -4063,6 +4656,19 @@ public:
                      "download = host-written since the previous reply, pre_copy = trapped "
                      "before S_N was copied, other");
         }
+        if (OwnOn()) [[unlikely]] {
+            own_copy_gen = std::make_unique<std::array<u32, TableSlots>>();
+            OwnInit();
+            LOG_INFO(HW_GPU,
+                     "Nx2RunAheadOwnWrite: probe on (measurement only, with "
+                     "run_ahead_overlay_budget). GPU-own writes = host writes on the fencing "
+                     "thread and the split back, query result stores and downloads; their byte "
+                     "ranges are kept per physical page and epoch. Each front_macro residual "
+                     "byte (pre-image vs now) and each unarmed_changed page's bytes (reply copy "
+                     "vs now) are classed own (inside a range), guest, or unknown (range or table "
+                     "overflow, no reply copy). Decision: PASS when resid_guest == 0 and "
+                     "unarmed_guest_outside_copy == 0");
+        }
     }
 
     /// run_ahead_overlay_budget: vi2's classifier of physical pages (Nx2Ledger::TrackerClass).
@@ -4087,6 +4693,9 @@ public:
             window_base = Take();
             epoch_base = window_base;
             have_base = true;
+            if (g_own.load(std::memory_order_relaxed)) [[unlikely]] {
+                own_base = OwnTake();
+            }
         }
         if (BudgetOn()) [[unlikely]] {
             BudgetBegin(gen);
@@ -4142,7 +4751,7 @@ public:
         const s64 built = NowNs();
         s64 budget_ns = 0;
         if (BudgetOn()) [[unlikely]] {
-            BudgetReply(t, union_pages, base);
+            BudgetReply(t, union_pages, base, gen);
             budget_ns = NowNs() - built;
         }
         u8* const pool = s.pool.get();
@@ -4331,6 +4940,12 @@ public:
             if ((bits & Nx2Cow::BitHostWritten) != 0) {
                 ++bsum.unarmed_hostw;
             }
+            if (g_own.load(std::memory_order_relaxed)) [[unlikely]] {
+                const u32 index = t.pool[slot];
+                OwnUnarmed(slot, phys, gen,
+                           index == NoPool ? nullptr : s.pool.get() + size_t{index} * PageSize,
+                           now, (bits & Nx2Cow::BitHostWritten) != 0);
+            }
         }
     }
 
@@ -4366,6 +4981,16 @@ public:
                     "Nx2Perf run_ahead_overlay_budget: {} verify differences so far", count));
                 budget_verify_logged = count;
                 budget_verify_log_ns = time;
+            }
+            if (g_own.load(std::memory_order_relaxed)) [[unlikely]] {
+                const u64 own =
+                    OwnGet().c[OwnVerifyDifferences].load(std::memory_order_relaxed);
+                if (own != own_verify_logged && time - own_verify_log_ns >= 1'000'000'000) {
+                    out.push_back(fmt::format(
+                        "Nx2Perf run_ahead_own_write_probe: {} verify differences so far", own));
+                    own_verify_logged = own;
+                    own_verify_log_ns = time;
+                }
             }
         }
         return out;
@@ -4413,12 +5038,15 @@ private:
             next[i].store(0, std::memory_order_relaxed);
         }
         s.host_target.store((gen + 1) % NumHostBitSets, std::memory_order_release);
+        if (g_own.load(std::memory_order_relaxed)) [[unlikely]] {
+            OwnGet().tables[(gen + 1) % NumOwnTables]->Clear();
+        }
     }
 
     /// run_ahead_overlay_budget, vi2 at the reply after S_N is built: the union pages' tracker
     /// state and a timed copy of those a guest write would not trap on. It writes pool pages
     /// the S_N copy right after overwrites.
-    void BudgetReply(const Table& t, u32 union_pages, uintptr_t base) {
+    void BudgetReply(const Table& t, u32 union_pages, uintptr_t base, u32 gen) {
         using TC = Nx2Ledger::TrackerClass;
         const u32 n = (std::min)(union_pages, TableSlots);
         auto& phys = *budget_phys;
@@ -4435,6 +5063,13 @@ private:
             const size_t cls = (std::min<size_t>)(classes[i], Nx2Ledger::NumTrackerClasses - 1);
             ++bsum.classes[cls];
             unprot += IsUnprotected(classes[i]) ? 1 : 0;
+        }
+        if (g_own.load(std::memory_order_relaxed)) [[unlikely]] {
+            for (u32 i = 0; i < n; ++i) {
+                if (IsUnprotected(classes[i])) {
+                    (*own_copy_gen)[t.used[i]] = gen;
+                }
+            }
         }
         u8* const pool = Get().pool.get();
         const s64 copy_start = NowNs();
@@ -4564,6 +5199,143 @@ private:
             copy_pass ? "PASS" : "FAIL", unprot99, ucopy50, arm_verdict, bsum.arm_needed,
             bsum.unarmed_changed, bsum.arm_unknown, span_verdict, span_total, resid_verdict,
             resid_total, resid_other);
+        if (g_own.load(std::memory_order_relaxed)) [[unlikely]] {
+            OwnReport(resid_total, module);
+        }
+    }
+
+    using OwnCounts = std::pair<std::array<u64, NumOwnCounters>, std::array<u64, NumSites>>;
+
+    static OwnCounts OwnTake() {
+        const OwnState& o = OwnGet();
+        OwnCounts counts{};
+        for (size_t i = 0; i < NumOwnCounters; ++i) {
+            counts.first[i] = o.c[i].load(std::memory_order_relaxed);
+        }
+        for (size_t i = 0; i < NumSites; ++i) {
+            counts.second[i] = o.site_bytes[i].load(std::memory_order_relaxed);
+        }
+        return counts;
+    }
+
+    /// run_ahead_own_write_probe, BudgetArmCheck: one unarmed_changed page's bytes against its
+    /// reply copy (nullptr: none, only a hash), by writer. hostw: host-written this epoch.
+    void OwnUnarmed(u32 slot, u64 phys, u32 gen, const u8* copy, const u8* now, bool hostw) {
+        bool any_diff = false;
+        bool any_guest = false;
+        bool any_unknown = false;
+        u32 first_guest = 0;
+        if (copy != nullptr) {
+            OwnPageCheck check{phys, gen};
+            for (u32 chunk = 0; chunk < PageSize && !any_guest; chunk += 64) {
+                if (std::memcmp(copy + chunk, now + chunk, 64) == 0) {
+                    continue;
+                }
+                for (u32 i = chunk; i < chunk + 64; ++i) {
+                    const u8 value = now[i];
+                    if (copy[i] == value) {
+                        continue;
+                    }
+                    any_diff = true;
+                    const OwnClass cls = check.Byte(i, value);
+                    if (cls == OwnClass::Guest && !any_guest) {
+                        any_guest = true;
+                        first_guest = i;
+                    } else if (cls == OwnClass::Unknown) {
+                        any_unknown = true;
+                    }
+                }
+            }
+        }
+        if (any_guest) {
+            ++osum.unarmed_guest;
+            const bool outside = (*own_copy_gen)[slot] != gen;
+            osum.unarmed_guest_outside_copy += outside ? 1 : 0;
+            osum.unarmed_guest_hostw += hostw ? 1 : 0;
+            if (osum.guest_pages < osum.guest_page.size()) {
+                osum.guest_page[osum.guest_pages++] = {(phys << PageBits) + first_guest, outside,
+                                                       hostw};
+            }
+        } else if (any_diff && !any_unknown) {
+            ++osum.unarmed_own;
+        } else {
+            ++osum.unarmed_unknown; // No reply copy, a dropped range, or no byte differs now
+        }
+    }
+
+    void OwnReport(u64 resid_total, uintptr_t module) {
+        const OwnCounts now = OwnTake();
+        const auto delta = [&](size_t counter) {
+            return now.first[counter] - own_base.first[counter];
+        };
+        const u64 r_own = delta(OwnResidOwn);
+        const u64 r_guest = delta(OwnResidGuest);
+        const u64 r_unknown = delta(OwnResidUnknown);
+        const u64 r_sum = r_own + r_guest + r_unknown;
+        const u64 u_sum = osum.unarmed_own + osum.unarmed_guest + osum.unarmed_unknown;
+        // Who=2 writes that are not GPU-own this window, most bytes first.
+        const OwnState& o = OwnGet();
+        std::array<std::pair<u64, uintptr_t>, NumSites> sites{};
+        for (size_t i = 0; i < NumSites; ++i) {
+            sites[i] = {now.second[i] - own_base.second[i],
+                        o.site_addr[i].load(std::memory_order_relaxed)};
+        }
+        std::sort(sites.begin(), sites.end(), std::greater<>{});
+        std::string top;
+        size_t shown = 0;
+        for (const auto& [bytes, address] : sites) {
+            if (bytes == 0 || shown == 8) {
+                continue;
+            }
+            ++shown;
+            if (address == 1) {
+                top += fmt::format(" unknown:{}", bytes);
+            } else if (module != 0 && address >= module) {
+                top += fmt::format(" {:#x}:{}", address - module, bytes);
+            } else {
+                top += fmt::format(" abs{:#x}:{}", address, bytes);
+            }
+        }
+        std::string pages;
+        for (u32 i = 0; i < osum.guest_pages; ++i) {
+            const OwnGuestPage& page = osum.guest_page[i];
+            pages += fmt::format(" {:#x}{}{}", page.address, page.outside ? "(outside)" : "",
+                                 page.hostw ? "(hostw)" : "");
+        }
+        u64 table_overflow = 0;
+        u64 range_overflow = 0;
+        for (const auto& table : o.tables) {
+            table_overflow += table->table_overflow.load(std::memory_order_relaxed);
+            range_overflow += table->range_overflow.load(std::memory_order_relaxed);
+        }
+        budget_lines[2] = fmt::format(
+            "Nx2Perf run_ahead_own_write_probe: resid_own={} resid_guest={} resid_unknown={} "
+            "(sum {} vs front_macro residual {}, mismatch {}) unarmed{{all_own,any_guest,"
+            "unknown}}={},{},{} (sum {} vs unarmed_changed {}, mismatch {}) "
+            "unarmed_guest_outside_copy={} any_guest hostw={} guest_pages(phys+first guest "
+            "byte):{} | own writes={} "
+            "bytes={} pointer writes={} bytes={} outside_bytes={}; who2_nonown writes={} "
+            "bytes={} top_who2_nonown_sites_rva(base {:#x}):{} site_overflow={}; "
+            "front_nonown_bytes={}; table_overflow={} range_overflow={} (all windows); verify "
+            "own_checked={} unchecked={} own_verify_differences={}",
+            r_own, r_guest, r_unknown, r_sum, resid_total,
+            static_cast<s64>(resid_total - r_sum), osum.unarmed_own, osum.unarmed_guest,
+            osum.unarmed_unknown, u_sum, bsum.unarmed_changed,
+            static_cast<s64>(bsum.unarmed_changed - u_sum), osum.unarmed_guest_outside_copy,
+            osum.unarmed_guest_hostw, pages, delta(OwnWrites), delta(OwnBytes), delta(OwnPointerWrites),
+            delta(OwnPointerBytes), delta(OwnOutsideBytes), delta(Who2Writes), delta(Who2Bytes),
+            module, top, delta(Who2SiteOverflow), delta(FrontNonOwnBytes), table_overflow,
+            range_overflow, delta(OwnVerifyChecked), delta(OwnVerifyUnchecked),
+            now.first[OwnVerifyDifferences]);
+        const bool pass = r_guest == 0 && osum.unarmed_guest_outside_copy == 0;
+        budget_lines[3] = fmt::format(
+            "Nx2Perf run_ahead_own_write_probe: decision {} (resid_guest {} B, needs 0; "
+            "unarmed_guest_outside_copy {}, needs 0; unknown: resid {} B, unarmed {} pages){}",
+            pass ? "PASS" : "FAIL", r_guest, osum.unarmed_guest_outside_copy, r_unknown,
+            osum.unarmed_unknown,
+            pass ? "" : "; close the writers: the who2 sites above, guest pages listed");
+        own_base = now;
+        osum = OwnSums{};
     }
 
     struct Sums {
@@ -4748,10 +5520,31 @@ private:
     std::unique_ptr<std::array<u8, TableSlots>> budget_class;
     std::function<void(std::span<const u32>, std::span<u8>)> budget_classify;
     BudgetSums bsum{};
-    std::array<std::string, 2> budget_lines{};
+    std::array<std::string, 4> budget_lines{};
     u32 records_logged = 0;
     u64 budget_verify_logged = 0;
     s64 budget_verify_log_ns = 0;
+
+    // run_ahead_own_write_probe
+    struct OwnGuestPage {
+        u64 address = 0; ///< Physical address of its first guest byte
+        bool outside = false;
+        bool hostw = false;
+    };
+    struct OwnSums {
+        u64 unarmed_own = 0;
+        u64 unarmed_guest = 0;
+        u64 unarmed_unknown = 0;
+        u64 unarmed_guest_outside_copy = 0;
+        u64 unarmed_guest_hostw = 0;
+        std::array<OwnGuestPage, 8> guest_page{};
+        u32 guest_pages = 0;
+    };
+    std::unique_ptr<std::array<u32, TableSlots>> own_copy_gen; ///< Gen a slot was in the copy set
+    OwnSums osum{};
+    OwnCounts own_base{};
+    u64 own_verify_logged = 0;
+    s64 own_verify_log_ns = 0;
 };
 
 } // namespace VideoCommon::Nx2Snap

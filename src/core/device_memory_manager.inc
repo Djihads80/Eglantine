@@ -510,7 +510,7 @@ const T* DeviceMemoryManager<Traits>::GetPointer(DAddr address) const {
 template <typename Traits>
 template <typename T>
 void DeviceMemoryManager<Traits>::Write(DAddr address, T value) {
-    VideoCommon::Nx2Cow::HostWrite(address, sizeof(T));
+    VideoCommon::Nx2Cow::HostWrite(address, sizeof(T), &value);
     VideoCommon::Nx2Cow::SkipNextPointer();
     T* ptr = GetPointer<T>(address);
     if (!ptr) [[unlikely]] {
@@ -610,7 +610,7 @@ void DeviceMemoryManager<Traits>::ReadBlock(DAddr address, void* dest_pointer, s
 
 template <typename Traits>
 void DeviceMemoryManager<Traits>::WriteBlock(DAddr address, const void* src_pointer, size_t size) {
-    VideoCommon::Nx2Cow::HostWrite(address, size);
+    VideoCommon::Nx2Cow::HostWrite(address, size, src_pointer);
     WalkBlock(
         address, size,
         [&](size_t copy_amount, DAddr current_vaddr) {
@@ -678,7 +678,7 @@ void DeviceMemoryManager<Traits>::ReadBlockUnsafe(DAddr address, void* dest_poin
 template <typename Traits>
 void DeviceMemoryManager<Traits>::WriteBlockUnsafe(DAddr address, const void* src_pointer,
                                                    size_t size) {
-    VideoCommon::Nx2Cow::HostWrite(address, size);
+    VideoCommon::Nx2Cow::HostWrite(address, size, src_pointer);
     WalkBlock(
         address, size,
         [&](size_t copy_amount, DAddr current_vaddr) {
