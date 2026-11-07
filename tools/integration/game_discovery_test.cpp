@@ -66,6 +66,13 @@ int main() {
   touch(root / "incomplete/romfs/actual-game.nsp");
   Check(discover(root, true).files.size() == 6);
 
+  const auto extra = root / "additional-layouts";
+  dump(extra / "flat/update");
+  dump(extra / "plural/updates");
+  dump(extra / "nested/base/update/917504");
+  Check(discover(extra, false).files.size() == 3);
+  Check(discover(extra, true).files.size() == 3);
+
   unsigned calls{};
   const auto cancelled = GameListDiscovery::Discover(
       root, true, supported, [&] { return ++calls > 3; });

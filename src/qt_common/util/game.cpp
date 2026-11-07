@@ -5,6 +5,7 @@
 
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
+#include "core/core.h"
 #include "core/file_sys/savedata_factory.h"
 #include "core/hle/service/am/am_types.h"
 #include "frontend_common/content_manager.h"
@@ -421,7 +422,11 @@ void CreateShortcut(const std::string& game_path, const u64 program_id,
                                    QtCommon::system->GetContentProvider()};
     const auto control = pm.GetControlMetadata();
     const auto loader = Loader::GetLoader(
-        *QtCommon::system, QtCommon::vfs->OpenFile(game_path, FileSys::OpenMode::Read));
+        *QtCommon::system, Core::GetGameFileFromPath(QtCommon::vfs, game_path));
+    if (!loader) {
+        LOG_ERROR(Frontend, "Could not load shortcut metadata from {}", game_path);
+        return;
+    }
 
     std::string game_title{game_title_};
 

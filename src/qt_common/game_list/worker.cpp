@@ -9,10 +9,13 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include <QDir>
+#include <QDirIterator>
+#include <QHash>
 #include <QFile>
 #include <QFileInfo>
 #include <QSettings>
@@ -183,48 +186,89 @@ QString FormatGameName(const std::string& physical_name) {
     return physical_name_as_qstring;
 }
 
-// Loose ExeFS dumps (<game>/exefs/main, <game>/base/exefs/main, updates in
-// <game>/updates/<title id>/exefs/main) have no control data, so they are named after their
-// game folder.
-QString LooseExeFSName(const std::string& physical_name) {
-    QDir dir = QFileInfo(QString::fromStdString(physical_name)).dir();
-    if (dir.dirName().compare(QStringLiteral("exefs"), Qt::CaseInsensitive) != 0 || !dir.cdUp()) {
-        return {};
+QDir ExtractedGameDirectory(const std::string& physical_name) {
+    QDir directory = QFileInfo(QString::fromStdString(physical_name)).dir();
+    if (directory.dirName().compare(QStringLiteral("exefs"), Qt::CaseInsensitive) != 0 ||
+        !directory.cdUp()) {
+        return QFileInfo(QString::fromStdString(physical_name)).dir();
     }
-
-    // Storage levels sit between the game folder and its content directories.
-    const auto is_storage_level = [](const QString& name) {
-        if (name.compare(QStringLiteral("base"), Qt::CaseInsensitive) == 0 ||
-            name.compare(QStringLiteral("update"), Qt::CaseInsensitive) == 0 ||
-            name.compare(QStringLiteral("updates"), Qt::CaseInsensitive) == 0) {
-            return true;
-        }
-        return !name.isEmpty() &&
-               std::all_of(name.cbegin(), name.cend(), [](QChar c) {
-                   return c.isDigit() || (c >= QLatin1Char('a') && c <= QLatin1Char('f')) ||
-                          (c >= QLatin1Char('A') && c <= QLatin1Char('F'));
-               });
+    const auto is_update = [](const QString& name) {
+        return name.compare(QStringLiteral("update"), Qt::CaseInsensitive) == 0 ||
+               name.compare(QStringLiteral("updates"), Qt::CaseInsensitive) == 0;
     };
-
-    bool is_update = false;
-    while (is_storage_level(dir.dirName())) {
-        if (dir.dirName().compare(QStringLiteral("update"), Qt::CaseInsensitive) == 0 ||
-            dir.dirName().compare(QStringLiteral("updates"), Qt::CaseInsensitive) == 0) {
-            is_update = true;
+    while (true) {
+        QDir parent = directory;
+        if (!parent.cdUp()) {
+            break;
         }
-        if (!dir.cdUp()) {
-            return {};
+        if (is_update(directory.dirName()) ||
+            directory.dirName().compare(QStringLiteral("base"), Qt::CaseInsensitive) == 0 ||
+            is_update(parent.dirName())) {
+            directory = parent;
+        } else {
+            break;
         }
     }
+    return directory;
+}
 
-    const QString name = dir.dirName();
-    if (name.isEmpty()) {
-        return {};
+QString LooseExeFSName(const std::string& physical_name) {
+    return ExtractedGameDirectory(physical_name).dirName();
+}
+
+std::size_t ExtractedGameSize(const std::string& physical_name,
+                             const std::atomic_bool& stop_requested) {
+    QDirIterator files{ExtractedGameDirectory(physical_name).absolutePath(),
+                       QDir::Files | QDir::Hidden | QDir::System | QDir::NoSymLinks,
+                       QDirIterator::Subdirectories};
+    std::size_t size = 0;
+    while (!stop_requested && files.hasNext()) {
+        files.next();
+        const auto file_size = files.fileInfo().size();
+        if (file_size > 0) {
+            size += static_cast<std::size_t>(file_size);
+        }
     }
-    if (is_update && !name.contains(QStringLiteral("update"), Qt::CaseInsensitive)) {
-        return QObject::tr("%1 (update)").arg(name);
+    return size;
+}
+
+std::vector<std::filesystem::path> PreferredLooseDumps(
+    const std::vector<std::filesystem::path>& files) {
+    std::vector<std::filesystem::path> selected;
+    QHash<QString, std::size_t> titles;
+    const auto priority = [](const std::filesystem::path& path) {
+        const auto parts = QDir::fromNativeSeparators(
+                               QString::fromStdString(Common::FS::PathToUTF8String(path)))
+                               .split(QLatin1Char('/'));
+        for (qsizetype i = parts.size() - 2; i >= 0; --i) {
+            if (parts[i].compare(QStringLiteral("update"), Qt::CaseInsensitive) == 0 ||
+                parts[i].compare(QStringLiteral("updates"), Qt::CaseInsensitive) == 0) {
+                const auto version = parts.value(i + 1);
+                const bool versioned = version.compare(QStringLiteral("exefs"),
+                                                       Qt::CaseInsensitive) != 0;
+                return std::tuple{versioned ? 2 : 1, version.toULongLong(), version};
+            }
+        }
+        return std::tuple{0, qulonglong{0}, QString{}};
+    };
+    for (const auto& path : files) {
+        const auto name = Common::FS::PathToUTF8String(path);
+        if (!IsExtractedNCAMain(name) ||
+            QFileInfo(QString::fromStdString(name)).dir().dirName().compare(
+                QStringLiteral("exefs"), Qt::CaseInsensitive) != 0) {
+            selected.push_back(path);
+            continue;
+        }
+        const auto root = ExtractedGameDirectory(name).absolutePath();
+        const auto it = titles.constFind(root);
+        if (it == titles.cend()) {
+            titles.insert(root, selected.size());
+            selected.push_back(path);
+        } else if (priority(path) > priority(selected[*it])) {
+            selected[*it] = path;
+        }
     }
-    return name;
+    return selected;
 }
 
 QString FormatPatchNameVersions(const FileSys::PatchManager& patch_manager,
@@ -476,17 +520,17 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::vector<std::fi
                 const FileSys::PatchManager patch{id, system.GetFileSystemController(),
                                                   system.GetContentProvider()};
 
-                const bool loose_dump = IsExtractedNCAMain(physical_name);
-                const u64 size = loose_dump ? 0 : Common::FS::GetSize(physical_name);
+                const auto size =
+                    app_loader->GetFileType() == Loader::FileType::DeconstructedRomDirectory
+                        ? ExtractedGameSize(physical_name, stop_requested)
+                        : Common::FS::GetSize(physical_name);
+                if (stop_requested) {
+                    return;
+                }
 
                 auto entry = MakeGameListEntry(physical_name, name, size, icon, *app_loader, id,
                                                play_time_manager, patch);
 
-                if (loose_dump) {
-                    entry[GameListModel::COLUMN_SIZE]->setText(tr("Not scanned"));
-                    entry[GameListModel::COLUMN_SIZE]->setToolTip(
-                        tr("Folder size is not calculated during game discovery."));
-                }
                 auto pending = std::make_shared<PendingRow>(std::move(entry));
                 RecordEvent([=](GameListModel* model) {
                     model->AddEntry(pending->Release(), parent_dir);
@@ -579,8 +623,9 @@ void GameListWorker::run() {
                      "Discovery: candidates={} directories={} skipped_romfs={} errors={} cancelled={}",
                      discovery.files.size(), discovery.directories.size(), discovery.skipped_romfs,
                      discovery.errors, stop_requested.load());
-            ScanFileSystem(ScanTarget::FillManualContentProvider, discovery.files, game_list_dir);
-            ScanFileSystem(ScanTarget::PopulateGameList, discovery.files, game_list_dir);
+            const auto files = PreferredLooseDumps(discovery.files);
+            ScanFileSystem(ScanTarget::FillManualContentProvider, files, game_list_dir);
+            ScanFileSystem(ScanTarget::PopulateGameList, files, game_list_dir);
         } else {
             AddTitlesToGameList(game_list_dir, parent_type);
         }

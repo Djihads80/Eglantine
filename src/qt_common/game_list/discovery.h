@@ -50,16 +50,19 @@ Result Discover(const std::filesystem::path& root, bool deep, Supported supporte
     const auto probe_layouts = [&](const fs::path& path) {
         for (const auto& content : {path, path / "base"}) {
             probe(content / "exefs");
-            const auto updates = content / "updates";
-            std::error_code ec;
-            if (!fs::is_directory(updates, ec)) {
-                continue;
-            }
-            watch(updates);
-            for (fs::directory_iterator it{updates, fs::directory_options::skip_permission_denied,
-                                           ec};
-                 !ec && it != fs::directory_iterator{} && !stopped(); it.increment(ec)) {
-                probe(it->path() / "exefs");
+            for (const auto* update_name : {"updates", "update"}) {
+                const auto updates = content / update_name;
+                probe(updates / "exefs");
+                std::error_code ec;
+                if (!fs::is_directory(updates, ec)) {
+                    continue;
+                }
+                watch(updates);
+                for (fs::directory_iterator it{updates, fs::directory_options::skip_permission_denied,
+                                               ec};
+                     !ec && it != fs::directory_iterator{} && !stopped(); it.increment(ec)) {
+                    probe(it->path() / "exefs");
+                }
             }
         }
     };
