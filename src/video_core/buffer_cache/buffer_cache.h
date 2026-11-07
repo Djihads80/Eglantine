@@ -23,6 +23,7 @@
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_cmdpage_diag.h"
+#include "video_core/nx2_page_hash.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/nx2_war_probe.h"
@@ -1655,6 +1656,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         const bool once_per_frame = bank_mode != '2' && bank_mode != '3' &&
                                     Nx2Perf::On(Nx2Perf::Opt::BankOncePerFrame);
         const bool skip_this_frame = once_per_frame && !Nx2Perf::Verify();
+        static const bool hash_shadow = Nx2Perf::On(Nx2Perf::Opt::BankHashShadow);
         const bool seen_this_frame = shadow->last_frame_tick == frame_tick;
         if (Nx2WarProbe::On() && !seen_this_frame) [[unlikely]] {
             // war_guard_probe: bank pages the guest rewrote between vi2's reply and this bind.
@@ -1701,8 +1703,36 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                     const bool already_cpu_modified =
                         memory_tracker.IsRegionCpuModified(cur_addr, chunk_size);
                     u8* const shadow_dst = shadow->bytes.data() + offset_in_bank;
-                    if (!page_initialized || already_cpu_modified ||
-                        std::memcmp(shadow_dst, ptr, chunk_size) != 0) {
+                    bool changed;
+                    bool bytes_changed = false;
+                    if (!hash_shadow) {
+                        changed = !page_initialized || already_cpu_modified ||
+                                  std::memcmp(shadow_dst, ptr, chunk_size) != 0;
+                    } else {
+                        // bank_hash_shadow: compare a hash of the guest bytes, not the bytes.
+                        const u64 hash = Nx2PageHash::PageHash(ptr, chunk_size);
+                        u64& stored_hash = shadow->page_hash[page_idx];
+                        changed = !page_initialized || already_cpu_modified || hash != stored_hash;
+                        stored_hash = hash;
+                        if (Nx2Perf::Verify()) [[unlikely]] {
+                            bytes_changed = !page_initialized || already_cpu_modified ||
+                                            std::memcmp(shadow_dst, ptr, chunk_size) != 0;
+                            if (bytes_changed != changed) {
+                                static std::atomic<u64> differs{};
+                                const u64 count =
+                                    differs.fetch_add(1, std::memory_order_relaxed) + 1;
+                                if (count <= 64 || count % 1024 == 0) {
+                                    LOG_ERROR(HW_GPU,
+                                              "Nx2Perf bank_hash_shadow: page decision differs "
+                                              "(bank {:#x} page {} bytes {} hash {}, {} so far)",
+                                              device_addr, page_idx, bytes_changed, changed,
+                                              count);
+                                }
+                                changed = bytes_changed;
+                            }
+                        }
+                    }
+                    if (changed) {
                         if (check_late && page_initialized && !already_cpu_modified)
                             [[unlikely]] {
                             static std::atomic<u64> late_changes{};
@@ -1721,7 +1751,9 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                                           late);
                             }
                         }
-                        std::memcpy(shadow_dst, ptr, chunk_size);
+                        if (!hash_shadow || bytes_changed) {
+                            std::memcpy(shadow_dst, ptr, chunk_size);
+                        }
                         shadow->initialized_mask |= page_bit;
                         if (!already_cpu_modified) {
                             memory_tracker.MarkRegionAsCpuModified(cur_addr, chunk_size);
