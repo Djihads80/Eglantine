@@ -5,6 +5,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <optional>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
@@ -412,6 +415,10 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
               "VkPipelineBuilder", {}, Common::ThreadPlacement::Background),
       serialization_thread(1, "VkPipelineSerialization", {},
                            Common::ThreadPlacement::Background) {
+    build_budget = std::chrono::milliseconds{[] {
+        const char* const value = std::getenv("EDEN_NX2_SHADER_BUDGET_MS");
+        return value != nullptr ? std::max(1, std::atoi(value)) : 8;
+    }()};
     const auto& float_control{device.FloatControlProperties()};
     const VkDriverId driver_id{device.GetDriverID()};
     const VkShaderStageFlags subgroup_stages{device.GetSubgroupSupportedStages()};
@@ -1138,8 +1145,42 @@ void ReportNewPipelineKey(const GraphicsPipelineCacheKey& key) {
 }
 } // Anonymous namespace
 
+bool PipelineCache::DeferRuntimeBuild() {
+    if (!use_asynchronous_shaders ||
+        !VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ShaderBuildBudget)) {
+        return false;
+    }
+    if (build_budget_frame != frame_count || build_budget_spent < build_budget) {
+        return false;
+    }
+    // Small draws without depth wait for their pipeline (BuiltPipeline), so they are built now.
+    // Mesh draws are deferred too: their high-detail LODs then appear a few frames late.
+    const auto& regs = maxwell3d->regs;
+    if (regs.IsMeshEnabled()) {
+        ++over_budget_mesh;
+    } else if (!regs.zeta_enable && maxwell3d->draw_manager.draw_state.draw_element_count <= 6) {
+        ++over_budget_small;
+        return false;
+    }
+    ++deferred_builds;
+    return true;
+}
+
+void PipelineCache::ChargeRuntimeBuild(std::chrono::steady_clock::time_point begin) {
+    if (build_budget_frame != frame_count) {
+        build_budget_frame = frame_count;
+        build_budget_spent = {};
+    }
+    build_budget_spent += std::chrono::steady_clock::now() - begin;
+}
+
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
     const auto [pair, is_new]{graphics_cache.try_emplace(graphics_key)};
+    if (is_new && DeferRuntimeBuild()) {
+        graphics_cache.erase(pair);
+        graphics_miss = "build-deferred";
+        return nullptr;
+    }
     auto& pipeline{pair->second};
     if (is_new) {
         ReportNewPipelineKey(graphics_key);
@@ -1172,6 +1213,17 @@ void PipelineCache::TickFrame() {
     constexpr u64 EvictCheckFrames = 600;
     if (frame_count % EvictCheckFrames == 0) {
         EvictUnusedPipelines();
+        if (deferred_builds != 0 || over_budget_small != 0 || over_budget_mesh != 0) {
+            LOG_INFO(Render_Vulkan,
+                     "Shader build budget ({} ms/frame): {} draws skipped and their pipelines "
+                     "built in a later frame in the last {} frames; built over budget: {} small "
+                     "draws without depth; {} of the skipped draws were mesh draws",
+                     std::chrono::duration_cast<std::chrono::milliseconds>(build_budget).count(),
+                     deferred_builds, EvictCheckFrames, over_budget_small, over_budget_mesh);
+            deferred_builds = 0;
+            over_budget_small = 0;
+            over_budget_mesh = 0;
+        }
     }
 }
 
@@ -1259,6 +1311,27 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     return nullptr;
 }
 
+namespace {
+// Where the GPU thread's time goes when it builds a pipeline at run time (ns, summed per 10 s).
+enum class BuildPhase : size_t { Environments, Translate, Emit, Module, Object, Count };
+std::array<std::atomic<u64>, static_cast<size_t>(BuildPhase::Count)> runtime_phase_ns{};
+
+struct PhaseTimer {
+    BuildPhase phase;
+    bool active;
+    std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+    ~PhaseTimer() {
+        if (active) {
+            runtime_phase_ns[static_cast<size_t>(phase)].fetch_add(
+                static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now() - begin)
+                                     .count()),
+                std::memory_order_relaxed);
+        }
+    }
+};
+} // Anonymous namespace
+
 std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     ShaderPools& pools, const GraphicsPipelineCacheKey& key,
     std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
@@ -1273,6 +1346,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     // Layer passthrough generation for devices without VK_EXT_shader_viewport_index_layer
     Shader::IR::Program* layer_source_program{};
 
+    std::optional<PhaseTimer> translate_timer{std::in_place, BuildPhase::Translate, build_in_parallel};
     for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
         const bool is_emulated_stage = layer_source_program != nullptr &&
                                        index == static_cast<u32>(Maxwell::ShaderType::Geometry);
@@ -1342,6 +1416,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             layer_source_program = &programs[index];
         }
     }
+    translate_timer.reset();
     std::array<const Shader::Info*, Maxwell::MaxShaderStage> infos{};
     std::array<vk::ShaderModule, Maxwell::MaxShaderStage> modules;
 
@@ -1360,11 +1435,16 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         const size_t stage_index{index - 1};
         infos[stage_index] = &program.info;
 
+        std::optional<PhaseTimer> emit_timer{std::in_place, BuildPhase::Emit, build_in_parallel};
         const auto runtime_info{MakeRuntimeInfo(programs, key, program, previous_stage, device)};
         ConvertLegacyToGeneric(program, runtime_info);
         const std::vector<u32> code{EmitSPIRV(profile, runtime_info, program, binding)};
         device.SaveShader(code);
-        modules[stage_index] = BuildShader(device, code);
+        emit_timer.reset();
+        {
+            PhaseTimer module_timer{BuildPhase::Module, build_in_parallel};
+            modules[stage_index] = BuildShader(device, code);
+        }
 
         // Text log + .spv dump. Text log is gated by gpu_log_level != Off; .spv dump
         // is independent and gated only by gpu_log_shader_dumps.
@@ -1391,6 +1471,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         previous_stage = &program;
     }
     Common::ThreadWorker* const thread_worker{build_in_parallel ? &workers : nullptr};
+    PhaseTimer object_timer{BuildPhase::Object, build_in_parallel};
     return std::make_unique<GraphicsPipeline>(
         scheduler, buffer_cache, texture_cache, vulkan_pipeline_cache, &shader_notify, device,
         descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring, thread_worker, statistics,
@@ -1439,10 +1520,20 @@ void ReportRuntimePipeline(const char* kind, std::chrono::steady_clock::time_poi
         LOG_INFO(Render_Vulkan, "{} pipeline built on the GPU thread in {:.1f} ms", kind, ms(elapsed));
     }
     if (now - window > std::chrono::seconds{10}) {
+        const auto phase_ms = [](BuildPhase phase) {
+            return static_cast<double>(runtime_phase_ns[static_cast<size_t>(phase)].exchange(0)) /
+                   1e6;
+        };
+        const double env_ms = phase_ms(BuildPhase::Environments);
+        const double translate_ms = phase_ms(BuildPhase::Translate);
+        const double emit_ms = phase_ms(BuildPhase::Emit);
+        const double module_ms = phase_ms(BuildPhase::Module);
+        const double object_ms = phase_ms(BuildPhase::Object);
         LOG_INFO(Render_Vulkan,
                  "Runtime pipelines in the last 10 s: {} built, {:.1f} ms on the GPU thread, "
-                 "{} rebuilt after eviction",
-                 count, ms(total), rebuilt);
+                 "{} rebuilt after eviction (graphics: environments {:.1f}, translate {:.1f}, "
+                 "SPIR-V {:.1f}, modules {:.1f}, pipeline object {:.1f} ms)",
+                 count, ms(total), rebuilt, env_ms, translate_ms, emit_ms, module_ms, object_ms);
         total = {};
         count = 0;
         rebuilt = 0;
@@ -1456,9 +1547,13 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
     const bool after_eviction = evicted_keys.contains(graphics_key.Hash());
     SCOPE_EXIT {
         ReportRuntimePipeline("Graphics", begin, after_eviction);
+        ChargeRuntimeBuild(begin);
     };
     GraphicsEnvironments environments;
-    GetGraphicsEnvironments(environments, graphics_key.unique_hashes);
+    {
+        PhaseTimer env_timer{BuildPhase::Environments, true};
+        GetGraphicsEnvironments(environments, graphics_key.unique_hashes);
+    }
 
     main_pools.ReleaseContents();
     auto pipeline{
@@ -1491,6 +1586,7 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     const auto begin = std::chrono::steady_clock::now();
     SCOPE_EXIT {
         ReportRuntimePipeline("Compute", begin, false);
+        ChargeRuntimeBuild(begin);
     };
     const GPUVAddr program_base{kepler_compute->regs.code_loc.Address()};
     const auto& qmd{kepler_compute->launch_description};

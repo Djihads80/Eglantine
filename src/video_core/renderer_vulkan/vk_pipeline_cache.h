@@ -146,6 +146,10 @@ private:
 
     [[nodiscard]] GraphicsPipeline* BuiltPipeline(GraphicsPipeline* pipeline) const noexcept;
 
+    /// Nx2Perf shader_build_budget: whether a new graphics pipeline is left unbuilt this frame.
+    [[nodiscard]] bool DeferRuntimeBuild();
+    void ChargeRuntimeBuild(std::chrono::steady_clock::time_point begin);
+
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline();
 
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(
@@ -226,6 +230,12 @@ private:
     std::unordered_set<const GraphicsPipeline*> used_this_session;
     std::filesystem::path used_pipelines_filename;
     std::chrono::steady_clock::time_point used_pipelines_saved{};
+    u64 build_budget_frame{~u64{}};
+    std::chrono::steady_clock::duration build_budget_spent{};
+    std::chrono::steady_clock::duration build_budget{};
+    u64 deferred_builds{};
+    u64 over_budget_small{};
+    u64 over_budget_mesh{};
     void SaveUsedPipelines();
 
     std::filesystem::path vulkan_pipeline_cache_filename;

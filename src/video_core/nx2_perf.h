@@ -232,6 +232,9 @@ enum class Opt : unsigned {
     /// Split front: a 3D macro call whose words are all in the entry goes from its header to
     /// FrontRunMacro in one call (Maxwell3D::FrontCallMacro), its parameters borrowed in place
     FrontMacroCall,
+    /// Async shaders: once a frame spent its budget building pipelines at run time, a draw that
+    /// may be skipped while its pipeline builds is skipped without building it (built next frame)
+    ShaderBuildBudget,
     Count,
 };
 
@@ -297,6 +300,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "bank_dirty_skip",
     "back_replay_lean",
     "front_macro_call",
+    "shader_build_budget",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -586,6 +590,9 @@ static_assert(static_cast<unsigned>(Opt::BackReplayLean) == 89 &&
 static_assert(static_cast<unsigned>(Opt::FrontMacroCall) == 90 &&
               IsOff(always_off, static_cast<size_t>(Opt::FrontMacroCall)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::FrontMacroCall)));
+static_assert(static_cast<unsigned>(Opt::ShaderBuildBudget) == 91 &&
+              !IsOff(always_off, static_cast<size_t>(Opt::ShaderBuildBudget)) &&
+              !IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ShaderBuildBudget)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.
