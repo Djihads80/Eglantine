@@ -3209,6 +3209,11 @@ public:
                          u32 argument, bool is_last_call);
     void FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
                               const u32* base_start, u32 amount, u32 methods_pending);
+    /// LOCAL TEST (Zelda), EDEN_NX2_FRONT_BATCH=1: `count` incrementing register writes from
+    /// `method` on (all below the macro range), as `count` FrontCallMethod calls would make them.
+    /// `ends_method`: the last word is the method's last.
+    void FrontWriteRun(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
+                       const u32* words, u32 count, bool ends_method);
 
     bool ShouldExecute() const {
         return execute_on;

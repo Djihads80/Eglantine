@@ -278,7 +278,10 @@ struct MeshInfo {
 struct Info {
     static constexpr size_t MAX_INDIRECT_CBUFS{14};
     static constexpr size_t MAX_CBUFS{18};
-    static constexpr size_t MAX_SSBOS{32};
+    /// Compute programs can bind up to MAX_SSBOS storage buffers; graphics programs and compute
+    /// programs with EDEN_NX2_WIDE_COMPUTE_SSBOS=0 keep the old limit of MAX_GRAPHICS_SSBOS.
+    static constexpr size_t MAX_SSBOS{64};
+    static constexpr size_t MAX_GRAPHICS_SSBOS{32};
 
     bool is_task{}; ///< Switch 2 task program (Stage::Task)
     bool is_mesh{}; ///< Switch 2 mesh program (Stage::Mesh)

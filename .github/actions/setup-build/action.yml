@@ -20,6 +20,10 @@ inputs:
     description: "true for stable and rc builds: writes GIT-RELEASE, which makes the build a release build"
     required: false
     default: "false"
+  save-cache:
+    description: Save the caches at the end of the job (they are always restored)
+    required: false
+    default: ${{ github.event_name == 'schedule' || github.ref == 'refs/heads/nx2' }}
 
 runs:
   using: composite
@@ -44,22 +48,45 @@ runs:
         echo "GetSCMRev inputs:"
         head -v GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE 2> /dev/null || true
 
-    - name: Cache CPM downloads
+    - name: Cache CPM downloads (restore and save)
+      if: inputs.save-cache == 'true'
       uses: actions/cache@v6
       with:
         path: .cache/cpm
-        key: cpm-${{ runner.os }}-${{ hashFiles('cpmfile.json', 'CMakeLists.txt', 'src/**/CMakeLists.txt') }}
+        key: cpm-v1-${{ runner.os }}-${{ hashFiles('**/cpmfile.json') }}
         restore-keys: |
-          cpm-${{ runner.os }}-
+          cpm-v1-${{ runner.os }}-
 
-    # The sha in the key makes every run save a fresh cache (actions/cache never saves over an
-    # exact hit), and restore-keys seeds it from the newest one of the same platform.
-    - name: Cache compiler objects
+    - name: Cache CPM downloads (restore only)
+      if: inputs.save-cache != 'true'
+      uses: actions/cache/restore@v6
+      with:
+        path: .cache/cpm
+        key: cpm-v1-${{ runner.os }}-${{ hashFiles('**/cpmfile.json') }}
+        restore-keys: |
+          cpm-v1-${{ runner.os }}-
+
+    # --- Compiler objects (ccache or sccache, whichever the job uses) ---
+    # The "--" after the platform stops linux-x86_64 from matching linux-x86_64-pgo.
+    # The sha makes every saving run write a fresh entry; restore-keys seeds it from the newest.
+    - name: Cache compiler objects (restore and save)
+      if: inputs.save-cache == 'true'
       uses: actions/cache@v6
       with:
         path: |
           .ccache
           .sccache
-        key: objects-${{ inputs.platform }}-${{ inputs.sha }}
+        key: objects-v1-${{ inputs.platform }}--${{ inputs.sha }}
         restore-keys: |
-          objects-${{ inputs.platform }}-
+          objects-v1-${{ inputs.platform }}--
+
+    - name: Cache compiler objects (restore only)
+      if: inputs.save-cache != 'true'
+      uses: actions/cache/restore@v6
+      with:
+        path: |
+          .ccache
+          .sccache
+        key: objects-v1-${{ inputs.platform }}--${{ inputs.sha }}
+        restore-keys: |
+          objects-v1-${{ inputs.platform }}--

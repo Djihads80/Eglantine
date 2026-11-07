@@ -354,6 +354,15 @@ static const u32 g_semaphore_watch = [] {
     return value ? static_cast<u32>(std::strtoull(value, nullptr, 16)) : 0U;
 }();
 
+// LOCAL TEST (Zelda): EDEN_NX2_FRONT_BATCH=1 (see ProcessCommands).
+static bool FrontBatchEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_FRONT_BATCH");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
 // EDEN_NX2_PB_CHECK also keeps the last parsed entries, for DumpCurrentEntry.
 static const bool g_record_parsed_entries = std::getenv("EDEN_NX2_PB_CHECK") != nullptr;
 
@@ -372,6 +381,36 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
             dma_state.is_last_call = true;
             index += max_write;
         } else if (dma_state.method_count) {
+            // LOCAL TEST (Zelda), EDEN_NX2_FRONT_BATCH=1: with the split's front running the 3D
+            // engine (FrontCallMethod), a run of incrementing register writes goes to it in one
+            // call instead of CallMethod's per-word dispatch (engine lookup, writer and effect
+            // checks, Front()). A 3D register write can't suspend the channel, so the acquire
+            // check after the run is enough.
+            if (!dma_state.non_incrementing && !dma_increment_once &&
+                dma_state.method >= non_puller_methods && dma_state.method < MacroRegistersStart &&
+                g_semaphore_watch == 0 && FrontBatchEnabled()) {
+                auto& split = VideoCommon::GpuSplit::Get();
+                auto* const subchannel = subchannels[dma_state.subchannel];
+                if (subchannel != nullptr && split.Active() && split.FrontMacros() &&
+                    subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D) {
+                    auto* const maxwell3d = static_cast<Engines::Maxwell3D*>(subchannel);
+                    const size_t available =
+                        (std::min)({size_t{dma_state.method_count}, commands.size() - index,
+                                    size_t{MacroRegistersStart - dma_state.method}});
+                    if (maxwell3d->GetNativeMacroEngine().native_turing && available > 1) {
+                        const u32 count = static_cast<u32>(available);
+                        const bool ends = count == dma_state.method_count;
+                        dma_state.dma_word_offset = u64((word_offset + index + count - 1) * sizeof(u32));
+                        dma_state.is_last_call = ends;
+                        maxwell3d->FrontWriteRun(system, split, dma_state.method,
+                                                 &commands[index].argument, count, ends);
+                        dma_state.method += count;
+                        dma_state.method_count -= count;
+                        index += count;
+                        continue;
+                    }
+                }
+            }
             // Fast-path batching for consecutive non-execution methods in increasing mode
             if (!dma_state.non_incrementing && !dma_increment_once &&
                 dma_state.method >= non_puller_methods &&

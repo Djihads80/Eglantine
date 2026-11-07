@@ -91,13 +91,13 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0x802: case 0xa02: case 0xb08: case 0xd08: operand(16); break;
     case 0x804: case 0x80c: operand(24); break;
     case 0x805: operand(16, 2); break;
-    case 0x308: operand(16); operand(32); break;
+    case 0x306: case 0x308: operand(16); operand(32); break; // I2F, MUFU
     case 0x433: case 0x633: operand(16); operand(24); break;
     case 0x220: case 0x221: operand(16); operand(24); operand(32); break;
     case 0x421: case 0x817: case 0x820: operand(16); operand(24); break;
     case 0x81a: operand(16); operand(24); break;
     case 0x919: operand(16); break;
-    case 0x20c: operand(24); operand(32); break;
+    case 0x20b: case 0x20c: operand(24); operand(32); break; // FSETP/ISETP: predicate results
     case 0x208: operand(16); operand(24); operand(32); break;
     case 0x823: operand(16); operand(24); operand(64); break;
     case 0x245: operand(16); operand(32); break;
@@ -116,6 +116,10 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0x230: case 0x231: case 0x211: case 0x212: case 0x224:
         operand(16); operand(24); operand(32); operand(64); break;
     case 0x819: case 0xa11:
+        operand(16); operand(24); operand(64); break;
+    case 0x219: // SHF, all-register form
+        operand(16); operand(24); operand(32); operand(64); break;
+    case 0xc10: // IADD3 with a uniform second source (bit 32 is a UR)
         operand(16); operand(24); operand(64); break;
     case 0x225: case 0x625: case 0x825:
         operand(16, 2); operand(24);

@@ -67,7 +67,7 @@ using VideoCommon::FileEnvironment;
 using VideoCommon::GenericEnvironment;
 using VideoCommon::GraphicsEnvironment;
 
-constexpr u32 CACHE_VERSION = 30;
+constexpr u32 CACHE_VERSION = 31;
 constexpr size_t VULKAN_CACHE_FLUSH_PIPELINES = 128;
 constexpr size_t VULKAN_CACHE_FLUSH_MIN_SECONDS = 30;
 constexpr std::array<char, 8> VULKAN_CACHE_MAGIC_NUMBER{'y', 'u', 'z', 'u', 'v', 'k', 'c', 'h'};
@@ -756,12 +756,13 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
     return CurrentGraphicsPipelineSlowPath();
 }
 
-ComputePipeline* PipelineCache::CurrentComputePipeline() {
+ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
 
     const ShaderInfo* const shader{ComputeShader()};
     if (!shader) {
         return nullptr;
     }
+    native_key = shader->lowered_native ? shader->lowered_native->native_program_key : 0;
     const auto& qmd{kepler_compute->launch_description};
     const ComputePipelineCacheKey key{
         .unique_hash = shader->unique_hash,
@@ -832,7 +833,10 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     }
 
     const auto shader_dir{Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir)};
-    const auto base_dir{shader_dir / fmt::format("{:016x}", title_id)};
+    auto base_dir{shader_dir / fmt::format("{:016x}", title_id)};
+    if (title_id == 0x0400C3F00006E000ULL) {
+        base_dir /= "mkw_zero_depth_v1";
+    }
     if (!Common::FS::CreateDir(shader_dir) || !Common::FS::CreateDir(base_dir)) {
         LOG_ERROR(Common_Filesystem, "Failed to create pipeline cache directories");
         return;
