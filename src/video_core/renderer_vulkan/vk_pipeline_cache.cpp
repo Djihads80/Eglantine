@@ -1419,6 +1419,19 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         }
     }
     translate_timer.reset();
+    if (host_info.max_descriptor_set_storage_buffers != 0) {
+        size_t total_storage_buffers{};
+        for (size_t index = uses_vertex_a && uses_vertex_b ? 1 : 0;
+             index < Maxwell::MaxShaderProgram; ++index) {
+            total_storage_buffers +=
+                Shader::NumDescriptors(programs[index].info.storage_buffers_descriptors);
+        }
+        if (total_storage_buffers > host_info.max_descriptor_set_storage_buffers) {
+            throw Shader::NotImplementedException(
+                "Pipeline binds {} storage buffers; descriptor set limit is {}",
+                total_storage_buffers, host_info.max_descriptor_set_storage_buffers);
+        }
+    }
     std::array<const Shader::Info*, Maxwell::MaxShaderStage> infos{};
     std::array<vk::ShaderModule, Maxwell::MaxShaderStage> modules;
 

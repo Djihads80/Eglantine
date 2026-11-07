@@ -114,6 +114,33 @@ TEST_CASE("Pointer table entries are charged only for bindings the first pass le
                                 [](const auto& desc) { return desc.indirect_offset != ~0U; }) == 2);
 }
 
+TEST_CASE("A stage binds up to 64 storage buffers when the device allows them",
+          "[shader_recompiler][global_memory]") {
+    using namespace Shader;
+    ObjectPool<IR::Inst> inst_pool;
+    IR::Block block{inst_pool};
+    IR::IREmitter ir{block};
+    for (u32 slot = 0; slot < 40; ++slot) {
+        const u32 offset{0x100 + slot * 8};
+        const IR::U32 low{ir.GetCbuf(ir.Imm32(0), ir.Imm32(offset))};
+        const IR::U32 high{ir.GetCbuf(ir.Imm32(0), ir.Imm32(offset + 4))};
+        static_cast<void>(ir.LoadGlobal32(ir.PackUint2x32(ir.CompositeConstruct(low, high))));
+    }
+
+    IR::Program program;
+    program.stage = Stage::Compute;
+    program.blocks = {&block};
+    program.post_order_blocks = {&block};
+    HostTranslateInfo host{};
+    host.min_ssbo_alignment = 16;
+    host.support_int64 = true;
+    StubEnvironment env;
+    env.native = true;
+    Optimization::GlobalMemoryToStorageBufferPass(env, program, host);
+
+    CHECK(program.info.storage_buffers_descriptors.size() == 40);
+}
+
 TEST_CASE("Dual vertex halves that bind more storage buffers than the stage are rejected",
           "[shader_recompiler][global_memory]") {
     using namespace Shader;
