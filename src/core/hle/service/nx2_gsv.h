@@ -30,6 +30,7 @@
 #include "common/div_ceil.h"
 #include "common/game_presets.h"
 #include "common/settings.h"
+#include "common/game_fps.h"
 #include "common/thread.h"
 #include "core/core.h"
 #include "core/device_memory.h"
@@ -1867,8 +1868,14 @@ private:
             LOG_INFO(Service, "nx2:vi2 present #{} swap interval {} at {} Hz (word 12 = {:#x})",
                      m_presents, swap_interval, refresh_rate, timing);
         }
+        // Wonder's patched simulation rate can exceed the display's nominal 60 Hz. Pace its
+        // presents at the rate actually patched into this boot, not at a changed UI preference.
+        const u32 wonder_fps =
+            system.GetApplicationProcessProgramID() == Settings::WonderSwitch2ProgramId
+                ? Settings::wonder_fps_active.load(std::memory_order_relaxed) : 0;
         const auto interval = std::chrono::nanoseconds{
-            100'000'000'000LL * swap_interval / refresh_rate / Settings::SpeedLimit()};
+            wonder_fps != 0 ? 100'000'000'000LL / wonder_fps / Settings::SpeedLimit()
+                            : 100'000'000'000LL * swap_interval / refresh_rate / Settings::SpeedLimit()};
         const auto now = std::chrono::steady_clock::now();
         if (now > m_next_vblank + interval) {
             // Running slower than the swap interval: show at once and don't bank the lost time.

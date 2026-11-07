@@ -19,6 +19,8 @@
 
 #include "common/alignment.h"
 #include "common/settings.h"
+#include "common/game_fps.h"
+#include "video_core/texture_cache/memory_budget.h"
 #include "common/slot_vector.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/dirty_flags.h"
@@ -254,14 +256,15 @@ void TextureCache<P>::RunGarbageCollector() {
 
 template <class P>
 void TextureCache<P>::ApplyThresholdOverrides(bool log) {
-    // On every GPU: past what a frame needs, more device memory only keeps the textures of earlier
-    // scenes (title 1 filled 6.7 GB of an 8 GB card and draws its races in ~5 GB), so collect from
-    // MaxCriticalMemory on rather than near the card's budget.
-    critical_memory = (std::min)(critical_memory, MaxCriticalMemory);
-    expected_memory =
-        (std::min)(expected_memory, critical_memory - (std::min)(critical_memory, u64{768_MiB}));
-    minimum_memory =
-        (std::min)(minimum_memory, expected_memory - (std::min)(expected_memory, u64{1_GiB}));
+    // Wonder's Overworld working set can exceed the legacy ceiling. Keep the
+    // driver budget's pressure and allocator reserves when this title opts in.
+    const bool budget_driven = native_driver_budget_available &&
+                               Settings::GetCurrentProgramID() == Settings::WonderSwitch2ProgramId;
+    const auto limits = ClampTextureCacheThresholds(
+        {expected_memory, critical_memory, minimum_memory}, budget_driven, MaxCriticalMemory);
+    expected_memory = limits.expected;
+    critical_memory = limits.critical;
+    minimum_memory = limits.minimum;
     // EDEN_NX2_TC_EXPECTED_MIB / EDEN_NX2_TC_CRITICAL_MIB override the collector's thresholds.
     for (const auto& [name, target] : {std::pair{"EDEN_NX2_TC_EXPECTED_MIB", &expected_memory},
                                        std::pair{"EDEN_NX2_TC_CRITICAL_MIB", &critical_memory}}) {
@@ -328,7 +331,8 @@ void TextureCache<P>::TickFrame() {
             }
             if (native_thresholds_applied && budget_check_frames++ % 30 == 0) {
                 const u64 budget = runtime.GetDeviceMemoryBudget();
-                if (budget > 2_GiB) {
+                native_driver_budget_available = budget > 2_GiB;
+                if (native_driver_budget_available) {
                     const u64 old_critical = critical_memory;
                     const u64 margin = (std::min)(budget / 8, 1_GiB);
                     if constexpr (requires { runtime.GetDeviceMemorySlack(); }) {
@@ -346,6 +350,7 @@ void TextureCache<P>::TickFrame() {
                     critical_memory =
                         budget - (std::min)(margin + pressure_margin + slack_margin, budget / 2);
                     expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
+                    ApplyThresholdOverrides(false);
                     // Log the first values and real changes (the budget moves by a few MiB all
                     // the time).
                     const u64 change = critical_memory > old_critical
@@ -358,6 +363,8 @@ void TextureCache<P>::TickFrame() {
                                  "Memory margins: base {} MiB, out of memory {} MiB, block slack {} MiB",
                                  margin >> 20, pressure_margin >> 20, slack_margin >> 20);
                     }
+                } else {
+                    ApplyThresholdOverrides(false);
                 }
             }
         }

@@ -15,6 +15,8 @@ add_library(core STATIC
     arm/symbols.h
     constants.cpp
     constants.h
+    wonder_dynamic_fps.cpp
+    wonder_dynamic_fps.h
     core.cpp
     core.h
     game_settings.cpp

@@ -17,6 +17,7 @@
 #include <QMessageBox>
 #include <QSpinBox>
 
+#include "common/game_fps.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "qt_common/qt_compat.h"
@@ -50,8 +51,10 @@ static bool IsValidLocale(u32 region_index, u32 language_index) {
 
 ConfigureSystem::ConfigureSystem(Core::System& system_,
                                  std::shared_ptr<std::vector<ConfigurationShared::Tab*>> group_,
-                                 const ConfigurationShared::Builder& builder, QWidget* parent)
-    : Tab(group_, parent), ui{std::make_unique<Ui::ConfigureSystem>()}, system{system_} {
+                                 const ConfigurationShared::Builder& builder, QWidget* parent,
+                                 u64 program_id_)
+    : Tab(group_, parent), ui{std::make_unique<Ui::ConfigureSystem>()}, system{system_},
+      program_id{program_id_} {
     ui->setupUi(this);
 
     const auto posix_time = std::chrono::system_clock::now().time_since_epoch();
@@ -131,6 +134,10 @@ void ConfigureSystem::Setup(const ConfigurationShared::Builder& builder) {
     push(Settings::values.linkage.by_category[Settings::Category::System]);
 
     for (auto setting : settings) {
+        if (setting->Id() == Settings::values.wonder_fps.Id() &&
+            !Settings::ShowWonderFps(program_id, Settings::IsConfiguringGlobal())) {
+            continue;
+        }
         if (setting->Id() == Settings::values.use_docked_mode.Id() &&
             Settings::IsConfiguringGlobal()) {
             continue;
