@@ -6,8 +6,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstdio>
+#include <string>
+#include <vector>
 
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -220,10 +223,15 @@ bool DmaPusher::Step() {
         bool gpu_written =
             IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
         if (auto& split = VideoCommon::GpuSplit::Get(); !gpu_written && split.Active()) {
+            static const bool writer_ranges =
+                VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ComputeWriterRanges);
             if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SplitOverlap) &&
                 g_nx2_ampere.load(std::memory_order_relaxed)) {
                 gpu_written =
                     WaitForListWriters(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+            } else if (writer_ranges && g_nx2_ampere.load(std::memory_order_relaxed)) {
+                gpu_written = WaitForLocalizedListWriters(dma_state.dma_get,
+                                                          size_t{header.size} * sizeof(u32));
             } else if (split.WaitForWriters()) {
                 gpu_written =
                     IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
@@ -610,9 +618,15 @@ void DmaPusher::CallMethod(u32 argument) {
                                     engine_type == Engines::EngineTypes::Fermi2D
                                 ? VideoCommon::GpuSplit::Effect::Gpu
                                 : VideoCommon::GpuSplit::Effect::Unknown;
+        // Nx2Perf compute_writer_ranges: a compute front call whose writes were all noted.
+        Engines::KeplerCompute* compute_front = nullptr;
         SCOPE_EXIT {
             if (writer) {
-                split.NoteWriter();
+                if (compute_front != nullptr && compute_front->TakeFrontWritesLocalized()) {
+                    split.NoteLocalizedWriter();
+                } else {
+                    split.NoteWriter();
+                }
             }
         };
         if (split.Active()) {
@@ -632,6 +646,7 @@ void DmaPusher::CallMethod(u32 argument) {
                     if (compute->FrontRunsMacros()) {
                         compute->FrontCallMethod(system, split, dma_state.method, argument,
                                                  dma_state.is_last_call, opt_segment);
+                        compute_front = compute;
                         return;
                     }
                 }
@@ -674,9 +689,14 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
                                     engine_type == Engines::EngineTypes::Fermi2D
                                 ? VideoCommon::GpuSplit::Effect::Gpu
                                 : VideoCommon::GpuSplit::Effect::Unknown;
+        Engines::KeplerCompute* compute_front = nullptr;
         SCOPE_EXIT {
             if (writer) {
-                split.NoteWriter();
+                if (compute_front != nullptr && compute_front->TakeFrontWritesLocalized()) {
+                    split.NoteLocalizedWriter();
+                } else {
+                    split.NoteWriter();
+                }
             }
         };
         if (split.Active()) {
@@ -696,6 +716,7 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
                     if (compute->FrontRunsMacros()) {
                         compute->FrontCallMultiMethod(system, split, dma_state.method, base_start,
                                                       num_methods, dma_state.method_count, opt_segment);
+                        compute_front = compute;
                         return;
                     }
                 }
@@ -796,6 +817,123 @@ bool DmaPusher::WaitForListWriters(GPUVAddr address, size_t size) {
                       "Nx2Perf split: command list at {:#x} ({} words): word {} is {:#x} before "
                       "the wait for every writer, {:#x} after it",
                       address, early.size(), i, early[i], drained[i]);
+        }
+    }
+    return old_written;
+}
+
+namespace {
+
+/// compute_writer_ranges: logs the front's counters about once a second (profile or verify).
+void ReportWriterRanges(u64 mismatches) {
+    static auto last = std::chrono::steady_clock::now();
+    static u32 calls{};
+    if (++calls % 256 != 0) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last < std::chrono::seconds{1}) {
+        return;
+    }
+    last = now;
+    auto& stats = Tegra::g_nx2_writer_range_stats;
+    const auto& f = stats.fallbacks;
+    const u64 uncovered = Tegra::g_nx2_writer_range_uncovered.load(std::memory_order_relaxed);
+    const std::string text = fmt::format(
+        "Nx2Perf compute_writer_ranges: {} fetches, {} full waits, {} narrowed waits (target: "
+        "unlocalized writer {}, unknown write {}, page write {}), {} waits avoided; writer calls "
+        "localized {} / not {}; launch fallbacks: multi {} map {} mapping-sized {} qmd {} format "
+        "{} dependent {} release {} no-record {} not-localizable {} cbuf {} descriptor {} buffer "
+        "{} ranges {}; {} verify mismatches, {} uncovered marks in all",
+        stats.fetches, stats.full_waits, stats.waits, stats.by_unlocalized, stats.by_unknown,
+        stats.by_page, stats.avoided, stats.calls_localized, stats.calls_unlocalized, f[0], f[1],
+        f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], f[12], mismatches,
+        uncovered);
+    if (mismatches != 0 || uncovered != 0) {
+        LOG_ERROR(HW_GPU, "{}", text);
+    } else {
+        LOG_INFO(HW_GPU, "{}", text);
+    }
+    stats = {};
+}
+
+} // Anonymous namespace
+
+bool DmaPusher::WaitForLocalizedListWriters(GPUVAddr address, size_t size) {
+    auto& split = VideoCommon::GpuSplit::Get();
+    auto& stats = g_nx2_writer_range_stats;
+    ++stats.fetches;
+    const bool sparse = address < g_nx2_sparse_high.load(std::memory_order_relaxed) &&
+                        g_nx2_sparse_low.load(std::memory_order_relaxed) < address + size;
+    bool full = size == 0 || sparse || g_nx2_compute_mapping_sized.load(std::memory_order_relaxed);
+    u64 page_target = 0;
+    if (!full) {
+        split.RetireWrites();
+        for (GPUVAddr page = address & ~GPUVAddr{0xfff}; page < address + size; page += 0x1000) {
+            const auto device = memory_manager.GpuToCpuAddress(page);
+            if (!device) {
+                full = true;
+                break;
+            }
+            const u64 device_page = *device & ~u64{0xfff};
+            page_target = (std::max)(page_target, split.LocalizedListTarget(device_page,
+                                                                            device_page + 0x1000));
+        }
+    }
+    static u64 mismatches{};
+    const bool verify = VideoCommon::Nx2Perf::Verify();
+    if (verify || VideoCommon::Nx2Profile::Enabled()) {
+        ReportWriterRanges(mismatches);
+    }
+    if (full) {
+        ++stats.full_waits;
+        return split.WaitForWriters() && IsGpuWrittenCommands(address, size);
+    }
+    const u64 consumed = split.ConsumedNow();
+    const u64 old_target = split.WriterTarget();
+    const bool waited = split.WaitUntil(page_target, VideoCommon::DrainSite::ListWriters);
+    if (waited) {
+        ++stats.waits;
+        if (page_target == split.Writes().LastUnknown()) {
+            ++stats.by_unknown;
+        } else if (page_target == split.LastUnlocalizedWriter()) {
+            ++stats.by_unlocalized;
+        } else {
+            ++stats.by_page;
+        }
+    } else if (old_target > consumed) {
+        ++stats.avoided;
+    }
+    const bool written = waited && IsGpuWrittenCommands(address, size);
+    if (!verify) {
+        return written;
+    }
+    // The old wait for every queued writer, and the words before and after it.
+    const bool narrowed_written = IsGpuWrittenCommands(address, size);
+    std::vector<u32> narrowed(size / sizeof(u32));
+    memory_manager.ReadBlockUnsafe(address, narrowed.data(), narrowed.size() * sizeof(u32));
+    split.WaitForWriters();
+    const bool old_written = IsGpuWrittenCommands(address, size);
+    if (old_written != narrowed_written) {
+        if (mismatches++ < 64) {
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf compute_writer_ranges: list at {:#x} ({} words) became "
+                      "GPU-written after the full wait",
+                      address, narrowed.size());
+        }
+        return old_written;
+    }
+    std::vector<u32> full_words(narrowed.size());
+    memory_manager.ReadBlockUnsafe(address, full_words.data(), full_words.size() * sizeof(u32));
+    for (size_t i = 0; i < narrowed.size(); ++i) {
+        if (narrowed[i] != full_words[i]) {
+            if (mismatches++ < 64) {
+                LOG_ERROR(HW_GPU,
+                          "Nx2Perf compute_writer_ranges: list at {:#x} ({} words): word {} is "
+                          "{:#x} narrowed, {:#x} after the full wait",
+                          address, narrowed.size(), i, narrowed[i], full_words[i]);
+            }
+            break;
         }
     }
     return old_written;

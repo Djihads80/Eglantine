@@ -34,6 +34,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
@@ -676,6 +677,33 @@ bool PreloadAllPipelines() {
     }();
     return all;
 }
+
+// Nx2Perf compute_writer_ranges: the storage buffers a compute program writes, and whether they
+// hold all of its guest memory writes.
+Tegra::Nx2ComputeWrites SummarizeComputeWrites(const Shader::Info& info) {
+    Tegra::Nx2ComputeWrites writes;
+    bool localizable = !info.uses_global_memory && !info.uses_global_increment &&
+                       !info.uses_global_decrement && !info.uses_atomic_image_u32;
+    for (const auto& desc : info.image_descriptors) {
+        localizable &= !desc.is_written;
+    }
+    for (const auto& desc : info.image_buffer_descriptors) {
+        localizable &= !desc.is_written;
+    }
+    for (const auto& desc : info.storage_buffers_descriptors) {
+        if (!desc.is_written) {
+            continue;
+        }
+        if (desc.count != 1 || desc.indirect_offset != ~0U || desc.cbuf_index > 0xffff ||
+            desc.cbuf_offset > 0xffff || writes.count == Tegra::Nx2ComputeWritesMaxSsbos) {
+            localizable = false;
+            break;
+        }
+        writes.ssbos[writes.count++] = (desc.cbuf_index << 16) | desc.cbuf_offset;
+    }
+    writes.localizable = localizable;
+    return writes;
+}
 } // Anonymous namespace
 
 PipelineCache::~PipelineCache() {
@@ -806,11 +834,44 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
 }
 
 ComputePipeline* PipelineCache::CurrentComputePipeline() {
+    static const bool writer_ranges =
+        VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ComputeWriterRanges);
+    // Read before the program is resolved: a program dropped meanwhile moved the epoch on.
+    const u64 nx2_epoch =
+        writer_ranges ? Tegra::g_nx2_code_epoch.load(std::memory_order_acquire) : 0;
+    const u64 nx2_map_serial = writer_ranges ? gpu_memory->GetMapSerial() : 0;
 
     const ShaderInfo* const shader{ComputeShader()};
     if (!shader) {
         return nullptr;
     }
+    const auto publish = [&](ComputePipeline* pipeline) {
+        if (writer_ranges && pipeline != nullptr) {
+            const GPUVAddr program = kepler_compute->regs.code_loc.Address() +
+                                     kepler_compute->launch_description.program_start;
+            Tegra::Nx2PublishComputeWrites(
+                program, static_cast<u32>(gpu_memory->GetID()), nx2_map_serial, nx2_epoch,
+                [this, pipeline, shader, program] {
+                    Tegra::Nx2ComputeWrites writes = SummarizeComputeWrites(pipeline->GetInfo());
+                    if (!writes.localizable) {
+                        return writes;
+                    }
+                    // As Nx2ProveNonWriterDraw: a CPU write to GPU-modified pages reaches the
+                    // shader cache only later, so code there could change without moving the
+                    // epoch; elsewhere, marked as proven code, such a write moves it at once.
+                    const std::optional<DAddr> code = gpu_memory->GpuToCpuAddress(program);
+                    const u64 size = (std::max<u64>)(shader->size_bytes, 1);
+                    std::scoped_lock lock{buffer_cache.mutex};
+                    if (!code || buffer_cache.IsRegionGpuModified(*code, size)) {
+                        writes.localizable = false;
+                    } else {
+                        Tegra::Nx2MarkProvenCode(*code, size);
+                    }
+                    return writes;
+                });
+        }
+        return pipeline;
+    };
     const auto& qmd{kepler_compute->launch_description};
     const ComputePipelineCacheKey key{
         .unique_hash = shader->unique_hash,
@@ -822,7 +883,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
                                                  (ComputeFastCacheSize - 1));
     auto& fast_entry = compute_fast_cache[fast_slot];
     if (fast_entry.pipeline != nullptr && fast_entry.key == key) {
-        return fast_entry.pipeline;
+        return publish(fast_entry.pipeline);
     }
     const auto [pair, is_new]{compute_cache.try_emplace(key)};
     auto& pipeline{pair->second};
@@ -833,7 +894,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
         fast_entry.key = key;
         fast_entry.pipeline = pipeline.get();
     }
-    return pipeline.get();
+    return publish(pipeline.get());
 }
 
 void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading,

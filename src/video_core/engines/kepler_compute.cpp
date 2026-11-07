@@ -647,6 +647,8 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
     // upscaled image. Its inputs are kept from the first pass for a replacement upscale.
     if (RememberDlssMotionVectors()) {
         dlss_chain.active = true;
+        // Its storage buffers are sized from the mapping (IsDlssDispatch).
+        Tegra::g_nx2_compute_mapping_sized.store(true, std::memory_order_relaxed);
         dlss_chain.rejected = 0;
         dlss_chain.dispatches = 0;
         dlss_chain.pending.clear();
@@ -1385,7 +1387,33 @@ struct KeplerCompute::FrontState {
     bool compute_uploaded{};
     u32 bind_pointer{};
     MacroEngine* macro{}; ///< Without a native context: the one macro engine
+    /// Nx2Perf compute_writer_ranges (with MacroReadEarly, which notes the QMD and semaphore
+    /// writes), and its Verify coverage check
+    bool writer_ranges{};
+    bool verify_ranges{};
+    bool writes_unlocalized{}; ///< This call sent a writer whose writes were not all noted
+    bool plan_ready{};         ///< `plan` holds the ranges of the method being sent
+    Tegra::Nx2WriteCoverage plan{};
 };
+
+namespace {
+/// Why compute_writer_ranges did not localize a launch (Nx2WriterRangeStats::fallbacks).
+enum WriterRangeFallback : u32 {
+    FallbackMulti,        ///< Several launch words in one call
+    FallbackMap,          ///< A queued function may remap memory
+    FallbackMappingSized, ///< A storage buffer was once sized from its mapping (DLSS)
+    FallbackQmd,          ///< The QMD may still be written, or is unmapped
+    FallbackQmdFormat,    ///< Not a QMD the back runs
+    FallbackDependent,    ///< It launches a dependent QMD
+    FallbackRelease,      ///< A release address the front can't place
+    FallbackNoRecord,     ///< The back has not published the program for this key yet
+    FallbackNotLocalizable, ///< The program writes more than its storage buffers
+    FallbackCbuf,         ///< A storage buffer's constant buffer is off or too wide
+    FallbackDescriptor,   ///< Its descriptor may still be written, or is unmapped
+    FallbackBuffer,       ///< The buffer is sparse, unmapped or not one device range
+    FallbackRanges,       ///< More ranges than the plan holds
+};
+} // Anonymous namespace
 
 KeplerCompute::FrontState& KeplerCompute::Front(VideoCommon::GpuSplit& split) {
     if (!front) [[unlikely]] {
@@ -1400,6 +1428,13 @@ KeplerCompute::FrontState& KeplerCompute::Front(VideoCommon::GpuSplit& split) {
         front->compute_uploaded = native_compute_uploaded;
         front->bind_pointer = native_bind_pointer;
         front->macro = native_macro;
+        front->writer_ranges =
+            VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ComputeWriterRanges) &&
+            VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::MacroReadEarly);
+        front->verify_ranges = front->writer_ranges && VideoCommon::Nx2Perf::Verify();
+        if (front->verify_ranges) {
+            Tegra::g_nx2_write_coverage_on.store(true, std::memory_order_relaxed);
+        }
         front_macros = true;
     }
     return *front;
@@ -1485,6 +1520,7 @@ void KeplerCompute::FrontCallMethod(Core::System& system, VideoCommon::GpuSplit&
         return;
     }
     FrontApply(fs, method, argument);
+    FrontPlanWrites(split, fs, method, argument, 1);
     split.Method(this, method, argument, is_last_call, segment, FrontEffect(method));
     FrontNoteWrites(split, fs, method);
 }
@@ -1521,6 +1557,212 @@ void KeplerCompute::FrontNoteWrites(VideoCommon::GpuSplit& split, FrontState& fs
                         (GPUVAddr{fs.registers[0x6c0] & 0x1ffffff} << 32) | fs.registers[0x6c1],
                         16);
     }
+    if (fs.plan_ready) {
+        fs.plan_ready = false;
+        for (u32 i = 0; i < fs.plan.count; ++i) {
+            split.NoteDeviceRange(fs.plan.ranges[i][0], fs.plan.ranges[i][1] - fs.plan.ranges[i][0]);
+        }
+        if (fs.verify_ranges) {
+            split.Defer([] { Tegra::t_nx2_write_coverage_active = false; },
+                        VideoCommon::SplitWriteTracker::Effect::None);
+        }
+    }
+}
+
+bool KeplerCompute::TakeFrontWritesLocalized() {
+    if (!front || !front->writer_ranges) {
+        return false;
+    }
+    const bool localized = !front->writes_unlocalized;
+    front->writes_unlocalized = false;
+    auto& stats = Tegra::g_nx2_writer_range_stats;
+    ++(localized ? stats.calls_localized : stats.calls_unlocalized);
+    return localized;
+}
+
+void KeplerCompute::FrontPlanWrites(VideoCommon::GpuSplit& split, FrontState& fs, u32 method,
+                                    u32 argument, u32 amount) {
+    fs.plan_ready = false;
+    // Unknown writes (inline uploads) are in every fetch's target; None writes nothing; the
+    // semaphore release is noted by FrontNoteWrites.
+    if (!fs.writer_ranges || !MayWriteMemory(method) ||
+        FrontEffect(method) != VideoCommon::SplitWriteTracker::Effect::Gpu || method == 0x6c3) {
+        return;
+    }
+    u32 reason = FallbackMulti;
+    if (amount != 1 || !FrontPlanLaunch(split, fs, method, argument, reason)) {
+        fs.writes_unlocalized = true;
+        auto& fallbacks = Tegra::g_nx2_writer_range_stats.fallbacks;
+        ++fallbacks[(std::min<size_t>)(reason, fallbacks.size() - 1)];
+        return;
+    }
+    fs.plan_ready = true;
+    if (fs.verify_ranges) {
+        split.Defer(
+            [coverage = fs.plan] {
+                Tegra::t_nx2_write_coverage = coverage;
+                Tegra::t_nx2_write_coverage_active = true;
+            },
+            VideoCommon::SplitWriteTracker::Effect::None);
+    }
+}
+
+bool KeplerCompute::FrontPlanLaunch(VideoCommon::GpuSplit& split, FrontState& fs, u32 method,
+                                    u32 argument, u32& reason) {
+    fs.plan.program = 0;
+    fs.plan.count = 0;
+    // As ProcessNativeMethod: which of these run a QMD, and which one.
+    NativeQmdScheduler::Descriptor qmd{};
+    if (method == 0x107) {
+        const u32 control = fs.registers[0xa7];
+        if (!(control & (1U << 24)) && (fs.registers[0xcc] & (1U << 12))) {
+            return true; // Only the QMD write, noted by FrontNoteWrites
+        }
+        std::copy_n(fs.registers.begin() + 0xc8, qmd.size(), qmd.begin());
+    } else if (method == 0xae || (method == 0xaf && !(argument & 2)) ||
+               (method == 0xb0 && (argument & 15) <= 1)) {
+        return true;
+    }
+    const u64 consumed = split.ConsumedNow();
+    if (split.MapTarget() > consumed) {
+        reason = FallbackMap;
+        return false;
+    }
+    if (Tegra::g_nx2_compute_mapping_sized.load(std::memory_order_relaxed)) {
+        reason = FallbackMappingSized;
+        return false;
+    }
+    // Every signal runs at most the QMD at this address (read again when it runs) and the
+    // dependents it names.
+    if (method != 0x107 && !FrontReadFinal(split, consumed, GPUVAddr{fs.registers[0xad]} << 8,
+                                           sizeof(qmd), qmd.data())) {
+        reason = FallbackQmd;
+        return false;
+    }
+    if ((qmd[18] & 0xff) != 0x30 || (qmd[4] & 0x100)) {
+        reason = FallbackQmdFormat;
+        return false;
+    }
+    if (qmd[16] & ((1U << 5) | 1U)) {
+        reason = FallbackDependent;
+        return false;
+    }
+    for (const u32 base : {24U, 28U, 52U}) {
+        const u32 flags = qmd[base + 1];
+        if ((flags & (1U << 23)) &&
+            !FrontPlanRange(fs, (GPUVAddr{flags & 0xff} << 32) | qmd[base], 16)) {
+            reason = FallbackRelease;
+            return false;
+        }
+    }
+    if (qmd[12] == 0 || (qmd[13] & 0xffff) == 0 || (qmd[14] & 0xffff) == 0) {
+        return true; // Nothing dispatched
+    }
+    const GPUVAddr program = (GPUVAddr{qmd[49] & 0x1ffff} << 32) | qmd[48];
+    fs.plan.program = program;
+    Tegra::Nx2ComputeWrites record;
+    if (!Tegra::Nx2FindComputeWrites(program, static_cast<u32>(memory_manager.GetID()),
+                                     memory_manager.GetMapSerial(),
+                                     Tegra::g_nx2_code_epoch.load(std::memory_order_acquire),
+                                     record)) {
+        reason = FallbackNoRecord;
+        return false;
+    }
+    if (!record.localizable) {
+        reason = FallbackNotLocalizable;
+        return false;
+    }
+    for (u32 i = 0; i < record.count; ++i) {
+        const u32 index = record.ssbos[i] >> 16;
+        const u32 offset = record.ssbos[i] & 0xffff;
+        if (index >= NumConstBuffers || ((qmd[20] >> index) & 1) == 0 ||
+            (qmd[33 + index * 2] & 0x1ff00) != 0) {
+            reason = FallbackCbuf;
+            return false;
+        }
+        const GPUVAddr cbuf = (GPUVAddr{qmd[33 + index * 2] & 0xff} << 32) | qmd[32 + index * 2];
+        std::array<u64, 2> descriptor{};
+        if (!FrontReadFinal(split, consumed, cbuf + offset, sizeof(descriptor),
+                            descriptor.data())) {
+            reason = FallbackDescriptor;
+            return false;
+        }
+        if (!FrontPlanBuffer(fs, descriptor)) {
+            reason = fs.plan.count == fs.plan.ranges.size() ? FallbackRanges : FallbackBuffer;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool KeplerCompute::FrontReadFinal(const VideoCommon::GpuSplit& split, u64 consumed,
+                                   GPUVAddr address, size_t size, void* out) {
+    if (address < Tegra::g_nx2_sparse_high.load(std::memory_order_relaxed) &&
+        Tegra::g_nx2_sparse_low.load(std::memory_order_relaxed) < address + size) {
+        return false;
+    }
+    for (GPUVAddr page = address & ~GPUVAddr{0xfff}; page < address + size; page += 0x1000) {
+        const std::optional<DAddr> device = memory_manager.GpuToCpuAddress(page);
+        if (!device) {
+            return false;
+        }
+        const u64 begin = *device + ((std::max)(page, address) - page);
+        const u64 end = *device + ((std::min)(page + 0x1000, address + size) - page);
+        if (split.ReadTarget(begin, end) > consumed) {
+            return false;
+        }
+    }
+    memory_manager.ReadBlockUnsafe(address, out, size);
+    return true;
+}
+
+bool KeplerCompute::FrontPlanRange(FrontState& fs, GPUVAddr address, u64 size) {
+    if (address < Tegra::g_nx2_sparse_high.load(std::memory_order_relaxed) &&
+        Tegra::g_nx2_sparse_low.load(std::memory_order_relaxed) < address + size) {
+        return false;
+    }
+    for (GPUVAddr page = address & ~GPUVAddr{0xfff}; page < address + size; page += 0x1000) {
+        const std::optional<DAddr> device = memory_manager.GpuToCpuAddress(page);
+        if (!device || fs.plan.count == fs.plan.ranges.size()) {
+            return false;
+        }
+        const u64 begin = *device & ~u64{0xfff};
+        fs.plan.ranges[fs.plan.count++] = {begin, begin + 0x1000};
+    }
+    return true;
+}
+
+bool KeplerCompute::FrontPlanBuffer(FrontState& fs, const std::array<u64, 2>& descriptor) {
+    // As BufferCache::StorageBufferBinding for a written, non-table, non-DLSS binding.
+    const GPUVAddr pointer = descriptor[0];
+    if (pointer == 0) {
+        return true;
+    }
+    const u32 layout = static_cast<u32>(memory_manager.GetMemoryLayoutSize(pointer));
+    const u32 packed = static_cast<u32>(descriptor[1]);
+    const bool packed_size = (descriptor[1] >> 32) == 0 && packed != 0 && packed <= layout;
+    const u32 size = packed_size ? packed : (std::min)(layout, u32{8} << 20);
+    if (size == 0) {
+        return true;
+    }
+    // Down to 256 bytes covers any storage buffer offset alignment the back uses.
+    const GPUVAddr aligned = pointer & ~GPUVAddr{0xff};
+    const u64 aligned_size = (pointer - aligned) + size;
+    if (aligned < Tegra::g_nx2_sparse_high.load(std::memory_order_relaxed) &&
+        Tegra::g_nx2_sparse_low.load(std::memory_order_relaxed) < aligned + aligned_size) {
+        return false;
+    }
+    // One device range: the back's single range and its multi-range segments are the same.
+    if (memory_manager.MaxContinuousRange(aligned, aligned_size) < aligned_size) {
+        return false;
+    }
+    const std::optional<DAddr> device = memory_manager.GpuToCpuAddress(aligned);
+    if (!device || fs.plan.count == fs.plan.ranges.size()) {
+        return false;
+    }
+    fs.plan.ranges[fs.plan.count++] = {*device & ~u64{0xfff},
+                                       (*device + aligned_size + 0xfff) & ~u64{0xfff}};
+    return true;
 }
 
 void KeplerCompute::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split,
@@ -1548,6 +1790,7 @@ void KeplerCompute::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuS
     for (u32 i = 0; i < amount; ++i) {
         FrontApply(fs, method, base_start[i]);
     }
+    FrontPlanWrites(split, fs, method, base_start[amount - 1], amount);
     split.MultiMethod(this, method, base_start, amount, methods_pending, segment,
                       FrontEffect(method));
     FrontNoteWrites(split, fs, method);
@@ -1572,6 +1815,7 @@ void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& s
             return false;
         }
         FrontApply(fs, address, value);
+        FrontPlanWrites(split, fs, address, value, 1);
         split.MacroWrite(this, address, value, FrontEffect(address));
         FrontNoteWrites(split, fs, address);
         return true;
@@ -1594,3 +1838,30 @@ void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& s
 }
 
 } // namespace Tegra::Engines
+
+namespace Tegra {
+
+void Nx2CheckWriteCoverage(u64 device_address, u64 size) {
+    const Nx2WriteCoverage& coverage = t_nx2_write_coverage;
+    for (u64 page = device_address & ~u64{0xfff}; page < device_address + size;) {
+        u64 next = 0;
+        for (u32 i = 0; i < coverage.count; ++i) {
+            if (coverage.ranges[i][0] <= page && page < coverage.ranges[i][1]) {
+                next = coverage.ranges[i][1];
+                break;
+            }
+        }
+        if (next == 0) {
+            if (g_nx2_writer_range_uncovered.fetch_add(1, std::memory_order_relaxed) < 64) {
+                LOG_ERROR(HW_GPU,
+                          "Nx2Perf compute_writer_ranges: dispatch program {:#x} marked page "
+                          "{:#x} outside its noted ranges ({} noted, write {:#x}+{:#x})",
+                          coverage.program, page, coverage.count, device_address, size);
+            }
+            return;
+        }
+        page = next;
+    }
+}
+
+} // namespace Tegra

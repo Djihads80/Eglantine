@@ -264,9 +264,31 @@ public:
     /// Compute or copy work was just sent: what can write GPU-written command lists.
     void NoteWriter() {
         last_writer_position = write_position;
+        last_unlocalized_writer_position = write_position;
         if (eager_publish) {
             Publish(); // the fetch that waits for this entry usually follows within microseconds
         }
+    }
+    /// Nx2Perf compute_writer_ranges: the same for a writer whose writes were all noted (Write,
+    /// NoteDeviceRange) or are unknown writes; LocalizedListTarget does not wait for it.
+    void NoteLocalizedWriter() {
+        last_writer_position = write_position;
+        if (eager_publish) {
+            Publish();
+        }
+    }
+    /// compute_writer_ranges: what a fetch from the device range [begin, end) on pages no GPU
+    /// work wrote yet waits for: the unlocalized writers, unknown writes and noted writes to it.
+    [[nodiscard]] u64 LocalizedListTarget(u64 begin, u64 end) const {
+        return (std::max)({last_unlocalized_writer_position, writes.LastUnknown(),
+                           writes.LastWriteTo(begin, end)});
+    }
+    /// What WaitForWriters waits for, and the position of the last unlocalized writer.
+    [[nodiscard]] u64 WriterTarget() const {
+        return (std::min)(last_writer_position, write_position);
+    }
+    [[nodiscard]] u64 LastUnlocalizedWriter() const {
+        return last_unlocalized_writer_position;
     }
     /// Waits until the back executed the compute and copy work sent so far (not what came after).
     /// Returns whether any of it was still queued.
@@ -483,6 +505,7 @@ private:
     // Front side.
     u64 write_position{};
     u64 last_writer_position{};
+    u64 last_unlocalized_writer_position{}; ///< NoteWriter only (compute_writer_ranges)
     u64 last_sync_position{};
     u64 last_function_position{};
     SplitWriteTracker writes;

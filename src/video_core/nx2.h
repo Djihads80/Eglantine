@@ -35,9 +35,27 @@ inline constexpr u64 Nx2WrittenRegionBits = 20;
 inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenRegionBits)) / 64>
     g_nx2_gpu_written_regions{};
 
+// Nx2Perf compute_writer_ranges, EDEN_NX2_PERF_VERIFY: while the split back runs a dispatch the
+// front localized, every page it marks GPU-written must lie in the ranges the front noted.
+struct Nx2WriteCoverage {
+    u64 program{};
+    u32 count{};
+    std::array<std::array<u64, 2>, 20> ranges{}; ///< Device [begin, end)
+};
+inline std::atomic<bool> g_nx2_write_coverage_on{false};
+inline thread_local bool t_nx2_write_coverage_active{};
+inline thread_local Nx2WriteCoverage t_nx2_write_coverage{};
+/// Logs a mark outside t_nx2_write_coverage's ranges (kepler_compute.cpp).
+void Nx2CheckWriteCoverage(u64 device_address, u64 size);
+
 inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
     if (size == 0) {
         return;
+    }
+    if (g_nx2_write_coverage_on.load(std::memory_order_relaxed)) [[unlikely]] {
+        if (t_nx2_write_coverage_active) {
+            Nx2CheckWriteCoverage(device_address, size);
+        }
     }
     {
         const u64 last_region =
@@ -179,6 +197,129 @@ inline void Nx2NoteDeferredCodeWrite(u64 device_address, u64 size) {
         Nx2BumpCodeEpoch();
     }
 }
+
+// Nx2Perf compute_writer_ranges: what a compute program can write, published by the split back
+// when it resolves the program for a dispatch, keyed by program address, address space, map
+// serial and code epoch (as Nx2DrawPrograms). The front reads it at QMD launches.
+inline constexpr u32 Nx2ComputeWritesMaxSsbos = 16;
+struct Nx2ComputeWrites {
+    bool localizable{}; ///< Every write goes to the storage buffers below
+    u32 count{};
+    std::array<u32, Nx2ComputeWritesMaxSsbos> ssbos{}; ///< Written ones: cbuf index << 16 | offset
+};
+
+struct Nx2ComputeWritesSlot {
+    std::atomic<u64> sequence{}; ///< Odd while the back rewrites the slot
+    std::atomic<u64> program{};
+    std::atomic<u64> map_serial{};
+    std::atomic<u64> epoch{}; ///< 0: empty
+    std::atomic<u32> memory_id{};
+    std::atomic<u32> header{}; ///< Bit 31 localizable, bits 0-7 count
+    std::array<std::atomic<u32>, Nx2ComputeWritesMaxSsbos> ssbos{};
+};
+inline constexpr size_t Nx2ComputeWritesSlots = 1024;
+inline constexpr size_t Nx2ComputeWritesProbe = 4;
+inline std::array<Nx2ComputeWritesSlot, Nx2ComputeWritesSlots> g_nx2_compute_writes{};
+
+/// Set once the back sized a storage buffer from its mapping (a game DLSS evaluation): the
+/// front can't tell which dispatches do, so it no longer localizes any.
+inline std::atomic<bool> g_nx2_compute_mapping_sized{false};
+
+[[nodiscard]] inline size_t Nx2ComputeWritesHome(u64 program, u32 memory_id, u64 map_serial,
+                                                 u64 epoch) {
+    u64 hash = (program >> 6) * 0x9e3779b97f4a7c15ULL ^ u64{memory_id} * 0xc2b2ae3d27d4eb4fULL ^
+               map_serial * 0x165667b19e3779f9ULL ^ epoch;
+    hash ^= hash >> 29;
+    return static_cast<size_t>((hash * 0xff51afd7ed558ccdULL) >> 54) &
+           (Nx2ComputeWritesSlots - 1);
+}
+
+/// Split back only (one writer): publishes `make()` unless a slot already holds the key.
+template <typename Make>
+inline void Nx2PublishComputeWrites(u64 program, u32 memory_id, u64 map_serial, u64 epoch,
+                                    Make&& make) {
+    const size_t home = Nx2ComputeWritesHome(program, memory_id, map_serial, epoch);
+    const u64 current = g_nx2_code_epoch.load(std::memory_order_relaxed);
+    size_t victim = home;
+    for (size_t i = 0; i < Nx2ComputeWritesProbe; ++i) {
+        const size_t index = (home + i) & (Nx2ComputeWritesSlots - 1);
+        const Nx2ComputeWritesSlot& slot = g_nx2_compute_writes[index];
+        const u64 slot_epoch = slot.epoch.load(std::memory_order_relaxed);
+        if (slot_epoch == epoch && slot.program.load(std::memory_order_relaxed) == program &&
+            slot.memory_id.load(std::memory_order_relaxed) == memory_id &&
+            slot.map_serial.load(std::memory_order_relaxed) == map_serial) {
+            return;
+        }
+        if (slot_epoch != current) {
+            victim = index; // empty or stale
+            break;
+        }
+    }
+    const Nx2ComputeWrites writes = make();
+    Nx2ComputeWritesSlot& slot = g_nx2_compute_writes[victim];
+    const u64 sequence = slot.sequence.load(std::memory_order_relaxed);
+    slot.sequence.store(sequence + 1, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
+    slot.program.store(program, std::memory_order_relaxed);
+    slot.map_serial.store(map_serial, std::memory_order_relaxed);
+    slot.epoch.store(epoch, std::memory_order_relaxed);
+    slot.memory_id.store(memory_id, std::memory_order_relaxed);
+    slot.header.store((writes.localizable ? 1U << 31 : 0U) | (writes.count & 0xff),
+                      std::memory_order_relaxed);
+    for (u32 i = 0; i < Nx2ComputeWritesMaxSsbos; ++i) {
+        slot.ssbos[i].store(writes.ssbos[i], std::memory_order_relaxed);
+    }
+    slot.sequence.store(sequence + 2, std::memory_order_release);
+}
+
+/// Front: the record of this key, if a consistent one is published.
+[[nodiscard]] inline bool Nx2FindComputeWrites(u64 program, u32 memory_id, u64 map_serial,
+                                               u64 epoch, Nx2ComputeWrites& out) {
+    if (epoch == 0) {
+        return false;
+    }
+    const size_t home = Nx2ComputeWritesHome(program, memory_id, map_serial, epoch);
+    for (size_t i = 0; i < Nx2ComputeWritesProbe; ++i) {
+        const Nx2ComputeWritesSlot& slot =
+            g_nx2_compute_writes[(home + i) & (Nx2ComputeWritesSlots - 1)];
+        const u64 before = slot.sequence.load(std::memory_order_acquire);
+        if ((before & 1) != 0) {
+            continue;
+        }
+        const bool match = slot.epoch.load(std::memory_order_relaxed) == epoch &&
+                           slot.program.load(std::memory_order_relaxed) == program &&
+                           slot.memory_id.load(std::memory_order_relaxed) == memory_id &&
+                           slot.map_serial.load(std::memory_order_relaxed) == map_serial;
+        const u32 header = slot.header.load(std::memory_order_relaxed);
+        for (u32 j = 0; j < Nx2ComputeWritesMaxSsbos; ++j) {
+            out.ssbos[j] = slot.ssbos[j].load(std::memory_order_relaxed);
+        }
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (match && slot.sequence.load(std::memory_order_relaxed) == before) {
+            out.localizable = (header >> 31) != 0;
+            out.count = (std::min)(header & 0xff, Nx2ComputeWritesMaxSsbos);
+            return true;
+        }
+    }
+    return false;
+}
+
+/// compute_writer_ranges counters, kept by the split front only.
+struct Nx2WriterRangeStats {
+    u64 fetches{};    ///< Fetches from pages no GPU work wrote yet
+    u64 full_waits{}; ///< Of those, the old wait (sparse, untranslatable, mapping-sized)
+    u64 waits{};      ///< Narrowed waits the back still had queued
+    u64 avoided{};    ///< Fetches the old wait would have waited at, the narrowed one not
+    u64 by_unlocalized{}; ///< Of waits, the target was: an unlocalized writer,
+    u64 by_unknown{};     ///< an unknown write (inline uploads among them),
+    u64 by_page{};        ///< a noted write to the list's pages
+    u64 calls_localized{}; ///< Compute writer calls noted as localized, and not
+    u64 calls_unlocalized{};
+    std::array<u64, 16> fallbacks{}; ///< Launches not localized, by reason (kepler_compute.cpp)
+};
+inline Nx2WriterRangeStats g_nx2_writer_range_stats{};
+/// EDEN_NX2_PERF_VERIFY: marks a localized dispatch made outside its noted ranges (split back).
+inline std::atomic<u64> g_nx2_writer_range_uncovered{};
 
 /// The programs a graphics draw binds, as Maxwell3D::Nx2DrawPrograms computes them from the
 /// registers: per program slot, its GPU address (0 when disabled).

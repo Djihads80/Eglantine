@@ -57,6 +57,10 @@ public:
         return static_cast<bool>(pipeline);
     }
 
+    [[nodiscard]] const Shader::Info& GetInfo() const noexcept {
+        return info;
+    }
+
 private:
     const Device& device;
     vk::PipelineCache& pipeline_cache;

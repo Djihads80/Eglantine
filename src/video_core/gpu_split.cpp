@@ -156,6 +156,7 @@ void GpuSplit::Stop() {
     ring.reset();
     write_position = 0;
     last_writer_position = 0;
+    last_unlocalized_writer_position = 0;
     last_sync_position = 0;
     last_function_position = 0;
     writes.Reset();
