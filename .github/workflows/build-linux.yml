@@ -80,7 +80,7 @@ jobs:
           release: ${{ inputs.release }}
 
       - name: Cache APT packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /var/cache/apt/archives
           key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/*.yml') }}
