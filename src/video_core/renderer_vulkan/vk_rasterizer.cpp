@@ -1352,11 +1352,13 @@ void RasterizerVulkan::DispatchCompute() {
             return;
         }
         Tegra::Nx2SignTimer timer;
-        // Reads the signatures don't follow: its output can change while they stay the same.
-        if (pipeline->Nx2UntrackedInputs()) {
-            buffer_cache.Nx2SetWriterUntracked(true);
-            buffer_cache.Nx2FinishDispatchSig(Tegra::Nx2UniqueSig());
-            return;
+        // Global accesses (counted): with =strict their writes are signed as new.
+        if (pipeline->Nx2GlobalAccesses()) {
+            buffer_cache.Nx2SetWriterGlobal(true);
+            if (Tegra::Nx2ClSpeculateStrict()) {
+                buffer_cache.Nx2FinishDispatchSig(Tegra::Nx2UniqueSig());
+                return;
+            }
         }
         u64 sig = Tegra::Nx2SigMix(Tegra::Nx2SigMix(pipeline->ShaderHash(), native_key), inputs);
         bool samples_images = false;

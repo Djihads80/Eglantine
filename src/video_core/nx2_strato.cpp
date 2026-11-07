@@ -161,14 +161,15 @@ void Nx2ReportSpeculation() {
     const u64 right = take(stats.right);
     const u64 wrong = take(stats.wrong);
     const u64 waited_ns = take(stats.waited_ns);
-    const u64 untracked = take(stats.untracked);
+    const u64 global = take(stats.global);
     const u64 sign_ns = take(g_nx2_sign_ns);
     LOG_INFO(HW_GPU,
              "Command list speculation in {:.1f} s: {} copy reads with a read before ({} "
-             "waited), {} got the same words; {} not predicted (written by a dispatch with "
-             "untracked inputs); predicted the same for {} ({} of them waited): {} right, {} "
+             "waited), {} got the same words; {} written by a dispatch with global accesses{}; "
+             "predicted the same for {} ({} of them waited): {} right, {} "
              "WRONG; {:.1f} ms of waits a right prediction would have saved, {:.1f} ms signing",
-             static_cast<double>(now - start) / 1e9, reads, waits, same, untracked, predicted,
+             static_cast<double>(now - start) / 1e9, reads, waits, same, global,
+             Nx2ClSpeculateStrict() ? " (not predicted)" : "", predicted,
              predicted_waits, right, wrong, static_cast<double>(waited_ns) / 1e6,
              static_cast<double>(sign_ns) / 1e6);
 }

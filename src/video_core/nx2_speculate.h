@@ -35,13 +35,22 @@
 // words would only ever be used without waiting when the prediction says so beforehand.
 namespace Tegra {
 
-/// 0: off, 1: measure only.
+/// 0: off, 1: measure only (=measure, or =strict).
 [[nodiscard]] inline int Nx2ClSpeculate() {
     static const int mode = [] {
         const char* const value = std::getenv("EDEN_NX2_CL_SPECULATE");
-        return value != nullptr && value[0] == 'm' ? 1 : 0;
+        return value != nullptr && (value[0] == 'm' || value[0] == 's') ? 1 : 0;
     }();
     return mode;
+}
+
+/// EDEN_NX2_CL_SPECULATE=strict: what dispatches with global accesses write is never predicted.
+[[nodiscard]] inline bool Nx2ClSpeculateStrict() {
+    static const bool strict = [] {
+        const char* const value = std::getenv("EDEN_NX2_CL_SPECULATE");
+        return value != nullptr && value[0] == 's';
+    }();
+    return strict;
 }
 
 [[nodiscard]] inline u64 Nx2SigMix(u64 hash, u64 value) {
@@ -215,8 +224,8 @@ struct Nx2SpeculationStats {
     std::atomic<u64> right{};          ///< Of predicted: they were the same
     std::atomic<u64> wrong{};          ///< Of predicted: they were not
     std::atomic<u64> waited_ns{};      ///< Wait time of predicted_waits that were right
-    std::atomic<u64> untracked{};      ///< Of reads: last written by a dispatch reading memory
-                                       ///< the signatures don't follow (never predicted)
+    std::atomic<u64> global{};         ///< Of reads: last written by a dispatch with global
+                                       ///< accesses (never predicted with =strict)
     std::atomic<u64> window_start{};
 };
 inline Nx2SpeculationStats g_nx2_speculation{};

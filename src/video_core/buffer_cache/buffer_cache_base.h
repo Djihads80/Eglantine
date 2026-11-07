@@ -364,12 +364,12 @@ public:
         if (!collect) {
             nx2_list_copy_requests.clear();
             nx2_pending_writes.clear();
-            nx2_writer_untracked = false;
+            nx2_writer_global = false;
         }
     }
-    /// EDEN_NX2_CL_SPECULATE: the dispatch being recorded reads memory signatures don't follow.
-    void Nx2SetWriterUntracked(bool untracked) {
-        nx2_writer_untracked = untracked;
+    /// EDEN_NX2_CL_SPECULATE: the dispatch being recorded reads through global addresses.
+    void Nx2SetWriterGlobal(bool global) {
+        nx2_writer_global = global;
     }
     /// EDEN_NX2_CL_SPECULATE (nx2_speculate.h): the signature of what the compute dispatch being
     /// recorded reads through the buffer cache (uniform buffer bytes, storage and texture buffer
@@ -816,8 +816,8 @@ private:
             u64 hash;
         };
         boost::container::small_vector<Span, 4> spans;
-        /// The copy is of a dispatch that reads memory the signatures don't follow.
-        bool untracked{};
+        /// The copy is of a dispatch that reads through global addresses.
+        bool global_writer{};
     };
     std::mutex nx2_list_mutex; ///< nx2_list_pages: the split's front reads the copies
     std::unordered_map<DAddr, Nx2ListPage> nx2_list_pages;
@@ -827,7 +827,7 @@ private:
     bool nx2_collect_list_copies{};
     /// EDEN_NX2_CL_SPECULATE: the storage ranges the dispatch being recorded writes.
     boost::container::small_vector<std::pair<DAddr, u64>, 8> nx2_pending_writes;
-    bool nx2_writer_untracked{};
+    bool nx2_writer_global{};
 
     /// Downloads waiting for EndDownloadBatch. Deferred staging: a submission inside the batch
     /// must not let another download reuse it before it is read.

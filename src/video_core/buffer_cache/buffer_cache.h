@@ -2175,7 +2175,7 @@ bool BufferCache<P>::Nx2CopyListPages(u64 tick) {
             entry.copy = staging;
             entry.copy_writes = entry.writes;
             entry.copy_tick = tick;
-            entry.untracked = nx2_writer_untracked;
+            entry.global_writer = nx2_writer_global;
             entry.copy_begin = static_cast<u32>(begin - page);
             entry.copy_end = static_cast<u32>(end - page);
         }
@@ -2242,8 +2242,8 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out) -> Nx
                 return;
             }
             auto& stats = Tegra::g_nx2_speculation;
-            stats.untracked.fetch_add(entry.untracked ? 1 : 0, std::memory_order_relaxed);
-            const bool predicted = !entry.untracked && span->sig == content_sig;
+            stats.global.fetch_add(entry.global_writer ? 1 : 0, std::memory_order_relaxed);
+            const bool predicted = span->sig == content_sig;
             const bool same = span->hash == hash;
             stats.reads.fetch_add(1, std::memory_order_relaxed);
             stats.waits.fetch_add(waited ? 1 : 0, std::memory_order_relaxed);

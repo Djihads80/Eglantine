@@ -66,9 +66,11 @@ public:
         return shader_hash;
     }
 
-    /// EDEN_NX2_CL_SPECULATE: whether the program reads memory outside its bindings (global
-    /// memory fallbacks for storage buffers it could not track, pointers chosen at run time).
-    [[nodiscard]] bool Nx2UntrackedInputs() const noexcept {
+    /// EDEN_NX2_CL_SPECULATE: whether the program reads through global addresses (fallbacks for
+    /// storage buffers it could not track, pointers chosen at run time). Their SPIR-V searches
+    /// only the storage buffers the program binds (DefineGlobalMemoryFunctions), whose ranges the
+    /// signature holds, so they are signed as any other unless =strict.
+    [[nodiscard]] bool Nx2GlobalAccesses() const noexcept {
         return info.uses_global_memory || info.native_global_bounds;
     }
 
