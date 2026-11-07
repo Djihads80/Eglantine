@@ -278,6 +278,10 @@ public:
     void Publish();
     /// Waits until the back executed everything sent so far.
     void Drain(DrainSite site = DrainSite::Other);
+    /// Nx2Perf acquire_drain_lite: the same without hook_requested or back_quiet. The back runs
+    /// its batch-end idle hook before it stores that position, but its sleep hook may still run:
+    /// the caller reads guest memory only, never the scheduler. Returns whether it waited.
+    bool WaitCaughtUp(DrainSite site);
 
     /// Compute or copy work was just sent: what can write GPU-written command lists.
     void NoteWriter() {

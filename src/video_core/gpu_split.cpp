@@ -350,6 +350,13 @@ void GpuSplit::Drain(DrainSite site) {
     }
 }
 
+bool GpuSplit::WaitCaughtUp(DrainSite site) {
+    if (!active) {
+        return false;
+    }
+    return WaitFor(write_position, site);
+}
+
 bool GpuSplit::WaitForWriters() {
     return WaitFor(std::min(last_writer_position, write_position), DrainSite::ListWriters);
 }
