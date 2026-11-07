@@ -1,0 +1,129 @@
+name: dynarmic-tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: &paths
+      - "src/dynarmic/**"
+      - "CMakeLists.txt"
+      - "src/CMakeLists.txt"
+      - "CMakeModules/**"
+      - ".patch/**"
+      - "externals/CMakeLists.txt"
+      - "cpmfile.json"
+      - ".github/workflows/dynarmic-tests.yml"
+  push:
+    branches:
+      - nx2
+    paths: *paths
+  schedule:
+    - cron: "0 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dynarmic-tests-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  dynarmic:
+    name: dynarmic unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1000M
+      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cache/cpm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf cmake g++ gcc git glslang-tools libglu1-mesa-dev \
+            libpulse-dev libtool libudev-dev mesa-common-dev nasm ninja-build \
+            libavfilter-dev libavcodec-dev libswscale-dev pkg-config zlib1g-dev \
+            libva-dev libvdpau-dev spirv-tools spirv-headers libusb-1.0-0-dev \
+            libboost-dev libboost-fiber-dev libboost-context-dev \
+            libopus-dev libasound2-dev ccache catch2 mold
+
+      # Informational only: the x64 backend picks AVX-512 code paths from the host CPU, and
+      # hosted runners vary. This lists what the host offers; it does not say what the tests ran.
+      # The A64 CLZ 16-bit path needs avx512vl and avx512cd as well as avx512f. Never fails.
+      - name: Report host CPU features
+        run: |
+          uname -m
+          grep -m1 'model name' /proc/cpuinfo || true
+          echo "AVX-512 flags:"
+          grep -o 'avx512[a-z_0-9]*' /proc/cpuinfo | sort -u || echo "(none)"
+          if grep -q avx512f /proc/cpuinfo && grep -q avx512vl /proc/cpuinfo && grep -q avx512cd /proc/cpuinfo; then
+            echo "::notice::host offers avx512f, avx512vl and avx512cd, the features the AVX-512 CLZ path needs"
+          else
+            echo "::notice::host lacks avx512f, avx512vl or avx512cd, so the AVX-512 CLZ path is not available to this run"
+          fi
+          true
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: dynarmic-tests-${{ github.sha }}
+          restore-keys: dynarmic-tests-
+
+      - name: Restore dependency sources
+        id: cpm
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/cpm
+          # Exact key only: CPMUtil does not recheck a cached source's URL or hash.
+          key: cpm-${{ hashFiles('cpmfile.json', 'CMakeModules/**', '.patch/**') }}
+
+      # DYNARMIC_TESTS defaults to BUILD_TESTING, which the root build forces OFF, so it must be
+      # set explicitly. It also gates find_package(Catch2) and oaknut in externals.
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=mold" \
+            -DDYNARMIC_TESTS=ON \
+            -DENABLE_QT=OFF \
+            -DYUZU_CMD=OFF \
+            -DYUZU_ROOM=OFF \
+            -DYUZU_ROOM_STANDALONE=OFF \
+            -DYUZU_USE_BUNDLED_SDL3=ON \
+            -DVulkanHeaders_FORCE_BUNDLED=ON \
+            -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_UPDATE_CHECKER=OFF \
+            -DUSE_DISCORD_PRESENCE=OFF \
+            -DENABLE_WERROR=OFF \
+            -DUSE_CCACHE=ON
+
+      - name: Build dynarmic_tests
+        run: |
+          ccache -z
+          cmake --build build --target dynarmic_tests --parallel
+          ccache -s
+
+      - name: Run dynarmic tests
+        run: |
+          BIN=$(find build -type f -name dynarmic_tests -perm -u+x | head -n1)
+          test -n "$BIN" || { echo "::error::dynarmic_tests binary not found"; exit 1; }
+          echo "Running $BIN"
+          "$BIN" --durations yes
+
+      - name: Save ccache
+        if: ${{ always() && github.ref == 'refs/heads/nx2' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: dynarmic-tests-${{ github.sha }}
+
+      - name: Save dependency sources
+        if: ${{ always() && github.ref == 'refs/heads/nx2' && steps.cpm.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/cpm
+          key: cpm-${{ hashFiles('cpmfile.json', 'CMakeModules/**', '.patch/**') }}
