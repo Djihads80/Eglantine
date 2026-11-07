@@ -232,6 +232,17 @@ template <typename Traits>
 void DeviceMemoryManager<Traits>::BindInterface(DeviceInterface* device_inter_) {
     device_inter = device_inter_;
     VideoCommon::Nx2Cow::RegisterDevice(this, &Nx2CowPointer, physical_base);
+    VideoCommon::Nx2BankDirty::RegisterDevice(this, &Nx2CowPointer, physical_base);
+}
+
+template <typename Traits>
+bool DeviceMemoryManager<Traits>::Nx2BankArm(DAddr address, u64 phys) {
+    const auto [asid, vaddr] = ExtractCPUBacking(address >> page_bits);
+    if (vaddr == 0 || asid.id >= registered_processes.size()) {
+        return false;
+    }
+    Memory::Memory* const process = registered_processes[asid.id];
+    return process != nullptr && process->Nx2BankDirtyArm(vaddr, phys);
 }
 
 template <typename Traits>

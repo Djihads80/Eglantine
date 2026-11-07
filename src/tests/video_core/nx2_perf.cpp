@@ -13,6 +13,7 @@
 
 #include "common/common_types.h"
 #include "video_core/macro_dma_forward.h"
+#include "video_core/nx2_bank_dirty.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_war_probe.h"
 
@@ -74,7 +75,8 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
                                   i == Index(Opt::RunAheadOverlayBudget) ||
                                   i == Index(Opt::AcquireDrainLite) ||
                                   i == Index(Opt::ExecSameDrop) ||
-                                  i == Index(Opt::StateDeadStore);
+                                  i == Index(Opt::StateDeadStore) ||
+                                  i == Index(Opt::BankDirtySkip);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
@@ -570,4 +572,58 @@ TEST_CASE("exec_same_drop: a bind repeats only the last one sent on its stage", 
     REQUIRE(memo.Same(4, 0x11, 0, 0x3000, 0x40, 7, 3));
     memo.Clear();
     REQUIRE_FALSE(memo.Same(4, 0x11, 0, 0x3000, 0x40, 7, 3));
+}
+
+TEST_CASE("bank_dirty_skip: marks, skips and re-arms bank pages", "[nx2_perf]") {
+    REQUIRE(opt_names[Index(Opt::BankDirtySkip)] == "bank_dirty_skip");
+    namespace BD = VideoCommon::Nx2BankDirty;
+    BD::Table table;
+    table.Init(16);
+    BD::ShadowPages sp;
+    constexpr u64 phys = 5;
+
+    // A new shadow compares every page; the first compare arms it.
+    REQUIRE_FALSE(BD::CanSkip(table, sp, 0, phys));
+    REQUIRE(BD::BeforeCompare(table, sp, 0, phys));
+    BD::Armed(sp, 0, true);
+    BD::EndPass(sp, 1);
+    // Compared again in a later frame (a hook runs before its write lands), not re-armed.
+    REQUIRE_FALSE(BD::CanSkip(table, sp, 0, phys));
+    REQUIRE_FALSE(BD::BeforeCompare(table, sp, 0, phys));
+    BD::EndPass(sp, 1);
+    REQUIRE_FALSE(BD::CanSkip(table, sp, 0, phys));
+    REQUIRE_FALSE(BD::BeforeCompare(table, sp, 0, phys));
+    BD::EndPass(sp, 2);
+    REQUIRE(BD::CanSkip(table, sp, 0, phys));
+
+    // A mark (trap, tracker or write hook) makes the next compare run and re-arm.
+    REQUIRE(table.Mark(phys));
+    REQUIRE_FALSE(BD::CanSkip(table, sp, 0, phys));
+    REQUIRE(BD::BeforeCompare(table, sp, 0, phys));
+    BD::Armed(sp, 0, true);
+    BD::EndPass(sp, 3);
+    REQUIRE_FALSE(BD::CanSkip(table, sp, 0, phys));
+    REQUIRE_FALSE(BD::BeforeCompare(table, sp, 0, phys));
+    BD::EndPass(sp, 4);
+    REQUIRE(BD::CanSkip(table, sp, 0, phys));
+
+    // Another physical page behind the bank page, a forced pass, out of range indices.
+    REQUIRE_FALSE(BD::CanSkip(table, sp, 0, phys + 1));
+    sp.force = true;
+    REQUIRE_FALSE(BD::CanSkip(table, sp, 0, phys));
+    BD::EndPass(sp, 5);
+    REQUIRE(BD::CanSkip(table, sp, 0, phys));
+    REQUIRE_FALSE(BD::CanSkip(table, sp, static_cast<u32>(BD::MaxPages), phys));
+    REQUIRE_FALSE(BD::CanSkip(table, sp, 0, 16));
+
+    // Marks of pages no bank watches change nothing; a failed arm compares every time.
+    REQUIRE_FALSE(table.Mark(7));
+    REQUIRE_FALSE(table.Mark(100));
+    REQUIRE(BD::BeforeCompare(table, sp, 1, 7));
+    BD::Armed(sp, 1, false);
+    BD::EndPass(sp, 6);
+    BD::EndPass(sp, 7);
+    REQUIRE_FALSE(BD::CanSkip(table, sp, 1, 7));
+    REQUIRE(BD::BeforeCompare(table, sp, 1, 7));
+    REQUIRE(BD::CanSkip(table, sp, 0, phys));
 }
