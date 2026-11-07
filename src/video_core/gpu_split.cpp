@@ -265,6 +265,7 @@ void GpuSplit::Stop() {
     if (back_replay_lean) {
         ReportLean(true);
     }
+    lean_report_ns = 0; // the next session's first rates start at its own first run
     fold_claims.reset();
     fold_anchors.reset();
     fold_claim_write.store(0, std::memory_order_relaxed);
