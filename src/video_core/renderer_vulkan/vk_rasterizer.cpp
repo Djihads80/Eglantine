@@ -288,6 +288,56 @@ RasterizerVulkan::~RasterizerVulkan() {
     delete std::exchange(g_diag_pool, nullptr);
 }
 
+bool RasterizerVulkan::Nx2IsNonWriterDrawMemo(const Tegra::Nx2DrawPrograms& programs, u64 epoch) {
+    // Entries change only on an insert (which moves the version) or a clear (which moves the
+    // epoch first): with both unchanged, a proven entry is still what the lookup would answer.
+    auto& memo = nx2_nonwriter_memo;
+    const u64 version = Tegra::Nx2NonWriters().version.load(std::memory_order_acquire);
+    auto& entry = memo.entries[Tegra::Nx2NonWriterSet::Hash{}(programs) % memo.entries.size()];
+    bool proven;
+    if (entry.proven && entry.epoch == epoch && entry.version == version &&
+        entry.programs == programs) {
+        ++memo.hits;
+        proven = true;
+        if (VideoCommon::Nx2Perf::Verify() && !Tegra::Nx2IsNonWriterDraw(programs, epoch)) {
+            if (memo.mismatches++ < 64) {
+                LOG_ERROR(HW_GPU,
+                          "Nx2Perf nonwriter_proof_memo: memo said proven, lookup says not "
+                          "(epoch {}, version {})",
+                          epoch, version);
+            }
+            entry.proven = false;
+            proven = false;
+        }
+    } else {
+        ++memo.misses;
+        proven = Tegra::Nx2IsNonWriterDraw(programs, epoch);
+        if (proven) {
+            entry = {programs, epoch, version, true};
+        } else {
+            entry.proven = false;
+        }
+    }
+    if (VideoCommon::Nx2Perf::Verify() && ((memo.hits + memo.misses) & 1023) == 0) {
+        const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+        if (memo.last_report_ns == 0) {
+            memo.last_report_ns = now;
+        } else if (now - memo.last_report_ns >= 1'000'000'000) {
+            LOG_INFO(HW_GPU,
+                     "Nx2Perf nonwriter_proof_memo: {} hits, {} misses in the last {} ms, {} "
+                     "mismatches in all",
+                     memo.hits, memo.misses, (now - memo.last_report_ns) / 1'000'000,
+                     memo.mismatches);
+            memo.hits = 0;
+            memo.misses = 0;
+            memo.last_report_ns = now;
+        }
+    }
+    return proven;
+}
+
 void RasterizerVulkan::Nx2ProveNonWriterDraw(const GraphicsPipeline& pipeline) {
     // The programs as RefreshStages resolved them, in the epoch read before it did: a program
     // dropped or rewritten since moved the epoch on, and the proof is stale from the start.
@@ -296,11 +346,14 @@ void RasterizerVulkan::Nx2ProveNonWriterDraw(const GraphicsPipeline& pipeline) {
     if (epoch == 0 || map != gpu_memory->GetMapSerial()) {
         return;
     }
+    static const bool memo_on =
+        VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::NonwriterProofMemo);
     Tegra::Nx2DrawPrograms programs;
     if (!Tegra::Engines::Maxwell3D::Nx2DrawProgramsOf(
             maxwell3d->regs, maxwell3d->GetNativeMacroEngine().native_turing, gpu_memory->GetID(),
             map, programs) ||
-        Tegra::Nx2IsNonWriterDraw(programs, epoch)) {
+        (memo_on ? Nx2IsNonWriterDrawMemo(programs, epoch)
+                 : Tegra::Nx2IsNonWriterDraw(programs, epoch))) {
         return;
     }
     // The indirect reset program is drawn by writing guest memory on the host.
