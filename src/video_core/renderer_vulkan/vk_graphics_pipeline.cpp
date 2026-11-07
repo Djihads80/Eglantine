@@ -1160,12 +1160,9 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
                 .pSpecializationInfo = nullptr,
             });
         const Shader::Info& info{stage_infos[stage]};
-        const bool uses_warp_ops = info.uses_subgroup_vote || info.uses_subgroup_invocation_id ||
-                                   info.uses_subgroup_shuffles || info.uses_subgroup_mask ||
-                                   info.uses_quad_shuffles || info.uses_fswzadd;
         if ((stage_ci.stage == VK_SHADER_STAGE_MESH_BIT_EXT ||
              stage_ci.stage == VK_SHADER_STAGE_TASK_BIT_EXT) &&
-            uses_warp_ops && device.IsExtSubgroupSizeControlSupported() &&
+            info.UsesWarpOps() && device.IsExtSubgroupSizeControlSupported() &&
             device.IsGuestWarpSizeSupported(stage_ci.stage)) {
             stage_ci.pNext = &subgroup_size_ci;
         }
