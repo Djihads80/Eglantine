@@ -1022,6 +1022,9 @@ bool DmaPusher::WaitForListFetchSync(GPUVAddr address, size_t size) {
             }
             written = true;
         }
+    } else if (!written) {
+        // The writers ran since the pages were last looked at: one may have marked them.
+        written = IsGpuWrittenCommands(address, size);
     }
     if (!verify) {
         return written;
