@@ -1114,6 +1114,17 @@ void LoadPipelines(
         .read(reinterpret_cast<char*>(&cache_version), sizeof(cache_version));
     if (magic_number != MAGIC_NUMBER || cache_version != expected_cache_version) {
         file.close();
+        if (cache_version != expected_cache_version && magic_number == MAGIC_NUMBER) {
+            std::filesystem::path backup = filename;
+            backup += fmt::format(".v{}", cache_version);
+            std::error_code ec;
+            std::filesystem::rename(filename, backup, ec);
+            if (!ec) {
+                LOG_INFO(Common_Filesystem, "Renamed old pipeline cache (v{}) to {}",
+                         cache_version, Common::FS::PathToUTF8String(backup));
+                return;
+            }
+        }
         if (Common::FS::RemoveFile(filename)) {
             if (magic_number != MAGIC_NUMBER) {
                 LOG_ERROR(Common_Filesystem, "Invalid pipeline cache file");

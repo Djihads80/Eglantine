@@ -77,6 +77,11 @@ using VideoCommon::FileEnvironment;
 using VideoCommon::GenericEnvironment;
 using VideoCommon::GraphicsEnvironment;
 
+// Policy: CACHE_VERSION is bumped ONLY when serialized bytes change (GenericEnvironment::Serialize,
+// GraphicsPipelineCacheKey, ComputePipelineCacheKey, FixedPipelineState, or LoweredNativeCode's
+// serialized code vector). Pure IR-to-SPIR-V emission changes (EmitSPIRV, IR passes, Maxwell-to-IR
+// translation) do NOT bump CACHE_VERSION because LoadDiskResources re-runs TranslateProgram and
+// EmitSPIRV from the stored guest code + cbuf snapshot on every boot.
 constexpr u32 CACHE_VERSION = 29;
 constexpr size_t VULKAN_CACHE_FLUSH_PIPELINES = 128;
 constexpr size_t VULKAN_CACHE_FLUSH_MIN_SECONDS = 30;
@@ -1130,7 +1135,10 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         }
 
         const u64 hash = key.Hash();
-        disk_pipelines.insert(hash);
+        {
+            std::scoped_lock lock{state.mutex};
+            disk_pipelines.insert(hash);
+        }
         if (!PreloadAllPipelines() &&
             (used_pipelines.empty() ? queued_graphics >= MaxPipelinesWithoutUsedList
                                     : !used_pipelines.contains(hash))) {
