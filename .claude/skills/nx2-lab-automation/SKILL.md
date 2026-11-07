@@ -150,7 +150,10 @@ tr -d '\000' < $LOG | grep -a -E "LogSettings: M- Renderer.gpu_accuracy|GPU thre
   front's macro state went stale. The verifier resyncs what it finds, so verified runs don't hang;
   compare the difference counts instead.
 - The shader lab browser UI (`EDEN_NX2_LAB=open`) and `lab_ctl` share the same files and can run
-  together.
+  together. The lab shows each program's shader catalogue entry and saves new names to the local
+  catalogue (`tools/nx2/catalog.py`); `catalog.py status` / `merge` before a commit (AGENTS.md).
+- The debug server (`EDEN_NX2_DEBUG_SERVER`, `docs/nx2/debug-mcp.md`) works in `eden-cli` too:
+  `input_sequence` replays exact frame-timed moves, `capture_frame` dumps the frame's passes.
 
 ## References
 
