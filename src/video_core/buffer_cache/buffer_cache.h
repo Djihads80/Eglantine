@@ -3713,14 +3713,19 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
     }
 
     u32 size = [&]() {
-        const u32 memory_layout_size =
-            static_cast<u32>(gpu_memory->GetMemoryLayoutSize(gpu_addr));
+        const u32 memory_layout_size = static_cast<u32>((std::min)(
+            u64{gpu_memory->GetMemoryLayoutSize(gpu_addr)}, u64{(std::numeric_limits<u32>::max)()}));
         // A pointer read from a table in memory is the base of an object pool, read anywhere in
-        // it (Ocarina of Time's grass instances lie 12-18 MiB past theirs): bound to the end of
-        // its mapping, up to 64 MiB. The 8 MiB cap made those reads return 0 and culled every
-        // blade. Written pools keep the cap: a write marks the whole binding GPU-modified.
+        // it: bound to the end of its mapping, as far as a storage buffer may reach (at most
+        // 256 MiB). Ocarina of Time's grass instances lie 12-18 MiB past theirs (an 8 MiB cap
+        // culled every blade), and its light probe records reach about 130 MiB past theirs: a
+        // 64 MiB cap left the far probes outside the binding, and the fog took one overbright
+        // constant from them. Written pools keep a cap: a write marks the whole binding
+        // GPU-modified.
         if (table_pointer && !is_written) {
-            return (std::min)(memory_layout_size, static_cast<u32>(64_MiB));
+            const u64 reach = (std::min)(runtime.GetMaxStorageBufferRange(), u64{256_MiB + 64_KiB});
+            const u32 limit = static_cast<u32>(reach - (std::min)(reach, u64{64_KiB}));
+            return (std::min)(memory_layout_size, limit);
         }
         // A native (Switch 2) compute program's pointer is bare: the word after it is another
         // parameter (a dimension, stride or texture handle), not an NVN buffer size. Taking it as
