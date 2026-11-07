@@ -30,15 +30,23 @@
 // memory (traps, waits), the buffer cache (writer stamps, preflush reads) and vi2 (opening, log).
 namespace VideoCommon::Nx2Inflight {
 
+/// inflight_wait_v2: both waits, escaping only on a release page or a lack of progress.
+inline bool V2() {
+    static const bool on = Nx2Perf::On(Nx2Perf::Opt::InflightWaitV2);
+    return on;
+}
+
 inline bool WriteWait() {
-    static const bool on = Nx2Perf::On(Nx2Perf::Opt::FramesAhead) &&
-                           Nx2Perf::On(Nx2Perf::Opt::InflightWriteWait);
+    static const bool on = (Nx2Perf::On(Nx2Perf::Opt::FramesAhead) &&
+                            Nx2Perf::On(Nx2Perf::Opt::InflightWriteWait)) ||
+                           V2();
     return on;
 }
 
 inline bool ReadExact() {
-    static const bool on = Nx2Perf::On(Nx2Perf::Opt::FramesAhead) &&
-                           Nx2Perf::On(Nx2Perf::Opt::InflightReadExact);
+    static const bool on = (Nx2Perf::On(Nx2Perf::Opt::FramesAhead) &&
+                            Nx2Perf::On(Nx2Perf::Opt::InflightReadExact)) ||
+                           V2();
     return on;
 }
 
@@ -70,6 +78,10 @@ struct Epoch {
     std::atomic<u64> escapes{}, host_writes{}, write_waits{}, write_wait_ns{}, max_wait_ns{};
     std::atomic<u64> read_waits{}, read_wait_ns{}, read_escapes{}, preflush_reads{};
     std::atomic<u64> failed_opens{};
+    // inflight_wait_v2: escapes (writes and reads) by reason; Verify: waits the 3 ms rule would
+    // have given up on.
+    std::atomic<u64> escape_release_page{}, escape_no_progress{}, escape_timeout{};
+    std::atomic<u64> old_rule_differences{};
     // Verify: (a) bank pages the guest changed before the back passed the epoch's fence, (b)
     // preflush-served reads that differ from the bytes after their in-flight writer landed.
     std::atomic<u64> bank_violations{}, read_compared{}, read_differs{}, read_compare_dropped{};
@@ -79,6 +91,58 @@ struct Epoch {
 inline Epoch& Get() {
     static Epoch epoch;
     return epoch;
+}
+
+/// inflight_wait_v2: the device address of each suspended channel's semaphore acquire (0 =
+/// free slot). Puller sets a slot when it suspends a channel and clears it when it resumes.
+struct PendingAcquireSlot {
+    std::atomic<const void*> owner{nullptr};
+    std::atomic<u64> device_addr{0};
+};
+inline constexpr size_t NumPendingAcquires = 16;
+
+inline std::array<PendingAcquireSlot, NumPendingAcquires>& PendingAcquirePages() {
+    static std::array<PendingAcquireSlot, NumPendingAcquires> slots;
+    return slots;
+}
+
+inline std::atomic<u64>& PendingAcquireOverflow() {
+    static std::atomic<u64> overflow{0};
+    return overflow;
+}
+
+inline void SetPendingAcquire(const void* owner, u64 device_addr) {
+    auto& slots = PendingAcquirePages();
+    PendingAcquireSlot* free_slot = nullptr;
+    for (PendingAcquireSlot& slot : slots) {
+        const void* current = slot.owner.load(std::memory_order_acquire);
+        if (current == owner) {
+            slot.device_addr.store(device_addr, std::memory_order_release);
+            return;
+        }
+        if (current == nullptr && free_slot == nullptr) {
+            free_slot = &slot;
+        }
+    }
+    for (PendingAcquireSlot* slot = free_slot; slot != nullptr && slot != slots.data() + slots.size();
+         ++slot) {
+        const void* expected = nullptr;
+        if (slot->owner.compare_exchange_strong(expected, owner, std::memory_order_acq_rel)) {
+            slot->device_addr.store(device_addr, std::memory_order_release);
+            return;
+        }
+    }
+    PendingAcquireOverflow().fetch_add(1, std::memory_order_relaxed);
+}
+
+inline void ClearPendingAcquire(const void* owner) {
+    for (PendingAcquireSlot& slot : PendingAcquirePages()) {
+        if (slot.owner.load(std::memory_order_acquire) == owner) {
+            slot.device_addr.store(0, std::memory_order_release);
+            slot.owner.store(nullptr, std::memory_order_release);
+            return;
+        }
+    }
 }
 
 /// Buffer cache -> core memory, on the reading thread: what the last OnCPURead served.

@@ -1777,7 +1777,10 @@ private:
         if (frames_ahead == -1 && app_program_id == DonkeyKongBananzaProgramId) {
             frames_ahead = 0;
         } else if (frames_ahead == -1 && app_program_id == OcarinaOfTimeProgramId) {
-            frames_ahead = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FramesAhead) ? 1 : 0;
+            namespace Nx2Perf = VideoCommon::Nx2Perf;
+            const bool run_ahead =
+                Nx2Perf::On(Nx2Perf::Opt::FramesAhead) || Nx2Perf::On(Nx2Perf::Opt::InflightWaitV2);
+            frames_ahead = run_ahead ? 1 : 0;
         }
         // run_ahead_ledger (measurement only): compares the last frame's pages and arms the
         // back's set swap for this fence, before the wait and outside its timing.
@@ -1911,6 +1914,7 @@ private:
             if (const u32 fence_id = ~w[22]; fence_id < 192 &&
                 !system.Host1x().GetSyncpointManager().IsReadyGuest(fence_id, w[24])) {
                 ++m_stats.ran_ahead;
+                ++m_inflight_ran_ahead;
             }
             if (m_stats.last_present != std::chrono::steady_clock::time_point{}) {
                 const long long frame = to_us(entered - m_stats.last_present);
@@ -2184,12 +2188,19 @@ private:
             [](u64 address) { return Tegra::Nx2IsGpuWritten(address); });
     }
 
-    /// inflight_write_wait / inflight_read_exact: the epochs' counters, about once a second.
+    /// inflight_write_wait / inflight_read_exact / inflight_wait_v2: the epochs' counters, about
+    /// once a second, as deltas over the second.
     std::chrono::steady_clock::time_point m_inflight_log_time{};
+    u64 m_inflight_ran_ahead{};
+    struct InflightTotals {
+        u64 bank_violations{}, read_compared{}, read_differs{}, read_compare_dropped{};
+        u64 old_rule_differences{}, acquire_overflow{};
+    } m_inflight_prev{};
     void InflightLog() {
         const auto now = std::chrono::steady_clock::now();
         if (m_inflight_log_time == std::chrono::steady_clock::time_point{}) {
             m_inflight_log_time = now;
+            m_inflight_ran_ahead = 0;
             return;
         }
         if (now - m_inflight_log_time < std::chrono::seconds{1}) {
@@ -2204,22 +2215,40 @@ private:
         const u64 wait_ns = take(epoch.write_wait_ns);
         const u64 read_waits = take(epoch.read_waits);
         const u64 read_wait_ns = take(epoch.read_wait_ns);
+        // Cumulative counters (the verify logs print running totals): report this second's part.
+        const InflightTotals totals{
+            .bank_violations = epoch.bank_violations.load(std::memory_order_relaxed),
+            .read_compared = epoch.read_compared.load(std::memory_order_relaxed),
+            .read_differs = epoch.read_differs.load(std::memory_order_relaxed),
+            .read_compare_dropped = epoch.read_compare_dropped.load(std::memory_order_relaxed),
+            .old_rule_differences = epoch.old_rule_differences.load(std::memory_order_relaxed),
+            .acquire_overflow = VideoCommon::Nx2Inflight::PendingAcquireOverflow().load(
+                std::memory_order_relaxed),
+        };
+        const InflightTotals prev = std::exchange(m_inflight_prev, totals);
         LOG_INFO(HW_GPU,
                  "Nx2Perf inflight: epochs opened {}, closed by a write {}, by the fence {}, by "
-                 "the next present {}, escapes {}, failed opens {}; first-write waits {} (avg "
-                 "{:.3f} ms, max {:.3f} ms), host-thread writes {}; preflush reads {}, read "
-                 "waits {} (avg {:.3f} ms), read escapes {}; verify: bank pages changed before "
-                 "the fence {}, reads compared {}, differ {}, dropped {}",
+                 "the next present {}, escapes {} (release_page {}, no_progress {}, timeout {}), "
+                 "failed opens {}; first-write waits {} (avg {:.3f} ms, max {:.3f} ms), "
+                 "host-thread writes {}; preflush reads {}, read waits {} (avg {:.3f} ms), read "
+                 "escapes {}; ran a frame ahead {}; verify this second: bank pages changed "
+                 "before the fence {}, reads compared {}, differ {}, dropped {}, 3 ms rule "
+                 "differences {}, pending acquire overflow {}",
                  take(epoch.opened), take(epoch.closed_by_write), take(epoch.closed_by_fence),
-                 take(epoch.closed_by_present), take(epoch.escapes), take(epoch.failed_opens),
-                 waits, waits == 0 ? 0.0 : static_cast<double>(wait_ns) / waits / 1e6,
+                 take(epoch.closed_by_present), take(epoch.escapes),
+                 take(epoch.escape_release_page), take(epoch.escape_no_progress),
+                 take(epoch.escape_timeout), take(epoch.failed_opens), waits,
+                 waits == 0 ? 0.0 : static_cast<double>(wait_ns) / waits / 1e6,
                  static_cast<double>(take(epoch.max_wait_ns)) / 1e6, take(epoch.host_writes),
                  take(epoch.preflush_reads), read_waits,
                  read_waits == 0 ? 0.0 : static_cast<double>(read_wait_ns) / read_waits / 1e6,
-                 take(epoch.read_escapes), epoch.bank_violations.load(std::memory_order_relaxed),
-                 epoch.read_compared.load(std::memory_order_relaxed),
-                 epoch.read_differs.load(std::memory_order_relaxed),
-                 epoch.read_compare_dropped.load(std::memory_order_relaxed));
+                 take(epoch.read_escapes), std::exchange(m_inflight_ran_ahead, 0),
+                 totals.bank_violations - prev.bank_violations,
+                 totals.read_compared - prev.read_compared,
+                 totals.read_differs - prev.read_differs,
+                 totals.read_compare_dropped - prev.read_compare_dropped,
+                 totals.old_rule_differences - prev.old_rule_differences,
+                 totals.acquire_overflow - prev.acquire_overflow);
     }
 
     /// war_guard_probe: per 600 presents, how long after the reply the guest first touched a

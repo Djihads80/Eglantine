@@ -37,6 +37,7 @@
 #include "core/hle/kernel/k_process.h"
 #include "core/memory.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_split.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/nx2_war_probe.h"
@@ -966,7 +967,7 @@ struct Memory::Impl {
 
     void HandleRasterizerWrite(VAddr v_address, size_t size) {
         if (war_inflight) [[unlikely]] {
-            InflightBeforeWrite();
+            InflightBeforeWrite(v_address, size);
         }
         if (war_probe) [[unlikely]] {
             WarNoteTracked(v_address, VideoCommon::Nx2WarProbe::Category::Cached);
@@ -1198,7 +1199,7 @@ struct Memory::Impl {
                 continue;
             }
             if (war_inflight) [[unlikely]] {
-                InflightBeforeWrite();
+                InflightBeforeWrite(vaddr, size);
             }
             std::scoped_lock lk{war_mutex};
             if (!war_unprotected.Contains(page) || !WarUnguard(page)) {
@@ -1376,6 +1377,180 @@ struct Memory::Impl {
         return ready();
     }
 
+    enum class InflightEscape : u32 { None, ReleasePage, NoProgress, Timeout };
+
+    static const char* InflightEscapeName(InflightEscape escape) {
+        switch (escape) {
+        case InflightEscape::ReleasePage:
+            return "release_page";
+        case InflightEscape::NoProgress:
+            return "no_progress";
+        case InflightEscape::Timeout:
+            return "timeout";
+        default:
+            return "none";
+        }
+    }
+
+    void InflightCountEscape(InflightEscape escape) {
+        auto& epoch = VideoCommon::Nx2Inflight::Get();
+        switch (escape) {
+        case InflightEscape::ReleasePage:
+            epoch.escape_release_page.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case InflightEscape::NoProgress:
+            epoch.escape_no_progress.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case InflightEscape::Timeout:
+            epoch.escape_timeout.fetch_add(1, std::memory_order_relaxed);
+            break;
+        default:
+            break;
+        }
+    }
+
+    /// inflight_wait_v2: whether [vaddr, vaddr + size) shares a physical 4 KiB page with the
+    /// semaphore a suspended channel's acquire waits on.
+    bool InflightReleasePage(u64 vaddr, size_t size) {
+        namespace Inflight = VideoCommon::Nx2Inflight;
+        if (size == 0) {
+            return false;
+        }
+        if (!gpu_device_memory) [[unlikely]] {
+            gpu_device_memory = &system.Host1x().MemoryManager();
+        }
+        std::array<u64, Inflight::NumPendingAcquires> pages;
+        size_t count = 0;
+        for (const Inflight::PendingAcquireSlot& slot : Inflight::PendingAcquirePages()) {
+            const u64 device = slot.device_addr.load(std::memory_order_acquire);
+            if (device == 0) {
+                continue;
+            }
+            const u64 raw = gpu_device_memory->GetPhysicalRawAddressFromDAddr(device);
+            if (raw != 0) {
+                pages[count++] = raw >> YUZU_PAGEBITS;
+            }
+        }
+        if (count == 0) {
+            return false;
+        }
+        vaddr &= 0xffffffffffffULL;
+        const u64 end = ((vaddr + size - 1) >> YUZU_PAGEBITS) + 1;
+        for (u64 page = vaddr >> YUZU_PAGEBITS; page != end; ++page) {
+            const u8* const host = GetPointerImpl(page << YUZU_PAGEBITS, [] {}, [] {});
+            if (host == nullptr) {
+                continue;
+            }
+            const u64 raw_page = system.DeviceMemory().GetRawPhysicalAddr(host) >> YUZU_PAGEBITS;
+            if (std::find(pages.begin(), pages.begin() + count, raw_page) !=
+                pages.begin() + count) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// inflight_wait_v2's InflightWait: escapes when the write [vaddr, vaddr + size) (size 0 for
+    /// a read) touches a suspended channel's semaphore page, when nothing progresses for 20 ms
+    /// while a channel is suspended (back position, the syncpoint's guest and host values), or
+    /// after 4 s. old_rule_us: when the 3 ms rule would have given up (0 = never).
+    InflightEscape InflightWaitV2(u32 id, u32 value, bool host, u64 vaddr, size_t size,
+                                  u64& old_rule_us) {
+        old_rule_us = 0;
+        auto& syncpoints = system.Host1x().GetSyncpointManager();
+        const auto ready = [&] {
+            return host ? syncpoints.IsReadyHost(id, value) : syncpoints.IsReadyGuest(id, value);
+        };
+        if (id >= 192 || ready()) {
+            return InflightEscape::None;
+        }
+        if (InflightReleasePage(vaddr, size)) {
+            return ready() ? InflightEscape::None : InflightEscape::ReleasePage;
+        }
+        struct Wake {
+            std::mutex mutex;
+            std::condition_variable cv;
+            bool done{};
+        };
+        auto wake = std::make_shared<Wake>();
+        const auto notify = [wake] {
+            {
+                std::scoped_lock lk{wake->mutex};
+                wake->done = true;
+            }
+            wake->cv.notify_all();
+        };
+        if (host) {
+            syncpoints.RegisterHostAction(id, value, notify);
+        } else {
+            syncpoints.RegisterGuestAction(id, value, notify);
+        }
+        const auto& split = VideoCommon::GpuSplit::Get();
+        const auto start = std::chrono::steady_clock::now();
+        const auto deadline = start + std::chrono::seconds{4};
+        auto last_progress = start;
+        u64 consumed = split.ConsumedNow();
+        u32 guest_value = syncpoints.GetGuestSyncpointValue(id);
+        u32 host_value = syncpoints.GetHostSyncpointValue(id);
+        bool gpu_waited = false;
+        InflightEscape escape = InflightEscape::None;
+        std::unique_lock lk{wake->mutex};
+        while (!wake->done && system.IsPoweredOn()) {
+            const auto now = std::chrono::steady_clock::now();
+            const bool suspended = system.GPU().HasSuspendedChannels();
+            gpu_waited |= suspended;
+            if (old_rule_us == 0 && gpu_waited && now - start > std::chrono::milliseconds{3}) {
+                old_rule_us = static_cast<u64>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(now - start).count());
+            }
+            if (now >= deadline) {
+                escape = InflightEscape::Timeout;
+                break;
+            }
+            if (suspended && InflightReleasePage(vaddr, size)) {
+                escape = InflightEscape::ReleasePage;
+                break;
+            }
+            const u64 consumed_now = split.ConsumedNow();
+            const u32 guest_now = syncpoints.GetGuestSyncpointValue(id);
+            const u32 host_now = syncpoints.GetHostSyncpointValue(id);
+            if (!suspended || consumed_now != consumed || guest_now != guest_value ||
+                host_now != host_value) {
+                consumed = consumed_now;
+                guest_value = guest_now;
+                host_value = host_now;
+                last_progress = now;
+            } else if (now - last_progress >= std::chrono::milliseconds{20}) {
+                escape = InflightEscape::NoProgress;
+                break;
+            }
+            wake->cv.wait_for(lk, std::chrono::milliseconds{1});
+        }
+        lk.unlock();
+        if (ready()) {
+            return InflightEscape::None;
+        }
+        return escape == InflightEscape::None ? InflightEscape::Timeout : escape;
+    }
+
+    /// Verify for inflight_wait_v2: a wait the old 3 ms rule would have given up on.
+    void InflightNoteOldRule(const char* what, u64 seq, u64 old_rule_us, u64 waited_us,
+                             InflightEscape escape) {
+        if (old_rule_us == 0 || !VideoCommon::Nx2Perf::Verify()) {
+            return;
+        }
+        auto& epoch = VideoCommon::Nx2Inflight::Get();
+        const u64 count = epoch.old_rule_differences.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count <= 64) {
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf inflight_wait_v2: epoch {} {} wait: the 3 ms rule gives up after "
+                      "{} us, v2 waited {} us ({}) ({} differences so far)",
+                      seq, what, old_rule_us, waited_us,
+                      escape == InflightEscape::None ? "reached" : InflightEscapeName(escape),
+                      count);
+        }
+    }
+
     template <typename... Args>
     void InflightLogEscape(fmt::format_string<Args...> format, Args&&... args) {
         auto& epoch = VideoCommon::Nx2Inflight::Get();
@@ -1388,7 +1563,7 @@ struct Memory::Impl {
     /// A guest write of a page the back may read for the open epoch's frame: on a guest core,
     /// waits for the epoch's fence and closes the epoch, so this and every later write land after
     /// the back passed it. A closed epoch's leftover guards are dropped at the first write.
-    void InflightBeforeWrite() {
+    void InflightBeforeWrite(u64 vaddr, size_t size) {
         namespace Inflight = VideoCommon::Nx2Inflight;
         Inflight::Epoch& epoch = Inflight::Get();
         const u64 seq = epoch.open_seq.load(std::memory_order_acquire);
@@ -1409,14 +1584,29 @@ struct Memory::Impl {
         const u32 id = epoch.fence_id.load(std::memory_order_relaxed);
         const u32 value = epoch.fence_value.load(std::memory_order_relaxed);
         const auto start = std::chrono::steady_clock::now();
-        const bool reached = InflightWait(id, value, false);
+        const bool v2 = Inflight::V2();
+        u64 old_rule_us = 0;
+        const InflightEscape escape =
+            v2 ? InflightWaitV2(id, value, false, vaddr, size, old_rule_us) : InflightEscape::None;
+        const bool reached = v2 ? escape == InflightEscape::None : InflightWait(id, value, false);
         const u64 waited = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                                 std::chrono::steady_clock::now() - start)
                                                 .count());
+        if (v2) [[unlikely]] {
+            InflightNoteOldRule("write", seq, old_rule_us, waited / 1000, escape);
+        }
         u64 expected = seq;
         if (epoch.open_seq.compare_exchange_strong(expected, 0, std::memory_order_acq_rel)) {
             if (reached) {
                 epoch.closed_by_write.fetch_add(1, std::memory_order_relaxed);
+            } else if (v2) {
+                epoch.escapes.fetch_add(1, std::memory_order_relaxed);
+                InflightCountEscape(escape);
+                InflightLogEscape("epoch {} write at {:#x} gave up on fence ({}, {}) after {} us "
+                                  "({}; now {}): the write lands before the back passed it",
+                                  seq, vaddr, id, value, waited / 1000,
+                                  InflightEscapeName(escape),
+                                  system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(id));
             } else {
                 epoch.escapes.fetch_add(1, std::memory_order_relaxed);
                 InflightLogEscape("epoch {} write gave up on fence ({}, {}) after {} us (now {}, "
@@ -1470,21 +1660,34 @@ struct Memory::Impl {
             }
             if (wait_id < 192 && !syncpoints.IsReadyHost(wait_id, wait_value)) {
                 const auto start = std::chrono::steady_clock::now();
-                const bool landed = InflightWait(wait_id, wait_value, true);
+                const bool v2 = Inflight::V2();
+                u64 old_rule_us = 0;
+                const InflightEscape escape =
+                    v2 ? InflightWaitV2(wait_id, wait_value, true, 0, 0, old_rule_us)
+                       : InflightEscape::None;
+                const bool landed =
+                    v2 ? escape == InflightEscape::None : InflightWait(wait_id, wait_value, true);
+                const u64 waited = static_cast<u64>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - start)
+                        .count());
                 epoch.read_waits.fetch_add(1, std::memory_order_relaxed);
-                epoch.read_wait_ns.fetch_add(
-                    static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                         std::chrono::steady_clock::now() - start)
-                                         .count()),
-                    std::memory_order_relaxed);
+                epoch.read_wait_ns.fetch_add(waited, std::memory_order_relaxed);
+                if (v2) [[unlikely]] {
+                    InflightNoteOldRule("read", seq, old_rule_us, waited / 1000, escape);
+                }
                 if (landed) {
                     return; // Exact: everything up to the writer's fence has landed.
                 }
                 epoch.read_escapes.fetch_add(1, std::memory_order_relaxed);
-                InflightLogEscape("epoch {} read gave up on the host fence ({}, {}) (host {}): "
+                if (v2) {
+                    InflightCountEscape(escape);
+                }
+                InflightLogEscape("epoch {} read gave up on the host fence ({}, {}) (host {}{}{}): "
                                   "it reads the preflushed bytes",
                                   seq, wait_id, wait_value,
-                                  syncpoints.GetHostSyncpointValue(wait_id));
+                                  syncpoints.GetHostSyncpointValue(wait_id), v2 ? "; " : "",
+                                  v2 ? InflightEscapeName(escape) : "");
             }
         }
         if (!VideoCommon::Nx2Perf::Verify() || host == nullptr || id >= 192 ||

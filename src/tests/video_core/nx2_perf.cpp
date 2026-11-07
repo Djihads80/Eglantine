@@ -1,11 +1,14 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <cstdlib>
+
 #include <catch2/catch_test_macros.hpp>
 #include <fmt/format.h>
 
 #include "common/common_types.h"
 #include "video_core/nx2_perf.h"
+#include "video_core/nx2_war_probe.h"
 
 namespace {
 
@@ -48,7 +51,8 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
                                   i == Index(Opt::RunAheadLedger) ||
                                   i == Index(Opt::ComputeWriterRanges) ||
                                   i == Index(Opt::AcquireQueuedRelease) ||
-                                  i == Index(Opt::NonwriterProofMemo);
+                                  i == Index(Opt::NonwriterProofMemo) ||
+                                  i == Index(Opt::InflightWaitV2);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
@@ -238,4 +242,22 @@ TEST_CASE("Nx2Perf live-safe switches are all named", "[nx2_perf]") {
         startup, "off bank_check,write_intersections,immediate_callbacks\n", live_safe);
     REQUIRE(dead.mask == startup);
     REQUIRE(dead.ignored == "bank_check,write_intersections,immediate_callbacks");
+}
+
+TEST_CASE("Nx2Perf inflight_wait_v2 is off by default and keeps the inflight waits off",
+          "[nx2_perf]") {
+    static_assert(Index(Opt::InflightWaitV2) == 68);
+    REQUIRE(opt_names[Index(Opt::InflightWaitV2)] == "inflight_wait_v2");
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::InflightWaitV2)));
+    REQUIRE(IsOff(ParseOffMask(false, "", "", false), Index(Opt::InflightWaitV2)));
+    REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::InflightWaitV2)));
+    REQUIRE(ParseOffMask(false, "inflight_wait_v2", "", false) ==
+            (always_off & ~Bit(Opt::InflightWaitV2)));
+    if (std::getenv("EDEN_NX2_PERF_ON") == nullptr) {
+        // This process's own mask: nothing named the switch or the old pair.
+        REQUIRE(!On(Opt::InflightWaitV2));
+        REQUIRE(!VideoCommon::Nx2Inflight::WriteWait());
+        REQUIRE(!VideoCommon::Nx2Inflight::ReadExact());
+        REQUIRE(!VideoCommon::Nx2Inflight::Any());
+    }
 }

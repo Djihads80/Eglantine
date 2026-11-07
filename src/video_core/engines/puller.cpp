@@ -28,6 +28,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_perf.h"
+#include "video_core/nx2_war_probe.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace Tegra::Engines {
@@ -638,6 +639,9 @@ bool Puller::ResumeAcquire(DmaPusher& dma_pusher) {
         pending_acquire.reset();
         dma_pusher.suspensions.fetch_add(1, std::memory_order_release);
         Nx2SemaphoreWaiters::Get().Remove(this);
+        if (VideoCommon::Nx2Inflight::V2()) [[unlikely]] {
+            VideoCommon::Nx2Inflight::ClearPendingAcquire(this);
+        }
     }
     return true;
 }
@@ -869,6 +873,13 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             }
             pending_acquire = acquire;
             dma_pusher.suspensions.fetch_add(1, std::memory_order_release);
+            // inflight_wait_v2: a guest write to this page may be the release it waits for.
+            if (VideoCommon::Nx2Inflight::V2()) [[unlikely]] {
+                if (const auto device =
+                        dma_pusher.memory_manager.GpuToCpuAddress(acquire.address)) {
+                    VideoCommon::Nx2Inflight::SetPendingAcquire(this, *device);
+                }
+            }
             VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireWaits, 1);
         } else {
             waiters.Remove(this);
