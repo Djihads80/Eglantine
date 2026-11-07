@@ -13,11 +13,14 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include "common/assert.h"
 #include "common/logging.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "shader_recompiler/exception.h"
 #include "core/core.h"
@@ -37,6 +40,8 @@
 #include "video_core/macro_turing_jit.h"
 #endif
 #include "video_core/rasterizer_interface.h"
+#include "video_core/texture_cache/texture_cache_base.h"
+#include "video_core/texture_cache/util.h"
 #include "video_core/textures/decoders.h"
 
 namespace Tegra::Engines {
@@ -778,6 +783,8 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
     try {
         rasterizer->DispatchCompute();
         diag_note("ok");
+    } catch (const VideoCommon::OcarinaUpscaleReplaced&) {
+        return true;
     } catch (const Shader::Exception& error) {
         diag_note("failed", error.what());
         static std::unordered_set<std::string> logged;
@@ -1615,6 +1622,125 @@ bool KeplerCompute::UpscaleFromConstBuffers() {
         }
     }
     return false;
+}
+
+// Narrow port of Eglantine PR #614 (b536a971a5): only the captured OoT scene pair.
+// Keep the preparatory dispatches so a refused copy can still run the native output pass.
+bool KeplerCompute::ProcessOcarinaUpscale(u64 program_id, u64 unique_hash) {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_OOT_UPSCALE_STANDIN");
+        return value && std::string_view{value} == "1";
+    }();
+    if (!enabled || !IsNativeMode() || program_id != 0x0400486024DEC000ULL ||
+        unique_hash != 0x6bd913e1f34e83ebULL) {
+        return false;
+    }
+    using namespace Tegra::Texture;
+    const auto image = [&](u32 offset) -> std::optional<TICEntry> {
+        const auto tic = ComputeImageHandle(offset);
+        // Apply the same selected-view ABI as native texture-cache descriptor lookups.
+        return tic ? std::optional{VideoCommon::TextureViewHeader(*tic, true)} : std::nullopt;
+    };
+    const auto input = image(0xc0);
+    const auto output = image(0xd0);
+    const auto scene_image = [](const TICEntry& tic) {
+        return (tic.texture_type == TextureType::Texture2D ||
+                tic.texture_type == TextureType::Texture2DNoMipmap) &&
+               tic.header_version == TICHeaderVersion::BlockLinear && tic.Depth() == 1 &&
+               tic.BaseLayer() == 0 && tic.max_mip_level == 0 && tic.res_min_mip_level == 0 &&
+               tic.res_max_mip_level == 0 && tic.msaa_mode == MsaaMode::Msaa1x1 &&
+               tic.is_sparse == 0 && tic.depth_texture == 0 && tic.border_size == 0 &&
+               tic.srgb_conversion == 0 && tic.block_width == 0 && tic.block_depth == 0 &&
+               tic.block_height <= 5 && tic.tile_width_spacing == 0 &&
+               tic.r_type == ComponentType::FLOAT && tic.g_type == ComponentType::FLOAT &&
+               tic.b_type == ComponentType::FLOAT && tic.x_source == SwizzleSource::R &&
+               tic.y_source == SwizzleSource::G && tic.z_source == SwizzleSource::B &&
+               tic.Address() != 0 && tic.Width() >= 64 && tic.Height() >= 64 &&
+               tic.Width() <= 8192 && tic.Height() <= 8192;
+    };
+    const auto upscale_pair = [&] {
+        if (!input || !output || !scene_image(*input) || !scene_image(*output) ||
+            (input->format != TextureFormat::E5B9G9R9 &&
+             input->format != TextureFormat::B10G11R11) ||
+            output->format != TextureFormat::B10G11R11) {
+            return false;
+        }
+        const u64 from_width = input->Width(), from_height = input->Height();
+        const u64 to_width = output->Width(), to_height = output->Height();
+        return to_width >= from_width * 2 && to_width <= from_width * 4 &&
+               to_height >= from_height * 2 && to_height <= from_height * 4 &&
+               to_width * from_height == to_height * from_width;
+    };
+    if (!upscale_pair()) {
+        static bool logged{};
+        if (!std::exchange(logged, true)) {
+            const auto describe = [](const std::optional<TICEntry>& tic) {
+                return tic ? fmt::format("{:016x}", fmt::join(tic->raw, " "))
+                           : std::string{"unreadable"};
+            };
+            LOG_WARNING(HW_GPU, "OoT upscale stand-in: scene descriptor contract refused; retaining "
+                                "native network (input {}; output {})",
+                        describe(input), describe(output));
+        }
+        return false;
+    }
+    const auto surface = [](const TICEntry& tic) {
+        Fermi2D::Surface result{};
+        // The shared-exponent input uses the scoped texture-cache format below.
+        result.format = Tegra::RenderTargetFormat::B10G11R11_FLOAT;
+        result.linear = Fermi2D::MemoryLayout::BlockLinear;
+        result.block_width.Assign(tic.block_width);
+        result.block_height.Assign(tic.block_height);
+        result.block_depth.Assign(tic.block_depth);
+        result.depth = 1;
+        result.width = tic.Width();
+        result.height = tic.Height();
+        result.addr_upper = static_cast<u32>(tic.Address() >> 32);
+        result.addr_lower = static_cast<u32>(tic.Address());
+        return result;
+    };
+    const auto source = surface(*input);
+    const auto destination = surface(*output);
+    const u64 source_size = VideoCommon::CalculateGuestSizeInBytes(VideoCommon::ImageInfo(source));
+    const u64 destination_size =
+        VideoCommon::CalculateGuestSizeInBytes(VideoCommon::ImageInfo(destination));
+    if (source_size == 0 || destination_size == 0 ||
+        !memory_manager.IsFullyMappedRange(input->Address(), source_size) ||
+        !memory_manager.IsFullyMappedRange(output->Address(), destination_size) ||
+        (input->Address() < output->Address() + destination_size &&
+         output->Address() < input->Address() + source_size)) {
+        return false;
+    }
+    const Fermi2D::Config config{
+        .operation = Fermi2D::Operation::SrcCopy,
+        .filter = Fermi2D::Filter::Bilinear,
+        .must_accelerate = true,
+        .dst_x0 = 0,
+        .dst_y0 = 0,
+        .dst_x1 = static_cast<s32>(output->Width()),
+        .dst_y1 = static_cast<s32>(output->Height()),
+        .src_x0 = 0,
+        .src_y0 = 0,
+        .src_x1 = static_cast<s32>(input->Width()),
+        .src_y1 = static_cast<s32>(input->Height()),
+    };
+    const auto previous_format = VideoCommon::g_blit_source_format;
+    SCOPE_EXIT { VideoCommon::g_blit_source_format = previous_format; };
+    VideoCommon::g_blit_source_format =
+        input->format == TextureFormat::E5B9G9R9
+            ? VideoCore::Surface::PixelFormat::E5B9G9R9_FLOAT
+            : VideoCore::Surface::PixelFormat::B10G11R11_FLOAT;
+    const bool done = rasterizer->AccelerateSurfaceCopy(source, destination, config);
+    static bool logged_success{}, logged_failure{};
+    if (done ? !std::exchange(logged_success, true) : !std::exchange(logged_failure, true)) {
+        LOG_INFO(HW_GPU, "OoT upscale stand-in: {:#x} {}x{} format {} -> {:#x} {}x{} format {}: {} "
+                         "(preparatory and exposure passes retained)",
+                 input->Address(), input->Width(), input->Height(),
+                 static_cast<u32>(input->format.Value()), output->Address(), output->Width(),
+                 output->Height(), static_cast<u32>(output->format.Value()),
+                 done ? "bilinear copy applied" : "copy unavailable; retaining native network");
+    }
+    return done;
 }
 
 void KeplerCompute::ProcessLaunch() {

@@ -64,6 +64,9 @@ using Tegra::Texture::TSCEntry;
 using VideoCore::Surface::PixelFormat;
 using namespace Common::Literals;
 
+// Opt-in stand-in source view; E5B9G9R9 has no Fermi2D surface format. Restore at call scope.
+inline thread_local std::optional<PixelFormat> g_blit_source_format;
+
 struct ImageViewInOut {
     u32 index{};
     bool blacklist{};

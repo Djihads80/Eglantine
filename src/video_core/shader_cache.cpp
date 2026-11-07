@@ -16,6 +16,7 @@
 
 #include "common/assert.h"
 #include "common/cityhash.h"
+#include "common/settings.h"
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/object_pool.h"
@@ -245,17 +246,22 @@ const ShaderInfo* ShaderCache::ComputeShader() {
         LOG_ERROR(HW_GPU, "Invalid GPU address for shader {:#016x}", shader_addr);
         return nullptr;
     }
-    if (const ShaderInfo* const shader = TryGet(*cpu_shader_addr)) {
-        return shader;
+    const ShaderInfo* shader = TryGet(*cpu_shader_addr);
+    if (!shader) {
+        try {
+            RethrowIfRejected(*cpu_shader_addr);
+            ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
+            shader = MakeShaderInfo(env, *cpu_shader_addr);
+        } catch (const Shader::Exception&) {
+            RememberRejection(*cpu_shader_addr);
+            throw;
+        }
     }
-    try {
-        RethrowIfRejected(*cpu_shader_addr);
-        ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
-        return MakeShaderInfo(env, *cpu_shader_addr);
-    } catch (const Shader::Exception&) {
-        RememberRejection(*cpu_shader_addr);
-        throw;
+    if (kepler_compute->IsNativeMode() &&
+        kepler_compute->ProcessOcarinaUpscale(Settings::GetCurrentProgramID(), shader->unique_hash)) {
+        throw VideoCommon::OcarinaUpscaleReplaced{};
     }
+    return shader;
 }
 
 void ShaderCache::RethrowIfRejected(VAddr addr) {
