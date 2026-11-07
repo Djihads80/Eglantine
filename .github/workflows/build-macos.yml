@@ -40,7 +40,7 @@ jobs:
     runs-on: ${{ inputs.runner }}
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 3000M
+      CCACHE_MAXSIZE: 1000M
       PLATFORM: macos-arm64
       SHA: ${{ inputs.sha }}
     steps:
@@ -49,12 +49,6 @@ jobs:
         with:
           ref: ${{ inputs.sha }}
           persist-credentials: false
-
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1
-        with:
-          key: macos-arm64
-          max-size: 3G
 
       - name: Setup build from checked-out source
         if: hashFiles('.github/actions/setup-build/action.yml') != ''
@@ -68,7 +62,7 @@ jobs:
 
       - name: Setup build from compatibility pin
         if: hashFiles('.github/actions/setup-build/action.yml') == ''
-        uses: Djihads80/Eglantine/.github/actions/setup-build@5016e217b829b45fda263b05ee00560bd3656397
+        uses: Djihads80/Eglantine/.github/actions/setup-build@583b125d5a2a330bc3e04fed213b908db5f6a8f2
         with:
           platform: ${{ env.PLATFORM }}
           sha: ${{ inputs.sha }}
