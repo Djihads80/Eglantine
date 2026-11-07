@@ -1493,15 +1493,21 @@ struct Memory::Impl {
         u32 guest_value = syncpoints.GetGuestSyncpointValue(id);
         u32 host_value = syncpoints.GetHostSyncpointValue(id);
         bool gpu_waited = false;
+        bool old_rule_done = false;
         InflightEscape escape = InflightEscape::None;
         std::unique_lock lk{wake->mutex};
         while (!wake->done && system.IsPoweredOn()) {
             const auto now = std::chrono::steady_clock::now();
             const bool suspended = system.GPU().HasSuspendedChannels();
             gpu_waited |= suspended;
-            if (old_rule_us == 0 && gpu_waited && now - start > std::chrono::milliseconds{3}) {
-                old_rule_us = static_cast<u64>(
-                    std::chrono::duration_cast<std::chrono::microseconds>(now - start).count());
+            if (!old_rule_done && gpu_waited && now - start > std::chrono::milliseconds{3}) {
+                // The old rule stops here and returns ready(): a difference only when unmet.
+                old_rule_done = true;
+                if (!ready()) {
+                    old_rule_us = static_cast<u64>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(now - start)
+                            .count());
+                }
             }
             if (now >= deadline) {
                 escape = InflightEscape::Timeout;
