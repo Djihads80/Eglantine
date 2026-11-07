@@ -418,6 +418,12 @@ static void* ChooseVirtualBase(size_t virtual_size) {
     constexpr uintptr_t Map39BitSize = (1ULL << 39);
     constexpr uintptr_t Map36BitSize = (1ULL << 36);
 
+    // The reservation does not fit between 36 and 39 bits, let the kernel pick a base.
+    if (virtual_size >= Map39BitSize - Map36BitSize) {
+        return mmap(nullptr, virtual_size, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_NOCORE, -1, 0);
+    }
+
     // This is not a cryptographic application, we just want something random.
     std::mt19937_64 rng;
 
