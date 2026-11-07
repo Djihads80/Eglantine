@@ -576,6 +576,8 @@ private:
     void MarkStale(const ImageBase& image);
     void ClearStale(DAddr addr, size_t size);
     void ClearStaleImage(const ImageBase& image);
+    /// Clears every device range [gpu_addr, gpu_addr + size) maps to.
+    void ClearStaleGpu(GPUVAddr gpu_addr, size_t size);
     [[nodiscard]] bool IsAllStale(DAddr addr, size_t size) const;
     void UpdateStaleTracking(u64 run_begin, u64 run_pages, s32 delta);
     bool tc_skip_stale{[] {

@@ -429,10 +429,18 @@ void TextureCache<P>::ClearStaleImage(const ImageBase& image) {
         ClearStale(image.cpu_addr, image.guest_size_bytes);
         return;
     }
-    for (const auto& [gpu_addr, size] :
-         gpu_memory->GetSubmappedRange(image.gpu_addr, image.guest_size_bytes)) {
-        if (const auto device_addr = gpu_memory->GpuToCpuAddress(gpu_addr)) {
-            ClearStale(*device_addr, size);
+    ClearStaleGpu(image.gpu_addr, image.guest_size_bytes);
+}
+
+template <class P>
+void TextureCache<P>::ClearStaleGpu(GPUVAddr gpu_addr, size_t size) {
+    if (stale_page_count == 0) {
+        return;
+    }
+    // Each piece is contiguous in device memory (GetSubmappedRange splits where it is not).
+    for (const auto& [piece_addr, piece_size] : gpu_memory->GetSubmappedRange(gpu_addr, size)) {
+        if (const auto device_addr = gpu_memory->GpuToCpuAddress(piece_addr)) {
+            ClearStale(*device_addr, piece_size);
         }
     }
 }
@@ -1757,9 +1765,7 @@ void TextureCache<P>::PopAsyncFlushes() {
                     download_buffer.mapped_span.subspan(download_buffer.offset);
                 gpu_memory->WriteBlockUnsafe(buffer_info.address, download_span.data(),
                                              buffer_info.size);
-                if (const auto device_addr = gpu_memory->GpuToCpuAddress(buffer_info.address)) {
-                    ClearStale(*device_addr, buffer_info.size);
-                }
+                ClearStaleGpu(buffer_info.address, buffer_info.size);
                 slot_buffer_downloads.erase(download_info.object_id);
             }
         }
