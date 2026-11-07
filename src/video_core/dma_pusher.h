@@ -234,6 +234,9 @@ public:
     /// Before a fetch from pages no GPU work wrote yet: waits for the queued work that may write
     /// them (GpuSplit::ListTarget). Returns whether GPU work wrote them by then.
     bool WaitForListWriters(GPUVAddr address, size_t size);
+    /// Nx2Perf compute_writer_ranges: the same, waiting only for the unlocalized writers, unknown
+    /// writes and noted writes to the entry's pages (GpuSplit::LocalizedListTarget).
+    bool WaitForLocalizedListWriters(GPUVAddr address, size_t size);
 
 private:
 

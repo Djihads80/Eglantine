@@ -141,6 +141,10 @@ enum class Opt : unsigned {
     /// With DmaForward: a forwarded macro call's dry-run plan is cached by code generation, start,
     /// parameters and the reads it made; the ring entry names a shared code slot, not a code copy
     DmaForwardMemo,
+    /// Split front: a compute call whose dispatches' storage buffer writes the front can place
+    /// (back-published program records, final QMD and descriptor words) notes those ranges; a
+    /// command list fetch waits only for the writers that can touch its pages
+    ComputeWriterRanges,
     Count,
 };
 
@@ -179,6 +183,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "inflight_write_wait", "inflight_read_exact",
     "fence_timeline",
     "dma_forward_memo",
+    "compute_writer_ranges",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -246,7 +251,7 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::ReleaseBeforeHook,
                           Opt::AcquireTriggerEarly, Opt::PipelineKeepPreloaded,
                           Opt::WriterSetExec, Opt::ExactNotedWrites, Opt::GuestCcd, Opt::DmaForward,
-                          Opt::HookLazyFlush, Opt::DmaForwardMemo,
+                          Opt::HookLazyFlush, Opt::DmaForwardMemo, Opt::ComputeWriterRanges,
                           Opt::BankOncePerFrame, Opt::LandedPrevAlways, Opt::OneAheadLanded,
                           Opt::SplitRings, Opt::BindMemoLocal, Opt::GuestLandedSyncpoints,
                           Opt::WarGuardProbe, Opt::DrawBeginCoalesce, Opt::InflightWriteWait,
@@ -270,7 +275,8 @@ inline constexpr OffMask DefaultOffMask() {
 /// exact_noted_writes, guest_ccd, landed_prev_always, one_ahead_landed, split_rings,
 /// bind_memo_local, guest_landed_syncpoints (+0.9 FPS), hook_lazy_flush (+0.9 FPS);
 /// war_guard_probe (measurement, adds page traps); inflight_write_wait and inflight_read_exact
-/// (timing change: flash check and a user play test first); fence_timeline (measurement); dma_forward_memo (unmeasured). dma_forward and draw_begin_coalesce are on
+/// (timing change: flash check and a user play test first); fence_timeline (measurement); dma_forward_memo (unmeasured);
+/// compute_writer_ranges (unmeasured). dma_forward and draw_begin_coalesce are on
 /// by default (round 5); SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
@@ -286,7 +292,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::GuestLandedSyncpoints) |
                                   Bit(Opt::WarGuardProbe) | Bit(Opt::InflightWriteWait) |
                                   Bit(Opt::InflightReadExact) |
-                                  Bit(Opt::FenceTimeline) | Bit(Opt::DmaForwardMemo);
+                                  Bit(Opt::FenceTimeline) | Bit(Opt::DmaForwardMemo) |
+                                  Bit(Opt::ComputeWriterRanges);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -312,6 +319,9 @@ static_assert(!IsOff(always_off, static_cast<size_t>(Opt::DmaForward)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::DmaForward)));
 static_assert(IsOff(always_off, static_cast<size_t>(Opt::DmaForwardMemo)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::DmaForwardMemo)));
+static_assert(static_cast<unsigned>(Opt::ComputeWriterRanges) == 64 &&
+              IsOff(always_off, static_cast<size_t>(Opt::ComputeWriterRanges)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ComputeWriterRanges)));
 static_assert(IsOff(always_off, static_cast<size_t>(Opt::HookLazyFlush)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::HookLazyFlush)));
 static_assert(IsOff(always_off, static_cast<size_t>(Opt::InflightWriteWait)) &&

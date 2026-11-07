@@ -42,6 +42,13 @@ struct GpuSplitTestAccess {
         return split.write_position;
     }
 
+    /// Moves the front's position without sending entries (no ring needed).
+    static void SetPosition(GpuSplit& split, u64 position) {
+        split.write_position = position;
+        split.consumed_cache = position;
+        split.published_local = position;
+    }
+
     static u64 Word(const GpuSplit& split, u64 position) {
         return split.ring[position & GpuSplit::RingMask];
     }
@@ -712,6 +719,34 @@ TEST_CASE("GpuSplit counts a draw.begin repeat only into the unpublished entry b
         position = Access::Execute(split, position, Access::End(split));
     }
     REQUIRE(f.fast.draw_manager.draw_state.instance_count == 9);
+}
+
+TEST_CASE("GpuSplit list fetches skip localized writers only outside their noted ranges",
+          "[video_core][split_writes]") {
+    using Access = VideoCommon::GpuSplitTestAccess;
+    VideoCommon::GpuSplit split;
+    Access::SetPosition(split, 100);
+    split.NoteWriter();
+    // A localized dispatch at 200 writes device page 0x40000 only.
+    Access::SetPosition(split, 200);
+    split.NoteDeviceRange(0x40000, 0x1000);
+    split.NoteLocalizedWriter();
+    // The old wait still covers it; the unlocalized position did not move.
+    REQUIRE(split.WriterTarget() == 200);
+    REQUIRE(split.LastUnlocalizedWriter() == 100);
+    REQUIRE(split.LocalizedListTarget(0x40000, 0x41000) == 200);
+    REQUIRE(split.LocalizedListTarget(0x40ff0, 0x40ff4) == 200);
+    REQUIRE(split.LocalizedListTarget(0x80000, 0x81000) == 100);
+    REQUIRE(split.LocalizedListTarget(0x41000, 0x42000) == 100);
+    // An unknown write and a later unlocalized writer cover every page again.
+    Access::SetPosition(split, 300);
+    split.NoteUnknownWrite();
+    REQUIRE(split.LocalizedListTarget(0x80000, 0x81000) == 300);
+    Access::SetPosition(split, 400);
+    split.NoteWriter();
+    REQUIRE(split.LocalizedListTarget(0x80000, 0x81000) == 400);
+    REQUIRE(split.LocalizedListTarget(0x40000, 0x41000) == 400);
+    REQUIRE(split.WriterTarget() == 400);
 }
 
 TEST_CASE("Maxwell3D fast method dispatch cost", "[.][maxwell_fast_method_bench]") {

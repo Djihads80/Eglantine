@@ -272,6 +272,9 @@ public:
     void FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
                               const u32* base_start, u32 amount, u32 methods_pending,
                               const GPUVAddr* segment);
+    /// Nx2Perf compute_writer_ranges, after a front call: whether every writer it sent had its
+    /// writes noted (GpuSplit::NoteLocalizedWriter). Resets for the next call.
+    bool TakeFrontWritesLocalized();
 
 private:
     struct FrontState;
@@ -285,6 +288,20 @@ private:
     VideoCommon::SplitWriteTracker::Effect FrontEffect(u32 method) const;
     /// After sending it: the memory it writes, for the front's reads.
     void FrontNoteWrites(VideoCommon::GpuSplit& split, FrontState& state, u32 method);
+    /// compute_writer_ranges, before sending a method: plans the ranges its launch writes, or
+    /// marks the call unlocalized.
+    void FrontPlanWrites(VideoCommon::GpuSplit& split, FrontState& state, u32 method,
+                         u32 argument, u32 amount);
+    /// Returns false with a fallback reason when the launch's writes can't be placed.
+    bool FrontPlanLaunch(VideoCommon::GpuSplit& split, FrontState& state, u32 method,
+                         u32 argument, u32& reason);
+    /// Reads [address, address + size) when no queued work can still write it.
+    bool FrontReadFinal(const VideoCommon::GpuSplit& split, u64 consumed, GPUVAddr address,
+                        size_t size, void* out);
+    /// Adds the device pages of a GPU range to the plan.
+    bool FrontPlanRange(FrontState& state, GPUVAddr address, u64 size);
+    /// Adds the device range the back binds for a written storage buffer descriptor.
+    bool FrontPlanBuffer(FrontState& state, const std::array<u64, 2>& descriptor);
     std::unique_ptr<FrontState> front;
     bool front_macros{}; ///< The front owns the macro code and bindings (the back skips them)
 
