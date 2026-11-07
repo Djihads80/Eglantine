@@ -100,6 +100,13 @@ public:
     /// programs (only the mesh pipeline file carries them).
     void Serialize(std::ofstream& file, bool with_mesh_state = false) const;
 
+    /// Native programs: the constant buffer slots (index << 32 | offset) storage tracking took as
+    /// pointers, and the ones it left out because they held null when the program was translated.
+    void StoragePointerSlots(std::vector<u64>& pointers, std::vector<u64>& null_slots) const;
+
+    /// Takes these slots as pointers without reading them: a rebuild keeps its earlier buffers.
+    void SeedStoragePointers(std::span<const u64> slots);
+
     bool HasHLEMacroState() const override {
         return has_hle_engine_state;
     }
@@ -219,6 +226,9 @@ public:
     FileEnvironment(const FileEnvironment&) = delete;
 
     void Deserialize(std::ifstream& file, bool with_mesh_state = false);
+
+    /// See GenericEnvironment::StoragePointerSlots.
+    void StoragePointerSlots(std::vector<u64>& pointers, std::vector<u64>& null_slots) const;
 
     [[nodiscard]] u64 ReadInstruction(u32 address) override;
 

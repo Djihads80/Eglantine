@@ -208,6 +208,44 @@ bool GenericEnvironment::IsCbufStorageBufferPointer(u32 index, u32 offset) {
     return mapped;
 }
 
+static void CollectStoragePointerSlots(const ::Common::unordered_map<u64, u8>& types,
+                                       const ::Common::unordered_map<u64, u32>& values,
+                                       std::vector<u64>& pointers, std::vector<u64>& null_slots) {
+    for (const auto& [key, type] : types) {
+        if ((key >> 63) != 0) {
+            continue; // pointer-table entries
+        }
+        if (type != 0) {
+            pointers.push_back(key);
+            continue;
+        }
+        const u32 index = static_cast<u32>(key >> 32);
+        const u32 offset = static_cast<u32>(key);
+        const auto low = values.find(MakeCbufKey(index, offset));
+        const auto high = values.find(MakeCbufKey(index, offset + 4));
+        if (low != values.end() && high != values.end() && low->second == 0 &&
+            high->second == 0) {
+            null_slots.push_back(key);
+        }
+    }
+}
+
+void GenericEnvironment::StoragePointerSlots(std::vector<u64>& pointers,
+                                             std::vector<u64>& null_slots) const {
+    CollectStoragePointerSlots(storage_pointer_types, cbuf_values, pointers, null_slots);
+}
+
+void GenericEnvironment::SeedStoragePointers(std::span<const u64> slots) {
+    for (const u64 key : slots) {
+        storage_pointer_types.emplace(key, u8{1});
+    }
+}
+
+void FileEnvironment::StoragePointerSlots(std::vector<u64>& pointers,
+                                          std::vector<u64>& null_slots) const {
+    CollectStoragePointerSlots(storage_pointer_types, cbuf_values, pointers, null_slots);
+}
+
 bool GenericEnvironment::IsCbufIndirectStorageBufferPointer(u32 index, u32 offset, u32 indirect) {
     const u64 key = MakeIndirectCbufKey(index, offset, indirect);
     if (const auto it = storage_pointer_types.find(key); it != storage_pointer_types.end()) {
