@@ -216,6 +216,9 @@ enum class Opt : unsigned {
     /// Split front: executable writes the back would run as a no-op are left out (store-only
     /// registers holding the value, constant buffer binds repeating the last one sent)
     ExecSameDrop,
+    /// Split front: a 3D state write whose register has an unpublished single-register entry
+    /// since the last executable entry is folded into that entry (its value patched)
+    StateDeadStore,
     Count,
 };
 
@@ -276,6 +279,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "run_ahead_overlay_budget",
     "acquire_drain_lite",
     "exec_same_drop",
+    "state_dead_store",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -364,7 +368,8 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::DmaForwardTape,
                           Opt::RunAheadOverlayBudget,
                           Opt::AcquireDrainLite,
-                          Opt::ExecSameDrop}) {
+                          Opt::ExecSameDrop,
+                          Opt::StateDeadStore}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -394,7 +399,8 @@ inline constexpr OffMask DefaultOffMask() {
 /// front_macro_memo (unmeasured; round 10), run_ahead_snapshot_probe (measurement; round 11),
 /// report_submit_early (submit timing; round 11),
 /// dma_forward_tape (unmeasured; round 11), run_ahead_overlay_budget (measurement; round 12),
-/// acquire_drain_lite (unmeasured; round 12), exec_same_drop (unmeasured; round 12).
+/// acquire_drain_lite (unmeasured; round 12), exec_same_drop (unmeasured; round 12),
+/// state_dead_store (unmeasured; round 12).
 /// dma_forward and draw_begin_coalesce (round 5), pending_wake (round 9) and diag_draw_lite
 /// (round 11) are on by default; SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
@@ -431,7 +437,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::DmaForwardTape) |
                                   Bit(Opt::RunAheadOverlayBudget) |
                                   Bit(Opt::AcquireDrainLite) |
-                                  Bit(Opt::ExecSameDrop);
+                                  Bit(Opt::ExecSameDrop) |
+                                  Bit(Opt::StateDeadStore);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -537,6 +544,9 @@ static_assert(static_cast<unsigned>(Opt::AcquireDrainLite) == 84 &&
 static_assert(static_cast<unsigned>(Opt::ExecSameDrop) == 85 &&
               IsOff(always_off, static_cast<size_t>(Opt::ExecSameDrop)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ExecSameDrop)));
+static_assert(static_cast<unsigned>(Opt::StateDeadStore) == 86 &&
+              IsOff(always_off, static_cast<size_t>(Opt::StateDeadStore)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::StateDeadStore)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.

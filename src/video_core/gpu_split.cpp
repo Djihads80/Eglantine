@@ -192,6 +192,12 @@ void GpuSplit::MaybeStart(Core::System& system_) {
                       Nx2Perf::On(Nx2Perf::Opt::SyncFreeFetch);
     Tegra::g_nx2_list_fetch_after_sync.store(track_back_read, std::memory_order_relaxed);
     spin_handoff = Nx2Perf::On(Nx2Perf::Opt::SpinHandoff);
+    verify_folds = Nx2Perf::Verify() && Nx2Perf::On(Nx2Perf::Opt::StateDeadStore);
+    if (verify_folds) {
+        fold_claims = std::make_unique<FoldClaim[]>(FoldClaims);
+        fold_anchors =
+            std::make_unique<FoldAnchor[]>(Tegra::Engines::Maxwell3D::Regs::NUM_REGS);
+    }
     back_thread = std::jthread([this](std::stop_token stop_token) { BackLoop(stop_token); });
     active = true;
     eager_publish = Nx2Perf::On(Nx2Perf::Opt::EagerPublish);
@@ -250,6 +256,19 @@ void GpuSplit::Stop() {
     }
     back_read_position.store(0, std::memory_order_relaxed);
     repeat_end = ~u64{0};
+    ++exec_gen;
+    if (verify_folds) {
+        ReportFold(false, nullptr, 0, 0, 0, 0, 0, 0); // the totals at shutdown
+    }
+    verify_folds = false;
+    fold_claims.reset();
+    fold_anchors.reset();
+    fold_claim_write.store(0, std::memory_order_relaxed);
+    fold_claim_read.store(0, std::memory_order_relaxed);
+    fold_engine.store(nullptr, std::memory_order_relaxed);
+    fold_final_count = 0;
+    fold_claim_next = 0;
+    fold_exec_seen = 0;
     publish_every = PublishEvery;
     front_engine = nullptr;
     back_engine = nullptr;
@@ -271,6 +290,7 @@ u64* GpuSplit::ReserveSlow(size_t words) {
         WaitForSpace(rest);
         ring[index] = static_cast<u64>(Kind::Wrap);
         write_position += rest;
+        ++exec_gen;
         index = 0;
     }
     WaitForSpace(words);
@@ -301,6 +321,7 @@ void GpuSplit::Publish() {
         return;
     }
     published_local = write_position;
+    ++exec_gen;
     publish_every = std::min<size_t>(publish_every * 2, PublishEvery);
     published.store(write_position, std::memory_order_seq_cst);
     if (back_waiting.load(std::memory_order_seq_cst)) {
@@ -690,10 +711,147 @@ void GpuSplit::VerifyRepeat(u64 head) {
     verify_previous = word;
 }
 
+void GpuSplit::PushFoldClaim(u64 anchor, u64 position, u32 method, u32 before, u32 argument) {
+    const u64 index = fold_claim_write.load(std::memory_order_relaxed);
+    fold_claims[index % FoldClaims] = {anchor, position, method, before, argument, 0};
+    fold_claim_write.store(index + 1, std::memory_order_release);
+}
+
+void GpuSplit::ReportFold(bool differs, const char* what, u32 method, u64 position, u32 a, u32 b,
+                          u32 c, u32 d) {
+    static std::atomic<u64> differences{};
+    if (differs) {
+        const u64 count = differences.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count <= 64) {
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf state_dead_store: differs ({}): register {:#x} at {:#x}, values "
+                      "{:#x} {:#x} {:#x} {:#x} ({} so far)",
+                      what, method, position, a, b, c, d, count);
+        }
+    }
+    const u64 now = static_cast<u64>(SteadyNs());
+    if (what == nullptr || now - fold_report_ns >= 1'000'000'000) {
+        LOG_INFO(HW_GPU, "Nx2Perf state_dead_store: {} folds checked, {} differ", fold_checked,
+                 differences.load(std::memory_order_relaxed));
+        fold_report_ns = now;
+    }
+}
+
+void GpuSplit::VerifyFold(u64 head) {
+    using Tegra::Engines::Maxwell3D;
+    const u64 position = verify_fold_position;
+    const u32 method = static_cast<u32>((head >> 8) & 0xffff);
+    auto* const engine = back_engine;
+    const bool state = static_cast<Kind>(head & 0xf) == Kind::Method &&
+                       (head & (HasSegment | RepeatMask)) == 0 && engine != nullptr &&
+                       engine == fold_engine.load(std::memory_order_relaxed) &&
+                       method < Maxwell3D::Regs::NUM_REGS && !engine->execution_mask[method];
+    // Claims come in ring order (the front writes one before sending its entry).
+    const u64 written = fold_claim_write.load(std::memory_order_acquire);
+    bool claimed = false;
+    FoldClaim claim{};
+    while (fold_claim_next != written) {
+        const FoldClaim& next = fold_claims[fold_claim_next % FoldClaims];
+        if (next.position > position) {
+            break;
+        }
+        ++fold_claim_next;
+        if (next.position == position) {
+            claim = next;
+            claimed = true;
+            break;
+        }
+        ReportFold(true, "claim skipped", next.method, next.position, next.argument, 0, 0, 0);
+    }
+    fold_claim_read.store(fold_claim_next, std::memory_order_release);
+    if (!state) {
+        if (claimed) {
+            ReportFold(true, "not a state entry", claim.method, position, claim.argument, 0, 0,
+                       0);
+        }
+        // An executable entry: the register holds the folded value as it would after the fold
+        // (unless a later write replaced it).
+        auto* const maxwell3d =
+            static_cast<Maxwell3D*>(fold_engine.load(std::memory_order_relaxed));
+        for (size_t i = 0; i < fold_final_count && maxwell3d != nullptr; ++i) {
+            const auto [reg, folded] = fold_finals[i];
+            if (fold_anchors[reg].last != fold_final_positions[i]) {
+                continue;
+            }
+            u32 real = maxwell3d->regs.reg_array[reg];
+            for (auto it = maxwell3d->method_sink.rbegin(); it != maxwell3d->method_sink.rend();
+                 ++it) {
+                if (it->first == reg) {
+                    real = it->second;
+                    break;
+                }
+            }
+            if (real != folded) {
+                ReportFold(true, "final value", reg, fold_final_positions[i], real, folded, 0, 0);
+            }
+        }
+        fold_final_count = 0;
+        ++fold_exec_seen;
+        return;
+    }
+    auto* const maxwell3d = static_cast<Maxwell3D*>(engine);
+    const u32 argument = static_cast<u32>(head >> 32);
+    const u32 control = static_cast<u32>(maxwell3d->shadow_state.shadow_ram_control);
+    const bool replay = maxwell3d->shadow_state.shadow_ram_control ==
+                        Maxwell3D::Regs::ShadowRamControl::Replay;
+    // The register's value before this entry in ring order: the newest sunk write, else the
+    // register (state writes wait in the method sink until the next executable entry).
+    u32 before = maxwell3d->regs.reg_array[method];
+    for (auto it = maxwell3d->method_sink.rbegin(); it != maxwell3d->method_sink.rend(); ++it) {
+        if (it->first == method) {
+            before = it->second;
+            break;
+        }
+    }
+    FoldAnchor& anchor = fold_anchors[method];
+    anchor.last = position;
+    if (!claimed) {
+        anchor.position = position;
+        anchor.exec_seen = fold_exec_seen;
+        anchor.before = before;
+        anchor.control = control;
+        anchor.changed = !replay && argument != before;
+        return;
+    }
+    // Real: the anchor changed the register from `before` (dirty flags, a deferred draw issued
+    // there) and this entry writes it again. Folded: the anchor writes this value over `before`
+    // and this entry is gone. The same iff nothing executable came between, both change it and
+    // the shadow RAM control is the same.
+    ++fold_checked;
+    const bool patched_changes = argument != anchor.before;
+    if (claim.method != method || claim.argument != argument) {
+        ReportFold(true, "claim", method, position, claim.method, claim.argument, argument, 0);
+    } else if (anchor.position != claim.anchor || anchor.exec_seen != fold_exec_seen) {
+        ReportFold(true, "window", method, position, static_cast<u32>(claim.anchor),
+                   static_cast<u32>(anchor.position),
+                   static_cast<u32>(fold_exec_seen - anchor.exec_seen), 0);
+    } else if (replay || anchor.control != control) {
+        ReportFold(true, "shadow ram control", method, position, anchor.control, control, 0, 0);
+    } else if (!anchor.changed || !patched_changes || claim.before != anchor.before) {
+        ReportFold(true, "values, flags", method, position, anchor.before, claim.before, argument,
+                   (anchor.changed ? 1U : 0U) | (patched_changes ? 2U : 0U));
+    } else if (fold_final_count < FoldFinals) {
+        fold_finals[fold_final_count] = {method, argument};
+        fold_final_positions[fold_final_count] = position;
+        ++fold_final_count;
+    }
+    if ((fold_checked & 1023) == 0) {
+        ReportFold(false, "", 0, 0, 0, 0, 0, 0);
+    }
+}
+
 size_t GpuSplit::Execute(const u64* entry, size_t words) {
     const u64 head = entry[0];
     if (verify_repeats) [[unlikely]] {
         VerifyRepeat(head);
+    }
+    if (verify_folds) [[unlikely]] {
+        VerifyFold(head);
     }
     switch (static_cast<Kind>(head & 0xf)) {
     case Kind::Wrap:
@@ -987,6 +1145,9 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             size_t size;
             if (track_back_read) {
                 back_read_position.store(read_position, std::memory_order_relaxed);
+            }
+            if (verify_folds) [[unlikely]] {
+                verify_fold_position = read_position;
             }
             {
                 Nx2Profile::Scope replay_scope{Nx2Profile::Zone::BackReplay};

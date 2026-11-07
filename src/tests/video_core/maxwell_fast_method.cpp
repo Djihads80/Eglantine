@@ -721,6 +721,210 @@ TEST_CASE("GpuSplit counts a draw.begin repeat only into the unpublished entry b
     REQUIRE(f.fast.draw_manager.draw_state.instance_count == 9);
 }
 
+TEST_CASE("state_dead_store: fold decisions", "[video_core][split_writes][nx2_perf]") {
+    using VideoCommon::DeadStoreDecision;
+    using VideoCommon::DecideDeadStore;
+    const VideoCommon::DeadStoreSlot slot{.position = 10, .gen = 7, .before = 3, .control = 0};
+    REQUIRE(DecideDeadStore(slot, 7, 0, 5) == DeadStoreDecision::Fold);
+    // The value returns to the one before the entry: the entry would no longer change it.
+    REQUIRE(DecideDeadStore(slot, 7, 0, 3) == DeadStoreDecision::Returns);
+    // An executable entry (or a Call, a publish...) since.
+    REQUIRE(DecideDeadStore(slot, 8, 0, 5) == DeadStoreDecision::Gen);
+    REQUIRE(DecideDeadStore(slot, 7, 2, 5) == DeadStoreDecision::Control);
+    // No entry recorded.
+    REQUIRE(DecideDeadStore(VideoCommon::DeadStoreSlot{}, 0, 0, 5) == DeadStoreDecision::Gen);
+}
+
+TEST_CASE("state_dead_store: only an unpublished state entry with nothing executable after it "
+          "takes a later value",
+          "[video_core][split_writes][nx2_perf]") {
+    using Access = VideoCommon::GpuSplitTestAccess;
+    constexpr auto None = VideoCommon::GpuSplit::Effect::None;
+    Fixture f;
+    const u32 reg = f.state_methods[100];
+    const u32 other = f.state_methods[200];
+    VideoCommon::GpuSplit split;
+    Access::Initialize(split, f.system);
+    // Fold: another state write between them does not end the window.
+    u64 position = split.StateMethod(&f.fast, reg, 1, true, false, None);
+    u64 gen = split.ExecGen();
+    split.StateMethod(&f.fast, other, 2, true, true, None);
+    REQUIRE(split.ExecGen() == gen);
+    REQUIRE(split.CanPatch(position, reg));
+    REQUIRE_FALSE(split.CanPatch(position, other));
+    const u64 end = Access::End(split);
+    REQUIRE(split.PatchUnpublished(position, reg, 5, None));
+    REQUIRE(Access::End(split) == end);
+    REQUIRE(static_cast<u32>(Access::Word(split, position) >> 32) == 5);
+    REQUIRE(((Access::Word(split, position) >> 8) & 0xffff) == reg);
+    // An executable entry ends it.
+    position = split.StateMethod(&f.fast, reg, 1, true, false, None);
+    gen = split.ExecGen();
+    split.MacroWrite(&f.fast, DrawEnd, 0);
+    REQUIRE(split.ExecGen() != gen);
+    // A shadow RAM control write is executable too.
+    position = split.StateMethod(&f.fast, reg, 1, true, false, None);
+    gen = split.ExecGen();
+    split.Method(&f.fast, ShadowControl, 2, true, nullptr);
+    REQUIRE(split.ExecGen() != gen);
+    // So do Calls and multi-word entries.
+    gen = split.ExecGen();
+    split.Defer([] {});
+    REQUIRE(split.ExecGen() != gen);
+    gen = split.ExecGen();
+    const std::array<u32, 2> words{1, 2};
+    split.MultiMethod(&f.fast, other, words.data(), 2, 2, nullptr);
+    REQUIRE(split.ExecGen() != gen);
+    REQUIRE_FALSE(split.CanPatch(Access::End(split) - 3, other)); // the Multi entry
+    // A publish ends it, and the entry can no longer be patched.
+    position = split.StateMethod(&f.fast, reg, 1, true, false, None);
+    gen = split.ExecGen();
+    REQUIRE(split.CanPatch(position, reg));
+    split.Publish();
+    REQUIRE(split.ExecGen() != gen);
+    REQUIRE_FALSE(split.CanPatch(position, reg));
+    REQUIRE_FALSE(split.PatchUnpublished(position, reg, 5, None));
+    REQUIRE(static_cast<u32>(Access::Word(split, position) >> 32) == 1);
+}
+
+TEST_CASE("state_dead_store: folded streams match separate entries",
+          "[video_core][split_writes][nx2_perf]") {
+    using Access = VideoCommon::GpuSplitTestAccess;
+    using VideoCommon::DeadStoreDecision;
+    constexpr auto None = VideoCommon::GpuSplit::Effect::None;
+    using Control = Maxwell3D::Regs::ShadowRamControl;
+    for (const bool folded_on_fast : {true, false}) {
+        for (const u32 seed : {1u, 2u, 3u, 4u}) {
+            CAPTURE(folded_on_fast, seed);
+            Fixture f;
+            Maxwell3D& folded_engine = folded_on_fast ? f.fast : f.slow;
+            Maxwell3D& separate_engine = folded_on_fast ? f.slow : f.fast;
+            VideoCommon::GpuSplit folded;
+            VideoCommon::GpuSplit separate;
+            Access::Initialize(folded, f.system);
+            Access::Initialize(separate, f.system);
+            // The front's model of the registers (FrontWrite's state path, without its
+            // same-value skip: the back skips those itself).
+            std::array<u32, Maxwell3D::Regs::NUM_REGS> regs = folded_engine.regs.reg_array;
+            std::array<u32, Maxwell3D::Regs::NUM_REGS> shadow =
+                folded_engine.shadow_state.reg_array;
+            Control control = folded_engine.shadow_state.shadow_ram_control;
+            std::vector<VideoCommon::DeadStoreSlot> slots(Maxwell3D::Regs::NUM_REGS);
+            u64 folded_position{};
+            u64 separate_position{};
+            const auto run = [&] {
+                while (folded_position < Access::End(folded)) {
+                    folded_position = Access::Execute(folded, folded_position, Access::End(folded));
+                }
+                while (separate_position < Access::End(separate)) {
+                    separate_position =
+                        Access::Execute(separate, separate_position, Access::End(separate));
+                }
+            };
+            // An instance loop state method (it doesn't issue a deferred draw) among them.
+            const std::array<u32, 7> state{f.state_methods[10], f.state_methods[11],
+                                           f.state_methods[300], f.state_methods[301],
+                                           MAXWELL3D_REG_INDEX(global_base_instance_index),
+                                           MAXWELL3D_REG_INDEX(inline_index_2x16.count),
+                                           f.state_methods[700]};
+            for (const u32 method : state) {
+                REQUIRE_FALSE(f.fast.execution_mask[method]);
+            }
+            std::mt19937 rng{seed};
+            u64 folds{};
+            for (u32 step = 0; step < 20000; ++step) {
+                CAPTURE(step);
+                const u32 kind = rng() % 100;
+                const bool direct = rng() % 2 == 0;
+                if (kind < 70) {
+                    const u32 method = state[rng() % state.size()];
+                    const u32 argument = rng() % 4;
+                    u32 value = argument;
+                    if (control == Control::Track || control == Control::TrackWithFilter) {
+                        shadow[method] = argument;
+                    } else if (control == Control::Replay) {
+                        value = shadow[method];
+                    }
+                    auto& slot = slots[method];
+                    const u32 before = regs[method];
+                    bool done = false;
+                    if (VideoCommon::DecideDeadStore(slot, folded.ExecGen(),
+                                                     static_cast<u32>(control),
+                                                     value) == DeadStoreDecision::Fold) {
+                        done = folded.PatchUnpublished(slot.position, method, argument, None);
+                        folds += done ? 1 : 0;
+                    }
+                    regs[method] = value;
+                    if (!done) {
+                        const u64 position = folded.StateMethod(&folded_engine, method, argument,
+                                                                true, direct, None);
+                        const bool changes = before != value && control != Control::Replay &&
+                                             !Maxwell3D::DrawManager::IsInstanceLoopMethod(method);
+                        slot = {position, changes ? folded.ExecGen() : 0, before,
+                                static_cast<u32>(control)};
+                    }
+                    if (direct) {
+                        separate.MacroWrite(&separate_engine, method, argument);
+                    } else {
+                        separate.Method(&separate_engine, method, argument, true, nullptr);
+                    }
+                    continue;
+                }
+                if (kind < 75) {
+                    folded.Publish();
+                    separate.Publish();
+                    continue;
+                }
+                if (kind < 80) {
+                    std::vector<u32> words(1 + rng() % 4);
+                    for (u32& word : words) {
+                        word = rng() % 4;
+                    }
+                    const u32 method = state[rng() % state.size()];
+                    const u32 amount = static_cast<u32>(words.size());
+                    folded.MultiMethod(&folded_engine, method, words.data(), amount, amount,
+                                       nullptr);
+                    separate.MultiMethod(&separate_engine, method, words.data(), amount, amount,
+                                         nullptr);
+                } else {
+                    u32 method = executable_methods[rng() % executable_methods.size()];
+                    u32 argument = RandomArgument(rng, method, folded_engine);
+                    if (kind < 84) {
+                        method = ShadowControl;
+                        argument = rng() % 4;
+                    }
+                    for (auto* split : {&folded, &separate}) {
+                        Maxwell3D* const engine =
+                            split == &folded ? &folded_engine : &separate_engine;
+                        if (direct) {
+                            split->MacroWrite(engine, method, argument);
+                        } else {
+                            split->Method(engine, method, argument, true, nullptr);
+                        }
+                    }
+                }
+                // Everything sent so far is past an executable entry: run it, compare, and take
+                // the registers the front would hold.
+                run();
+                f.Compare();
+                regs = folded_engine.regs.reg_array;
+                shadow = folded_engine.shadow_state.reg_array;
+                control = folded_engine.shadow_state.shadow_ram_control;
+                if (rng() % 8 == 0) {
+                    for (auto* engine : {&f.slow, &f.fast}) {
+                        engine->dirty.flags.reset();
+                    }
+                }
+            }
+            folded.MacroWrite(&folded_engine, DrawEnd, 0);
+            separate.MacroWrite(&separate_engine, DrawEnd, 0);
+            run();
+            f.Compare();
+            REQUIRE(folds > 500);
+        }
+    }
+}
+
 TEST_CASE("GpuSplit list fetches skip localized writers only outside their noted ranges",
           "[video_core][split_writes]") {
     using Access = VideoCommon::GpuSplitTestAccess;

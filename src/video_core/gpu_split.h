@@ -13,6 +13,7 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
 
 #include "common/common_types.h"
 #include "video_core/split_write_tracker.h"
@@ -74,6 +75,35 @@ enum class IdleHookReason : u32 {
     BatchEnd,    ///< A batch ended and nobody waits for it
     WaitLists,   ///< The front waits for a GPU-written command list; only list copies are needed
 };
+
+/// Nx2Perf state_dead_store: the last single-register state entry the front sent for a register.
+struct DeadStoreSlot {
+    u64 position{}; ///< Its ring position
+    u64 gen{};      ///< GpuSplit::ExecGen() right after it was sent; 0: no entry
+    u32 before{};   ///< The register's value before it (the entry changed it)
+    u32 control{};  ///< The shadow RAM control it was sent under
+};
+
+/// Whether a later write of `value` to the register can be folded into the slot's entry.
+enum class DeadStoreDecision : u8 {
+    Fold,
+    Gen,       ///< No foldable entry: none, or an executable entry, Call, publish... since
+    Control,   ///< The shadow RAM control changed since
+    Returns,   ///< The value returns to the one before the entry: the entry would not change it
+    Published, ///< The entry is published (GpuSplit::PatchUnpublished refused it)
+    Count,
+};
+
+constexpr DeadStoreDecision DecideDeadStore(const DeadStoreSlot& slot, u64 gen, u32 control,
+                                            u32 value) {
+    if (slot.gen == 0 || slot.gen != gen) {
+        return DeadStoreDecision::Gen;
+    }
+    if (slot.control != control) {
+        return DeadStoreDecision::Control;
+    }
+    return value == slot.before ? DeadStoreDecision::Returns : DeadStoreDecision::Fold;
+}
 
 // Splits the GPU thread in two (NX2_GPU_THREAD_SPLIT.md). The GPU thread (the front) takes the
 // CPU's commands, parses command lists and runs the puller; engine method calls and everything
@@ -227,6 +257,7 @@ public:
             (ring[(write_position - 1) & RingMask] & RepeatMask) != RepeatMask;
         if (repeat && !verify) {
             ring[(write_position - 1) & RingMask] += RepeatOne;
+            ++exec_gen;
             writes.Entry(effect, write_position);
             if (eager_publish && back_idle.load(std::memory_order_relaxed)) {
                 Publish();
@@ -241,6 +272,67 @@ public:
         Commit(1, effect);
         repeat_end = write_position;
         return flagged;
+    }
+
+    /// Nx2Perf state_dead_store: bumped by every entry sent except StateMethod's, by every
+    /// count RepeatableMethod adds, by ring wraps and by publishes.
+    [[nodiscard]] u64 ExecGen() const {
+        return exec_gen;
+    }
+    /// state_dead_store: Method (MacroWrite when `direct`) for one non-executable 3D state write,
+    /// without bumping ExecGen (a publish it triggers still does). Returns its ring position.
+    /// EDEN_NX2_PERF_VERIFY: `claim_anchor` (not ~0) is the entry the write would have been
+    /// folded into; the back checks the fold (VerifyFold). Check FoldClaimRoom first.
+    u64 StateMethod(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument,
+                    bool is_last, bool direct, Effect effect, u64 claim_anchor = ~u64{0},
+                    u32 claim_before = 0) {
+        SelectEngine(engine);
+        u64* const entry = Reserve(1);
+        const u64 position = write_position;
+        entry[0] = static_cast<u64>(Kind::Method) |
+                   (direct ? IsLast | Direct : (is_last ? IsLast : 0)) |
+                   (u64{method & 0xffff} << 8) | (u64{argument} << 32);
+        if (claim_anchor != ~u64{0}) [[unlikely]] {
+            PushFoldClaim(claim_anchor, position, method, claim_before, argument);
+        }
+        CommitEntry(1, effect);
+        return position;
+    }
+    /// state_dead_store: whether the entry at `position` is an unpublished single-register
+    /// Method entry of `method` (no segment, no repeat count).
+    [[nodiscard]] bool CanPatch(u64 position, u32 method) const {
+        if (position < published_local || position >= write_position) {
+            return false;
+        }
+        const u64 word = ring[position & RingMask];
+        return (word & (0xf | HasSegment | RepeatMask)) == static_cast<u64>(Kind::Method) &&
+               ((word >> 8) & 0xffff) == (method & 0xffff);
+    }
+    /// state_dead_store: replaces the argument of the entry at `position` (CanPatch) instead of
+    /// sending a new entry; `effect` is noted as a send would. Returns false if it can't.
+    bool PatchUnpublished(u64 position, u32 method, u32 argument, Effect effect) {
+        if (!CanPatch(position, method)) {
+            return false;
+        }
+        u64& word = ring[position & RingMask];
+        word = (word & 0xffff'ffffULL) | (u64{argument} << 32);
+        writes.Entry(effect, write_position);
+        if (eager_publish && back_idle.load(std::memory_order_relaxed)) {
+            Publish();
+        }
+        return true;
+    }
+    /// state_dead_store with EDEN_NX2_PERF_VERIFY: room for one more fold claim.
+    [[nodiscard]] bool FoldClaimRoom() const {
+        return fold_claims != nullptr &&
+               fold_claim_write.load(std::memory_order_relaxed) -
+                       fold_claim_read.load(std::memory_order_acquire) <
+                   FoldClaims;
+    }
+    /// state_dead_store with EDEN_NX2_PERF_VERIFY: the 3D engine whose state entries the back
+    /// tracks for VerifyFold.
+    void SetFoldEngine(Tegra::Engines::EngineInterface* engine) {
+        fold_engine.store(engine, std::memory_order_relaxed);
     }
 
     /// Runs `func` on the back after everything sent before it. Must be trivially copyable.
@@ -485,6 +577,10 @@ private:
     }
     u64* ReserveSlow(size_t words);
     void Commit(size_t words, Effect effect) {
+        ++exec_gen;
+        CommitEntry(words, effect);
+    }
+    void CommitEntry(size_t words, Effect effect) {
         write_position += words;
         writes.Entry(effect, write_position);
         // EagerPublish: while the back has nothing to do, every entry goes out at once instead of
@@ -531,6 +627,34 @@ private:
     /// follows the same word.
     void VerifyRepeat(u64 head);
 
+    /// state_dead_store, EDEN_NX2_PERF_VERIFY: the front sent the write at `position` although
+    /// it would have folded it into the entry at `anchor`.
+    struct FoldClaim {
+        u64 anchor;
+        u64 position;
+        u32 method;
+        u32 before; ///< The front's register value before the anchor
+        u32 argument;
+        u32 padding;
+    };
+    static_assert(sizeof(FoldClaim) == 0x20);
+    /// The back's view of the last state entry of a 3D register (VerifyFold).
+    struct FoldAnchor {
+        u64 position{~u64{0}};
+        u64 exec_seen{};
+        u64 last{~u64{0}}; ///< The newest entry writing the register, claimed or not
+        u32 before{};
+        u32 control{};
+        bool changed{};
+    };
+    static constexpr size_t FoldClaims = 4096;
+    static constexpr size_t FoldFinals = 16;
+    void PushFoldClaim(u64 anchor, u64 position, u32 method, u32 before, u32 argument);
+    /// Back, verify_folds: checks the claims for the entry at verify_fold_position.
+    void VerifyFold(u64 head);
+    void ReportFold(bool differs, const char* what, u32 method, u64 position, u32 a, u32 b, u32 c,
+                    u32 d);
+
     Core::System* system{};
     bool active{};
     bool eager_publish{}; ///< Nx2Perf::Opt::EagerPublish, read once at Start
@@ -540,6 +664,8 @@ private:
     bool verify_repeats{};
     /// Nx2Perf list_fetch_after_sync or sync_free_fetch, read once at Start before the back starts
     bool track_back_read{};
+    /// Nx2Perf state_dead_store with Verify(), read once at Start before the back starts
+    bool verify_folds{};
     bool front_macros{};
     std::unique_ptr<u64[]> ring;
 
@@ -565,6 +691,7 @@ private:
     u64 consumed_cache{};
     /// RepeatableMethod: the ring position after the last entry it sent
     u64 repeat_end{~u64{0}};
+    u64 exec_gen{1}; ///< ExecGen; never reset (0 means no entry in a DeadStoreSlot)
     /// Words between publishes: small right after a drain, while the back has nothing to do.
     size_t publish_every{PublishEvery};
     Tegra::Engines::EngineInterface* front_engine{};
@@ -578,6 +705,21 @@ private:
     u64 verify_mergeable{};
     u64 verify_mismatches{};
     u64 verify_report_ns{};
+    /// verify_folds: claims written by the front, read by the back (FoldClaims entries)
+    std::unique_ptr<FoldClaim[]> fold_claims;
+    std::atomic<u64> fold_claim_write{};
+    std::atomic<u64> fold_claim_read{};
+    std::atomic<Tegra::Engines::EngineInterface*> fold_engine{};
+    // Back side of verify_folds.
+    std::unique_ptr<FoldAnchor[]> fold_anchors; ///< Maxwell3D::Regs::NUM_REGS of them
+    std::array<std::pair<u32, u32>, FoldFinals> fold_finals{}; ///< Method, folded value
+    std::array<u64, FoldFinals> fold_final_positions{};
+    size_t fold_final_count{};
+    u64 fold_claim_next{};
+    u64 verify_fold_position{};
+    u64 fold_exec_seen{};
+    u64 fold_checked{};
+    u64 fold_report_ns{};
 
     /// Whether the back is done with the Vulkan scheduler until it gets more work: set after its
     /// idle hook ran, cleared before it executes entries.
