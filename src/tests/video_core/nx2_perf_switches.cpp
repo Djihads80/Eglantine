@@ -100,6 +100,15 @@ TEST_CASE("Nx2Perf bank_hash_shadow is off unless ON names it", "[nx2_perf]") {
             (always_off & ~Bit(Opt::BankHashShadow)));
 }
 
+TEST_CASE("Nx2Perf list_writer_hook_copies_only is off unless ON names it", "[nx2_perf]") {
+    REQUIRE(opt_names[Index(Opt::ListWriterHookCopiesOnly)] == "list_writer_hook_copies_only");
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::ListWriterHookCopiesOnly)));
+    REQUIRE(IsOff(always_off, Index(Opt::ListWriterHookCopiesOnly)));
+    REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::ListWriterHookCopiesOnly)));
+    REQUIRE(ParseOffMask(false, "list_writer_hook_copies_only", "", false) ==
+            (always_off & ~Bit(Opt::ListWriterHookCopiesOnly)));
+}
+
 TEST_CASE("Nx2PageHash: every single-bit flip of a 4 KiB page changes the hash", "[nx2_perf]") {
     std::vector<u8> page = RandomBytes(0x1000, 1);
     const u64 base = PageHash(page.data(), page.size());

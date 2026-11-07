@@ -813,11 +813,14 @@ IdleHookReason GpuSplit::WaitReason() const {
     }
     // wait_target was read with acquire: the site stored before it is visible. A stale target
     // (a wait already over) may pair with a newer site, which only picks the hook's timing.
+    static const bool lists_only = Nx2Perf::On(Nx2Perf::Opt::ListWriterHookCopiesOnly);
     switch (static_cast<DrainSite>(wait_site.load(std::memory_order_relaxed))) {
     case DrainSite::MacroDmaWrites:
     case DrainSite::AcquireEarly:
     case DrainSite::Map:
         return IdleHookReason::WaitMemory;
+    case DrainSite::ListWriters:
+        return lists_only ? IdleHookReason::WaitLists : IdleHookReason::WaitResults;
     default:
         return IdleHookReason::WaitResults;
     }
@@ -847,8 +850,10 @@ void GpuSplit::ReportLazySkip(const char* where) const {
     const u64 count = missed.fetch_add(1, std::memory_order_relaxed) + 1;
     if (count <= 64 || (count & (count - 1)) == 0) {
         LOG_ERROR(HW_GPU,
-                  "Nx2Perf hook_lazy_flush: {} found a skipped deferred submit pending for {} us "
+                  "Nx2Perf {}: {} found a skipped deferred submit pending for {} us "
                   "(deadline {} us; {} missed submits so far)",
+                  lazy_skip_lists.load(std::memory_order_relaxed) ? "list_writer_hook_copies_only"
+                                                                  : "hook_lazy_flush",
                   where, (now - since) / 1000, HookFlushDeadlineNs() / 1000, count);
     }
 }

@@ -1484,10 +1484,15 @@ void RasterizerVulkan::FlushAll() {}
 void RasterizerVulkan::SubmitNx2ListCopies() {
     // Submitted at once: ReadGpuWrittenCommands waits on these copies, so they can't sit out
     // the longer DeferFlush interval (#161).
-    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick()) &&
-        (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FenceFlush) || !scheduler.DeferFlush())) {
+    const u64 tick = scheduler.CurrentTick();
+    if (!buffer_cache.Nx2CopyListPages(tick)) {
+        return;
+    }
+    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FenceFlush) || !scheduler.DeferFlush()) {
         VideoCommon::Nx2Profile::FlushOriginTag tag{VideoCommon::Nx2Profile::FlushOrigin::ListCopy};
         scheduler.Flush();
+    } else {
+        list_copy_deferred_tick = tick;
     }
 }
 
@@ -1495,6 +1500,18 @@ void RasterizerVulkan::FlushSplitIdle(VideoCommon::IdleHookReason reason) {
     if (buffer_cache.HasPendingNx2ListCopies()) {
         std::scoped_lock lock{buffer_cache.mutex};
         SubmitNx2ListCopies();
+    }
+    // list_writer_hook_copies_only: a list-writer wait needs only the list copies, so other
+    // deferred work stays to DeferFlush's window. Copies DeferFlush held back still submit.
+    if (reason == VideoCommon::IdleHookReason::WaitLists && scheduler.HasDeferredFlush() &&
+        (list_copy_deferred_tick == 0 || scheduler.IsSubmitted(list_copy_deferred_tick))) {
+        VideoCommon::GpuSplit::Get().NoteLazySkip(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                scheduler.DeferredSince().time_since_epoch())
+                .count(),
+            true);
+        VideoCommon::Nx2Profile::AddHookFlushSkipped();
+        return;
     }
     // hook_lazy_flush: a catch-up nobody needs GPU results from leaves the deferred submit to
     // DeferFlush's window, up to EDEN_NX2_HOOK_FLUSH_US. Sleeping, asked (Drain, WaitSubmitted)

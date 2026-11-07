@@ -182,6 +182,9 @@ enum class Opt : unsigned {
     /// Native uniform banks: per-page 64-bit hashes of the guest bytes replace the 64 KiB byte
     /// shadow's memcmp/memcpy (nx2_page_hash.h)
     BankHashShadow,
+    /// Split back: the idle hook after a list-writer wait submits only the list copies, leaving
+    /// other deferred work to DeferFlush's window (IdleHookReason::WaitLists)
+    ListWriterHookCopiesOnly,
     Count,
 };
 
@@ -232,6 +235,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "sync_free_fetch",
     "pending_wake",
     "bank_hash_shadow",
+    "list_writer_hook_copies_only",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -310,7 +314,8 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::RunAheadCowProbe,
                           Opt::SyncFreeFetch,
                           Opt::PendingWake,
-                          Opt::BankHashShadow}) {
+                          Opt::BankHashShadow,
+                          Opt::ListWriterHookCopiesOnly}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -335,7 +340,7 @@ inline constexpr OffMask DefaultOffMask() {
 /// round 7); inflight_wait_v2 (verify: bank pages changed before the fence, 16 reads differ),
 /// list_fetch_after_sync (+0.2 FPS), spin_handoff (+0.3 FPS), run_ahead_cover (measurement; round 8),
 /// run_ahead_cow_probe (measurement, adds page traps; round 9), sync_free_fetch (-0.5 FPS),
-/// bank_hash_shadow (-0.3 FPS; round 9).
+/// bank_hash_shadow (-0.3 FPS; round 9), list_writer_hook_copies_only (submit timing; round 10).
 /// dma_forward and draw_begin_coalesce (round 5) and pending_wake (round 9) are on
 /// by default; SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
@@ -363,7 +368,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::RunAheadCover) |
                                   Bit(Opt::RunAheadCowProbe) |
                                   Bit(Opt::SyncFreeFetch) |
-                                  Bit(Opt::BankHashShadow);
+                                  Bit(Opt::BankHashShadow) |
+                                  Bit(Opt::ListWriterHookCopiesOnly);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -439,6 +445,9 @@ static_assert(static_cast<unsigned>(Opt::PendingWake) == 74 &&
 static_assert(static_cast<unsigned>(Opt::BankHashShadow) == 75 &&
               IsOff(always_off, static_cast<size_t>(Opt::BankHashShadow)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::BankHashShadow)));
+static_assert(static_cast<unsigned>(Opt::ListWriterHookCopiesOnly) == 76 &&
+              IsOff(always_off, static_cast<size_t>(Opt::ListWriterHookCopiesOnly)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ListWriterHookCopiesOnly)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.

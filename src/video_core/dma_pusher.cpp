@@ -999,6 +999,36 @@ void ReportListFetchSync(u64 mismatches) {
     }
 }
 
+/// list_writer_hook_copies_only with EDEN_NX2_PERF_VERIFY: a GPU-written list read the copy or
+/// guest memory could not serve while a deferred submit the idle hook skipped was pending.
+void CheckListSkipRead(VideoCore::RasterizerInterface::GpuWrittenList where, u64 device_addr) {
+    using GpuWrittenList = VideoCore::RasterizerInterface::GpuWrittenList;
+    static u64 checks{};
+    static u64 differences{};
+    static auto last = std::chrono::steady_clock::now();
+    ++checks;
+    if ((where == GpuWrittenList::NeedsSync || where == GpuWrittenList::Unknown) &&
+        VideoCommon::GpuSplit::Get().ListSkipPending()) {
+        if (++differences <= 64) {
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf list_writer_hook_copies_only: list read at {:#x} returned {} "
+                      "while a skipped deferred submit was pending",
+                      device_addr, where == GpuWrittenList::NeedsSync ? "NeedsSync" : "Unknown");
+        }
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last >= std::chrono::seconds{1}) {
+        last = now;
+        if (differences != 0) {
+            LOG_ERROR(HW_GPU, "Nx2Perf list_writer_hook_copies_only: {} differences in {} checks",
+                      differences, checks);
+        } else {
+            LOG_INFO(HW_GPU, "Nx2Perf list_writer_hook_copies_only: 0 differences in {} checks",
+                     checks);
+        }
+    }
+}
+
 } // Anonymous namespace
 
 bool DmaPusher::WaitForListFetchSync(GPUVAddr address, size_t size) {
@@ -1142,6 +1172,12 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
         GpuWrittenList where = GpuWrittenList::Synced;
         if (Tegra::Nx2IsGpuWritten(*device)) {
             where = rasterizer->ReadGpuWrittenCommandList(*device, part, past_sync);
+            static const bool list_skip_verify =
+                VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ListWriterHookCopiesOnly) &&
+                VideoCommon::Nx2Perf::Verify();
+            if (list_skip_verify) [[unlikely]] {
+                CheckListSkipRead(where, *device);
+            }
             if (where == GpuWrittenList::NeedsSync) {
                 const auto wait_start = Nx2CmdPageDiag::g_enabled
                                             ? std::chrono::steady_clock::now()
