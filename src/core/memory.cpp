@@ -81,7 +81,9 @@ struct Memory::Impl {
             Settings::values.cpu_backend.GetValue() != Settings::CpuBackend::Nce &&
             current_page_table->GetAddressSpaceBits() <= 43;
         war_inflight = war_capable && VideoCommon::Nx2Inflight::Any();
-        war_probe = war_capable && (VideoCommon::Nx2WarProbe::On() || war_inflight);
+        // run_ahead_cover keeps the arm set to classify pages; it never arms it.
+        war_probe = war_capable && (VideoCommon::Nx2WarProbe::On() || war_inflight ||
+                                    VideoCommon::Nx2Ledger::CoverOn());
         if (war_probe) {
             war_unprotected.Init();
         }
@@ -1299,6 +1301,30 @@ struct Memory::Impl {
         return result;
     }
 
+    /// run_ahead_cover: see Memory::Nx2CoverClassify.
+    bool CoverClassify(std::span<const u64> pages, std::span<u8> classes) {
+        using VideoCommon::Nx2Ledger::TrackerClass;
+        std::unique_lock war_lock{war_mutex, std::defer_lock};
+        if (war_probe) {
+            war_lock.lock();
+        }
+        for (size_t i = 0; i < pages.size() && i < classes.size(); ++i) {
+            const u64 page = pages[i];
+            TrackerClass value = TrackerClass::Untracked;
+            if (page == 0 ||
+                !AddressSpaceContains(*current_page_table, page << YUZU_PAGEBITS, 1)) {
+                value = TrackerClass::NoCpu;
+            } else if (std::as_const(current_page_table->entries)[page].Type() ==
+                       Common::PageType::RasterizerCachedMemory) {
+                value = TrackerClass::Tracked;
+            } else if (war_probe && war_unprotected.Contains(page)) {
+                value = TrackerClass::ArmSet;
+            }
+            classes[i] = static_cast<u8>(value);
+        }
+        return war_probe;
+    }
+
     // Nx2Perf inflight_write_wait / inflight_read_exact (video_core/nx2_war_probe.h, Nx2Inflight).
 
     /// Gives every page an epoch's arm guarded its tracker state back (Memory, read/write).
@@ -2046,6 +2072,10 @@ void Memory::RasterizerArmReadTraps(Common::ProcessAddress vaddr, u64 size) {
 
 Memory::Nx2WarProbeArmResult Memory::Nx2WarProbeArm(std::span<const u64> bank_cpu_pages) {
     return impl->WarArm(bank_cpu_pages);
+}
+
+bool Memory::Nx2CoverClassify(std::span<const u64> cpu_pages, std::span<u8> classes) {
+    return impl->CoverClassify(cpu_pages, classes);
 }
 
 bool Memory::Nx2InflightOpen(u32 fence_id, u32 fence_value, u32 prev_id, u32 prev_value) {

@@ -166,6 +166,9 @@ enum class Opt : unsigned {
     /// Split: a front wait spins (EDEN_NX2_SPIN_HANDOFF_US, default 300) while the back works
     /// instead of sleeping; the idle back spins for the next publish while the GPU thread parses
     SpinHandoff,
+    /// Measurement only, with RunAheadLedger: K-frame unions of the back's read pages, tracker
+    /// state of rewritten pages and the simulated run-ahead RAW stall per wait rule
+    RunAheadCover,
     Count,
 };
 
@@ -211,6 +214,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "inflight_wait_v2",
     "list_fetch_after_sync",
     "spin_handoff",
+    "run_ahead_cover",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -284,7 +288,8 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::FenceTimeline, Opt::RunAheadLedger, Opt::ComputeWriterRanges, Opt::AcquireQueuedRelease, Opt::NonwriterProofMemo,
                           Opt::InflightWaitV2,
                           Opt::ListFetchAfterSync,
-                          Opt::SpinHandoff}) {
+                          Opt::SpinHandoff,
+                          Opt::RunAheadCover}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -307,7 +312,8 @@ inline constexpr OffMask DefaultOffMask() {
 /// run_ahead_ledger (measurement); compute_writer_ranges (-2.5 FPS: many short list-writer waits),
 /// acquire_queued_release (no gain, ~46 acquires/s forwarded), nonwriter_proof_memo (+0.3 FPS,
 /// round 7); inflight_wait_v2 (runs ahead: flash check and a user play test first),
-/// list_fetch_after_sync, spin_handoff (round 8, unmeasured). dma_forward and draw_begin_coalesce are on
+/// list_fetch_after_sync, spin_handoff (round 8, unmeasured), run_ahead_cover (measurement).
+/// dma_forward and draw_begin_coalesce are on
 /// by default (round 5); SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
@@ -330,7 +336,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::NonwriterProofMemo) |
                                   Bit(Opt::InflightWaitV2) |
                                   Bit(Opt::ListFetchAfterSync) |
-                                  Bit(Opt::SpinHandoff);
+                                  Bit(Opt::SpinHandoff) |
+                                  Bit(Opt::RunAheadCover);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -389,6 +396,10 @@ static_assert(static_cast<unsigned>(Opt::ListFetchAfterSync) == 69 &&
 static_assert(static_cast<unsigned>(Opt::SpinHandoff) == 70 &&
               IsOff(always_off, static_cast<size_t>(Opt::SpinHandoff)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::SpinHandoff)));
+
+static_assert(static_cast<unsigned>(Opt::RunAheadCover) == 71 &&
+              IsOff(always_off, static_cast<size_t>(Opt::RunAheadCover)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::RunAheadCover)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.

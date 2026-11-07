@@ -1957,6 +1957,9 @@ private:
         if (ledger) [[unlikely]] {
             if (const std::string line = m_ledger->Report(); !line.empty()) {
                 LOG_INFO(HW_GPU, "{}", line);
+                if (const std::string cover = m_ledger->CoverReport(); !cover.empty()) {
+                    LOG_INFO(HW_GPU, "{}", cover);
+                }
             }
         }
         if (war_probe) [[unlikely]] {
@@ -1971,6 +1974,9 @@ private:
             InflightLog();
         }
         if (ledger) [[unlikely]] {
+            if (VideoCommon::Nx2Ledger::CoverOn()) {
+                LedgerCoverClassify();
+            }
             m_ledger->Reply();
         }
         constexpr u64 AvailableSlots = 0x7fff;
@@ -2186,6 +2192,16 @@ private:
                 return system.Host1x().MemoryManager().GetPointer<u8>(address);
             },
             [](u64 address) { return Tegra::Nx2IsGpuWritten(address); });
+    }
+
+    /// run_ahead_cover: the tracker state of the taken pages at the reply.
+    void LedgerCoverClassify() {
+        auto& device_memory = system.Host1x().MemoryManager();
+        m_ledger->CoverClassify(
+            [&device_memory](u64 address) { return device_memory.GetCpuBackingAddress(address); },
+            [this](std::span<const u64> cpu_pages, std::span<u8> classes) {
+                return system.ApplicationMemory().Nx2CoverClassify(cpu_pages, classes);
+            });
     }
 
     /// inflight_write_wait / inflight_read_exact / inflight_wait_v2: the epochs' counters, about

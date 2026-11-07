@@ -12,6 +12,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -335,6 +336,23 @@ inline bool On() {
     return on;
 }
 
+/// run_ahead_cover (measurement only, needs the ledger): K-frame unions of the read pages, the
+/// tracker state of rewritten pages and the simulated run-ahead RAW stall per wait rule.
+inline bool CoverOn() {
+    static const bool on = On() && Nx2Perf::On(Nx2Perf::Opt::RunAheadCover);
+    return on;
+}
+
+/// run_ahead_cover: a guest page's state at vi2's reply (core memory's tracker view).
+enum class TrackerClass : u8 {
+    Tracked,   ///< The tracker protects it: a write traps anyway
+    ArmSet,    ///< CPU-writable, in the war_guard arm set (tracker-registered, CPU-written)
+    Untracked, ///< Writable and outside the arm set: no trap design covers it
+    NoCpu,     ///< No guest mapping behind the device page
+    Count,
+};
+inline constexpr size_t NumTrackerClasses = static_cast<size_t>(TrackerClass::Count);
+
 enum class Category : u8 {
     Other, ///< Outside every scope: shader code, QMD, queries, ...
     UniformFast,
@@ -470,6 +488,7 @@ inline constexpr u64 ArmedBit = u64{1} << 63;
 struct WriterSlot {
     std::atomic<u64> block{~u64{0}};
     std::atomic<s64> ns{0};
+    std::atomic<u64> stamp{0}; ///< run_ahead_cover: CoverState::write_stamp of the write
 };
 
 struct State {
@@ -517,6 +536,138 @@ inline void NoteVerifyDifference(std::string_view what, u64 page) {
     if (count <= 64) {
         LOG_ERROR(HW_GPU, "Nx2Perf run_ahead_ledger: {} (page {:#x}, {} so far)", what,
                   page << PageBits, count);
+    }
+}
+
+inline constexpr size_t NumCoverCommits = 4096;
+inline constexpr size_t NumCoverSlots = 1024;
+inline constexpr size_t NumCoverFences = 256;
+
+/// A buffer cache commit that carried stamped writes; number is its index + 1 (0 while unset).
+struct CoverCommit {
+    std::atomic<u64> number{0};
+    std::atomic<u64> stamp{0};   ///< Highest write stamp it downloads
+    std::atomic<s64> land_ns{0}; ///< When its bytes reached guest memory, 0 not yet
+};
+
+/// A present fence the ledger swapped at (seq) and when its host value rose.
+struct CoverFence {
+    std::atomic<u64> seq{0};
+    std::atomic<u64> key{0}; ///< id << 32 | value
+    std::atomic<s64> host_ns{0};
+};
+
+struct CoverState {
+    std::atomic<u64> write_stamp{0}; ///< Back: one per preflushed GPU write (NoteWriter)
+    // Under the buffer cache mutex (commits and pops), read by vi2.
+    std::array<CoverCommit, NumCoverCommits> commits{};
+    std::atomic<u64> commit_count{0};
+    u64 committed_stamp = 0;
+    /// Per async download slot with bytes, its commit number (0 none), FIFO like async_buffers.
+    std::array<u64, NumCoverSlots> slot_commit{};
+    u64 slot_push = 0;
+    u64 slot_pop = 0;
+    u64 slot_dropped = 0; ///< Oldest slots dropped on a full FIFO; their pops land nothing
+    std::array<CoverFence, NumCoverFences> fences{};
+    std::atomic<u64> fence_armed{0}; ///< Last seq armed in fences
+    // RAW samples at State::raw_a's index: the writer's stamp, frame N's seq, fence N-1's time.
+    std::array<std::atomic<u64>, NumRawSamples> raw_stamp{};
+    std::array<std::atomic<u64>, NumRawSamples> raw_seq{};
+    std::array<std::atomic<s64>, NumRawSamples> raw_prev_fence{};
+    std::atomic<u64> verify_differences{};
+};
+
+inline CoverState& CoverGet() {
+    static CoverState cover;
+    return cover;
+}
+
+inline void NoteCoverDifference(std::string_view what, u64 a, u64 b) {
+    const u64 count =
+        CoverGet().verify_differences.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 64) {
+        LOG_ERROR(HW_GPU, "Nx2Perf run_ahead_cover: {} ({} vs {}, {} so far)", what, a, b, count);
+    }
+}
+
+/// CommitAsyncFlushesHigh (buffer cache mutex): records a commit when writes were stamped since
+/// the last one. Returns its number, 0 when none.
+inline u64 CoverCommitBegin() {
+    CoverState& cover = CoverGet();
+    const u64 stamp = cover.write_stamp.load(std::memory_order_acquire);
+    if (stamp == cover.committed_stamp) {
+        return 0;
+    }
+    cover.committed_stamp = stamp;
+    const u64 number = cover.commit_count.load(std::memory_order_relaxed) + 1;
+    CoverCommit& commit = cover.commits[(number - 1) % NumCoverCommits];
+    commit.number.store(0, std::memory_order_relaxed);
+    commit.stamp.store(stamp, std::memory_order_relaxed);
+    commit.land_ns.store(0, std::memory_order_relaxed);
+    commit.number.store(number, std::memory_order_release);
+    cover.commit_count.store(number, std::memory_order_release);
+    return number;
+}
+
+/// Commit number's bytes are in guest memory now.
+inline void CoverLand(u64 number) {
+    if (number == 0) {
+        return;
+    }
+    CoverCommit& commit = CoverGet().commits[(number - 1) % NumCoverCommits];
+    if (commit.number.load(std::memory_order_acquire) == number) {
+        commit.land_ns.store(NowNs(), std::memory_order_release);
+    }
+}
+
+/// End of CommitAsyncFlushesHigh: without downloads the commit lands now, else at its pop.
+inline void CoverCommitEnd(u64 number, bool downloads) {
+    if (!downloads) {
+        CoverLand(number);
+        return;
+    }
+    CoverState& cover = CoverGet();
+    if (cover.slot_push - cover.slot_pop == NumCoverSlots) {
+        NoteCoverDifference("download slot FIFO full, a landing is lost", cover.slot_push,
+                            cover.slot_pop);
+        ++cover.slot_pop;
+        ++cover.slot_dropped;
+    }
+    cover.slot_commit[cover.slot_push++ % NumCoverSlots] = number;
+}
+
+/// PopAsyncBuffers (buffer cache mutex): a slot with bytes was written to guest memory.
+inline void CoverPopped() {
+    CoverState& cover = CoverGet();
+    if (cover.slot_dropped != 0) {
+        // The dropped slots were the oldest: keep the rest paired with their pops.
+        --cover.slot_dropped;
+        return;
+    }
+    if (cover.slot_pop == cover.slot_push) {
+        NoteCoverDifference("download slot popped with none queued", cover.slot_pop,
+                            cover.slot_push);
+        return;
+    }
+    CoverLand(cover.slot_commit[cover.slot_pop++ % NumCoverSlots]);
+}
+
+/// Fence manager: syncpoint id's host value rose to value.
+inline void AfterHostIncrement(u32 id, u32 value) {
+    CoverState& cover = CoverGet();
+    const u64 last = cover.fence_armed.load(std::memory_order_acquire);
+    for (u64 seq = last; seq != 0 && seq + 8 > last; --seq) {
+        CoverFence& fence = cover.fences[seq % NumCoverFences];
+        if (fence.seq.load(std::memory_order_acquire) != seq ||
+            fence.host_ns.load(std::memory_order_relaxed) != 0) {
+            continue;
+        }
+        const u64 key = fence.key.load(std::memory_order_relaxed);
+        if ((key >> 32) != id || static_cast<s32>(value - static_cast<u32>(key)) < 0) {
+            continue;
+        }
+        s64 expected = 0;
+        fence.host_ns.compare_exchange_strong(expected, NowNs(), std::memory_order_acq_rel);
     }
 }
 
@@ -586,6 +737,15 @@ inline void BeforeBackIncrement(u32 id, u32 value) {
                               std::memory_order_relaxed);
     state.fence_ns.store(NowNs(), std::memory_order_relaxed);
     const u64 seq = state.fence_seq.load(std::memory_order_relaxed) + 1;
+    if (CoverOn()) {
+        CoverState& cover = CoverGet();
+        CoverFence& fence = cover.fences[seq % NumCoverFences];
+        fence.seq.store(0, std::memory_order_relaxed);
+        fence.key.store((u64{id} << 32) | value, std::memory_order_relaxed);
+        fence.host_ns.store(0, std::memory_order_relaxed);
+        fence.seq.store(seq, std::memory_order_release);
+        cover.fence_armed.store(seq, std::memory_order_release);
+    }
     {
         std::scoped_lock lock{state.mutex};
         state.unconsumed += state.published != nullptr ? 1 : 0;
@@ -608,10 +768,14 @@ inline size_t WriterSlotOf(u64 block) {
 inline void NoteWriter(u64 begin, u64 end) {
     State& state = Get();
     const s64 now = NowNs();
+    // run_ahead_cover: one stamp per write, the order the buffer cache commits them in.
+    const u64 stamp =
+        CoverOn() ? CoverGet().write_stamp.fetch_add(1, std::memory_order_acq_rel) + 1 : 0;
     for (u64 block = begin >> WriterBlockBits; block <= (end - 1) >> WriterBlockBits; ++block) {
         WriterSlot& slot = state.writers[WriterSlotOf(block)];
         slot.block.store(~u64{0}, std::memory_order_relaxed);
         slot.ns.store(now, std::memory_order_relaxed);
+        slot.stamp.store(stamp, std::memory_order_relaxed);
         slot.block.store(block, std::memory_order_release);
     }
 }
@@ -623,6 +787,7 @@ inline void NoteGuestRead(u64 begin, u64 end) {
     }
     State& state = Get();
     s64 writer = 0;
+    u64 writer_stamp = 0;
     bool found = false;
     for (u64 block = begin >> WriterBlockBits; block <= (end - 1) >> WriterBlockBits; ++block) {
         const WriterSlot& slot = state.writers[WriterSlotOf(block)];
@@ -630,8 +795,10 @@ inline void NoteGuestRead(u64 begin, u64 end) {
             continue;
         }
         const s64 ns = slot.ns.load(std::memory_order_relaxed);
+        const u64 stamp = slot.stamp.load(std::memory_order_relaxed);
         if (slot.block.load(std::memory_order_relaxed) == block) {
             writer = (std::max)(writer, ns);
+            writer_stamp = (std::max)(writer_stamp, stamp);
             found = true;
         }
     }
@@ -658,6 +825,12 @@ inline void NoteGuestRead(u64 begin, u64 end) {
     const size_t index = state.raw_count.fetch_add(1, std::memory_order_relaxed) % NumRawSamples;
     state.raw_a[index].store(a, std::memory_order_relaxed);
     state.raw_b[index].store(fence - writer, std::memory_order_relaxed);
+    if (CoverOn()) {
+        CoverState& cover = CoverGet();
+        cover.raw_stamp[index].store(writer_stamp, std::memory_order_relaxed);
+        cover.raw_seq[index].store(seq, std::memory_order_relaxed);
+        cover.raw_prev_fence[index].store(prev_fence, std::memory_order_relaxed);
+    }
 }
 
 /// A 64-bit hash of one 4 KiB page (xxh64-style rounds over eight lanes).
@@ -686,7 +859,11 @@ public:
     static constexpr size_t CopyPages = 1024;
     static constexpr size_t Chunk = 64;
 
-    Vi2Window() : copy{std::make_unique<u8[]>(CopyPages * PageSize)} {}
+    Vi2Window() : copy{std::make_unique<u8[]>(CopyPages * PageSize)} {
+        if (CoverOn()) {
+            cover = std::make_unique<Cover>();
+        }
+    }
 
     /// Present of fence (id, value), before its wait: compares the pages taken at the last
     /// reply, then arms the back's swap for this fence. reached: the fence already passed.
@@ -720,6 +897,9 @@ public:
         State& state = Get();
         const s64 start = NowNs();
         valid = false;
+        if (cover) {
+            cover->classified = false;
+        }
         if (id == last_id && value - last_value - 1 < 64) {
             // The predicted next fence, for a back that passes it before the next present
             // enters. The guest waits here, so the back cannot reach it meanwhile.
@@ -788,6 +968,123 @@ public:
         State& state = Get();
         state.reply_ns.store(NowNs(), std::memory_order_relaxed);
         state.reply_seq.store(frame_seq, std::memory_order_release);
+    }
+
+    /// run_ahead_cover, right before the reply: the tracker state of each taken page.
+    /// cpu_of(device address) is its guest address (0 none); classify(cpu pages, classes) fills
+    /// TrackerClass values and returns whether core memory keeps the arm set.
+    template <typename CpuOf, typename Classify>
+    void CoverClassify(CpuOf&& cpu_of, Classify&& classify) {
+        if (!cover || !valid) {
+            return;
+        }
+        Cover& c = *cover;
+        const s64 start = NowNs();
+        for (size_t i = 0; i < count; ++i) {
+            c.cpu_pages[i] = static_cast<u64>(cpu_of(pages[i] << PageBits)) >> PageBits;
+            c.classes[i] = static_cast<u8>(TrackerClass::Untracked);
+        }
+        c.arm_set_known = classify(std::span<const u64>(c.cpu_pages.data(), count),
+                                   std::span<u8>(c.classes.data(), count));
+        for (size_t i = 0; i < count; ++i) {
+            if (c.cpu_pages[i] == 0) {
+                c.classes[i] = static_cast<u8>(TrackerClass::NoCpu);
+            }
+        }
+        c.classified = true;
+        c.sum.ns += NowNs() - start;
+    }
+
+    /// Once a second with the ledger line: the run_ahead_cover line, empty when off.
+    std::string CoverReport() {
+        if (!cover) {
+            return {};
+        }
+        Cover& c = *cover;
+        CoverSums& s = c.sum;
+        State& state = Get();
+        CoverState& shared = CoverGet();
+        // RAW samples one report behind, so their writers have landed.
+        const u64 total = state.raw_count.load(std::memory_order_relaxed);
+        u64 from = c.raw_from;
+        const u64 to = c.raw_to;
+        if (total > NumRawSamples && from < total - NumRawSamples) {
+            from = total - NumRawSamples;
+        }
+        size_t samples = 0, land_n = 0, fence_n = 0;
+        for (u64 n = from; n < to; ++n) {
+            const size_t index = static_cast<size_t>(n % NumRawSamples);
+            ++samples;
+            const s64 a = state.raw_a[index].load(std::memory_order_relaxed);
+            const s64 base = shared.raw_prev_fence[index].load(std::memory_order_relaxed) + a;
+            if (const s64 land = LandNs(shared.raw_stamp[index].load(std::memory_order_relaxed));
+                land != 0) {
+                c.land_stall[land_n++] = (std::max<s64>)(0, land - base);
+            }
+            if (const s64 host = FenceHostNs(shared.raw_seq[index].load(std::memory_order_relaxed));
+                host != 0) {
+                c.fence_stall[fence_n++] = (std::max<s64>)(0, host - base);
+            }
+        }
+        c.raw_from = (std::max)(to, from);
+        c.raw_to = total;
+        const u64 commits = shared.commit_count.load(std::memory_order_relaxed);
+        const u64 new_commits = commits - c.commits_reported;
+        c.commits_reported = commits;
+
+        const auto pct = [](std::array<s64, NumRawSamples>& values, size_t n,
+                            size_t percent) -> double {
+            if (n == 0) {
+                return 0.0;
+            }
+            const size_t index = (percent * n + 99) / 100 - 1;
+            std::nth_element(values.begin(), values.begin() + index, values.begin() + n);
+            return static_cast<double>(values[index]) / 1e6;
+        };
+        const double frames = s.frames == 0 ? 1.0 : static_cast<double>(s.frames);
+        const auto per_k = [&s](const std::array<u64, NumK>& values) {
+            std::string out;
+            for (size_t k = 0; k < NumK; ++k) {
+                const double n = s.k_frames[k] == 0 ? 1.0 : static_cast<double>(s.k_frames[k]);
+                out += fmt::format("{}{:.1f}", k == 0 ? "" : "/", static_cast<double>(values[k]) / n);
+            }
+            return out;
+        };
+        std::string classes;
+        for (size_t g = 0; g <= NumGroups; ++g) {
+            classes += fmt::format(" {}=", g == NumGroups ? std::string_view{"all"} : group_names[g]);
+            for (size_t t = 0; t < NumTrackerClasses; ++t) {
+                u64 value = 0;
+                if (g == NumGroups) {
+                    for (size_t h = 0; h < NumGroups; ++h) {
+                        value += s.classes[t][h];
+                    }
+                } else {
+                    value = s.classes[t][g];
+                }
+                classes += fmt::format("{}{:.2f}", t == 0 ? "" : "/",
+                                       static_cast<double>(value) / frames);
+            }
+        }
+        std::string line = fmt::format(
+            "Nx2Perf run_ahead_cover: frames={} K=1/2/4/8/16 misses={} changed_misses={} "
+            "gpu_changed_misses={} union_pages={} k_frames={}/{}/{}/{}/{} changed={:.2f} "
+            "gpu_changed={:.2f} unclassified={} arm_set_known={} "
+            "changed_class(tracked/armset/untracked/nocpu per frame):{} raw_samples={} "
+            "resolved_land={} resolved_fence={} land_stall_ms p50={:.2f} p90={:.2f} "
+            "fenceN_stall_ms p50={:.2f} p90={:.2f} preflush_commits_per_frame={:.2f} "
+            "cover_ms={:.3f} verify_differences={}",
+            s.frames, per_k(s.misses), per_k(s.changed_misses), per_k(s.gpu_changed_misses),
+            per_k(s.union_pages), s.k_frames[0], s.k_frames[1], s.k_frames[2], s.k_frames[3],
+            s.k_frames[4], static_cast<double>(s.changed) / frames,
+            static_cast<double>(s.gpu_changed) / frames, s.unclassified, c.arm_set_known ? 1 : 0,
+            classes, samples, land_n, fence_n, pct(c.land_stall, land_n, 50),
+            pct(c.land_stall, land_n, 90), pct(c.fence_stall, fence_n, 50),
+            pct(c.fence_stall, fence_n, 90), static_cast<double>(new_commits) / frames,
+            static_cast<double>(s.ns) / 1e6 / frames,
+            shared.verify_differences.load(std::memory_order_relaxed));
+        s = CoverSums{};
+        return line;
     }
 
     /// Once a second, the Nx2Ledger line; empty otherwise.
@@ -892,6 +1189,184 @@ private:
         std::array<u64, NumCategories> changed_bytes{};
     };
 
+    // run_ahead_cover state, allocated once with the window.
+    static constexpr size_t CoverRing = 16;
+    static constexpr size_t NumK = 5;
+    static constexpr std::array<size_t, NumK> cover_k{1, 2, 4, 8, 16};
+    static constexpr size_t NumGroups = 6;
+    static constexpr std::array<std::string_view, NumGroups> group_names{
+        "bank", "ufast", "ucached", "storage", "desc", "other"};
+
+    struct CoverSums {
+        u64 frames = 0;
+        std::array<u64, NumK> k_frames{};
+        std::array<u64, NumK> misses{};
+        std::array<u64, NumK> changed_misses{};
+        std::array<u64, NumK> gpu_changed_misses{};
+        std::array<u64, NumK> union_pages{};
+        u64 changed = 0;
+        u64 gpu_changed = 0;
+        u64 unclassified = 0; ///< Changed pages of a frame vi2 did not classify
+        std::array<std::array<u64, NumGroups>, NumTrackerClasses> classes{};
+        s64 ns = 0;
+    };
+
+    struct Cover {
+        std::array<std::array<u64, MaxHashed>, CoverRing> ring{}; ///< Sorted pages per frame
+        std::array<size_t, CoverRing> ring_size{};
+        size_t ring_head = 0; ///< Next slot to write
+        size_t ring_count = 0;
+        std::array<u64, MaxHashed * CoverRing> merge_a{};
+        std::array<u64, MaxHashed * CoverRing> merge_b{};
+        std::array<u64, MaxHashed> current{}; ///< page << 2 | flags, sorted
+        std::array<u8, MaxHashed> flags{};    ///< 1 changed (not GPU-written), 2 GPU-written
+        std::array<u8, MaxHashed> classes{};
+        std::array<u64, MaxHashed> cpu_pages{};
+        bool classified = false;
+        bool arm_set_known = false;
+        u64 raw_from = 0;
+        u64 raw_to = 0;
+        u64 commits_reported = 0;
+        std::array<s64, NumRawSamples> land_stall{};
+        std::array<s64, NumRawSamples> fence_stall{};
+        CoverSums sum{};
+    };
+
+    static size_t GroupOf(u16 mask) {
+        const auto has = [mask](Category category) {
+            return ((mask >> static_cast<size_t>(category)) & 1) != 0;
+        };
+        return has(Category::BankCompare)     ? 0
+               : has(Category::UniformFast)   ? 1
+               : has(Category::UniformCached) ? 2
+               : has(Category::Storage)       ? 3
+               : has(Category::Descriptor)    ? 4
+                                              : 5;
+    }
+
+    /// When the first commit holding write stamp `stamp` landed; 0 unknown or not landed.
+    static s64 LandNs(u64 stamp) {
+        if (stamp == 0) {
+            return 0;
+        }
+        CoverState& shared = CoverGet();
+        const u64 count = shared.commit_count.load(std::memory_order_acquire);
+        const u64 oldest = count > NumCoverCommits ? count - NumCoverCommits + 1 : 1;
+        u64 lo = oldest;
+        u64 hi = count + 1;
+        while (lo < hi) {
+            const u64 mid = lo + (hi - lo) / 2;
+            if (shared.commits[(mid - 1) % NumCoverCommits].stamp.load(
+                    std::memory_order_relaxed) >= stamp) {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        if (lo > count || (lo == oldest && oldest > 1)) {
+            return 0;
+        }
+        const CoverCommit& commit = shared.commits[(lo - 1) % NumCoverCommits];
+        const s64 land = commit.land_ns.load(std::memory_order_acquire);
+        return commit.number.load(std::memory_order_acquire) == lo ? land : 0;
+    }
+
+    /// When fence seq's host value rose; 0 unknown.
+    static s64 FenceHostNs(u64 seq) {
+        const CoverFence& fence = CoverGet().fences[seq % NumCoverFences];
+        const s64 host = fence.host_ns.load(std::memory_order_acquire);
+        return fence.seq.load(std::memory_order_acquire) == seq ? host : 0;
+    }
+
+    /// Compare's tail: K-frame unions, classes of the changed pages, then this frame's set
+    /// enters the ring. old_*: the ledger's own K=1 answer (old_valid: it had one).
+    void CoverCompare(bool old_valid, u64 old_misses, u64 old_changed_misses) {
+        Cover& c = *cover;
+        CoverSums& s = c.sum;
+        const s64 start = NowNs();
+        for (size_t i = 0; i < count; ++i) {
+            const u8 f = c.flags[i];
+            s.gpu_changed += (f >> 1) & 1;
+            if ((f & 1) == 0) {
+                continue;
+            }
+            ++s.changed;
+            if (!c.classified) {
+                ++s.unclassified;
+            } else {
+                ++s.classes[c.classes[i]][GroupOf(masks[i])];
+            }
+        }
+        for (size_t i = 0; i < count; ++i) {
+            c.current[i] = (pages[i] << 2) | c.flags[i];
+        }
+        std::sort(c.current.begin(), c.current.begin() + count);
+        const u64* union_data = nullptr;
+        size_t union_size = 0;
+        u64* out = c.merge_a.data();
+        u64* spare = c.merge_b.data();
+        size_t k = 0;
+        for (size_t j = 1; j <= c.ring_count && k < NumK; ++j) {
+            const size_t slot = (c.ring_head + CoverRing - j) % CoverRing;
+            const u64* const set = c.ring[slot].data();
+            const size_t set_size = c.ring_size[slot];
+            if (j == 1) {
+                union_data = set;
+                union_size = set_size;
+            } else {
+                u64* const end =
+                    std::set_union(union_data, union_data + union_size, set, set + set_size, out);
+                union_size = static_cast<size_t>(end - out);
+                union_data = out;
+                std::swap(out, spare);
+            }
+            if (j != cover_k[k]) {
+                continue;
+            }
+            u64 misses = 0, changed = 0, gpu = 0;
+            size_t u = 0;
+            for (size_t i = 0; i < count; ++i) {
+                const u64 page = c.current[i] >> 2;
+                while (u < union_size && union_data[u] < page) {
+                    ++u;
+                }
+                if (u == union_size || union_data[u] != page) {
+                    ++misses;
+                    changed += c.current[i] & 1;
+                    gpu += (c.current[i] >> 1) & 1;
+                }
+            }
+            if (k == 0 && Nx2Perf::Verify()) {
+                if (!old_valid) {
+                    NoteCoverDifference("K=1 union without a ledger previous frame", misses, 0);
+                } else if (misses != old_misses || changed != old_changed_misses) {
+                    NoteCoverDifference("K=1 misses differ from the ledger's", misses,
+                                        old_misses);
+                    misses = old_misses;
+                    changed = old_changed_misses;
+                }
+            }
+            s.misses[k] += misses;
+            s.changed_misses[k] += changed;
+            s.gpu_changed_misses[k] += gpu;
+            s.union_pages[k] += union_size;
+            ++s.k_frames[k];
+            ++k;
+        }
+        if (k == 0 && old_valid && Nx2Perf::Verify()) {
+            NoteCoverDifference("the ledger had a previous frame, the ring none", old_misses, 0);
+        }
+        auto& next = c.ring[c.ring_head];
+        for (size_t i = 0; i < count; ++i) {
+            next[i] = c.current[i] >> 2;
+        }
+        c.ring_size[c.ring_head] = count;
+        c.ring_head = (c.ring_head + 1) % CoverRing;
+        c.ring_count = (std::min)(c.ring_count + 1, CoverRing);
+        ++s.frames;
+        s.ns += NowNs() - start;
+    }
+
     static void AddByCategory(std::array<u64, NumCategories>& counts, u16 mask, u64 amount) {
         for (size_t c = 0; c < NumCategories; ++c) {
             if ((mask >> c) & 1) {
@@ -921,9 +1396,11 @@ private:
                     changed = HashPage(host) != hashes[i];
                 }
             }
+            bool gpu = false;
             if (changed && gpu_written(pages[i] << PageBits)) {
                 ++sum.gpu_written;
                 changed = false;
+                gpu = true;
             }
             if (changed) {
                 ++sum.changed;
@@ -931,9 +1408,15 @@ private:
                 AddByCategory(sum.changed_pages, masks[i], 1);
                 AddByCategory(sum.changed_bytes, masks[i], changed_bytes);
             }
+            if (cover) [[unlikely]] {
+                cover->flags[i] = static_cast<u8>((changed ? 1 : 0) | (gpu ? 2 : 0));
+            }
             sorted[i] = (pages[i] << 1) | (changed ? 1 : 0);
         }
         std::sort(sorted.begin(), sorted.begin() + count);
+        const u64 misses_before = sum.misses;
+        const u64 changed_misses_before = sum.changed_misses;
+        const bool had_previous = have_previous;
         if (have_previous) {
             // Pages of frame N that frame N-1 did not read: an arming set from the last frame
             // would not have covered them.
@@ -951,6 +1434,10 @@ private:
         previous_count = count;
         have_previous = true;
         sum.compare_ns += NowNs() - start;
+        if (cover) [[unlikely]] {
+            CoverCompare(had_previous, sum.misses - misses_before,
+                         sum.changed_misses - changed_misses_before);
+        }
     }
 
     std::array<u64, MaxHashed> pages{};
@@ -973,6 +1460,7 @@ private:
     std::array<s64, NumRawSamples> raw_b{};
     std::array<s64, NumRawSamples> raw_wait{};
     Sums sum{};
+    std::unique_ptr<Cover> cover; ///< run_ahead_cover only
 };
 
 } // namespace VideoCommon::Nx2Ledger

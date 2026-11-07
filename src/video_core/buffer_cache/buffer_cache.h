@@ -853,8 +853,13 @@ bool BufferCache<P>::ShouldWaitAsyncFlushes() const noexcept {
 template <class P>
 void BufferCache<P>::CommitAsyncFlushesHigh() {
     AccumulateFlushes();
+    // run_ahead_cover: the commit's highest preflush write stamp, landed at its pop.
+    const u64 cover_commit = Nx2Ledger::CoverOn() ? Nx2Ledger::CoverCommitBegin() : 0;
 
     if (committed_gpu_modified_ranges.empty()) {
+        if (Nx2Ledger::CoverOn()) [[unlikely]] {
+            Nx2Ledger::CoverCommitEnd(cover_commit, false);
+        }
         async_buffers.emplace_back(std::optional<Async_Buffer>{});
         return;
     }
@@ -914,6 +919,9 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
     }
     committed_gpu_modified_ranges.clear();
     if (downloads.empty()) {
+        if (Nx2Ledger::CoverOn()) [[unlikely]] {
+            Nx2Ledger::CoverCommitEnd(cover_commit, false);
+        }
         async_buffers.emplace_back(std::optional<Async_Buffer>{});
         return;
     }
@@ -985,6 +993,9 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
     runtime.PostCopyBarrier();
     pending_downloads.emplace_back(std::move(normalized_copies));
     pending_download_ranges.emplace_back(std::move(download_ranges));
+    if (Nx2Ledger::CoverOn()) [[unlikely]] {
+        Nx2Ledger::CoverCommitEnd(cover_commit, true);
+    }
     async_buffers.emplace_back(download_staging);
 }
 
@@ -1296,6 +1307,9 @@ void BufferCache<P>::PopAsyncBuffers() {
     }
     if (Nx2Profile::Enabled()) {
         Nx2Profile::g_fencing_written_bytes.fetch_add(written_bytes, std::memory_order_relaxed);
+    }
+    if (Nx2Ledger::CoverOn()) [[unlikely]] {
+        Nx2Ledger::CoverPopped();
     }
     async_buffers_death_ring.emplace_back(*async_buffer);
     async_buffers.pop_front();
