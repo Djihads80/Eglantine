@@ -119,7 +119,7 @@ jobs:
 
       - name: CCache zero stats
         shell: bash
-        run: ccache --zero-stats
+        run: sccache --zero-stats
 
       - name: Build
         shell: bash
