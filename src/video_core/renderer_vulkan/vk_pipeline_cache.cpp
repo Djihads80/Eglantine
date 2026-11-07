@@ -402,8 +402,10 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       use_vulkan_pipeline_cache{Settings::values.use_vulkan_driver_pipeline_cache.GetValue() &&
                                 !DriverCachesPipelines(device_)},
       oot_visual_workaround{[] {
+          // Opt-in only: on by default it scaled Ocarina's fog to a quarter, which hid the
+          // volumetric fog and light shafts once the real fixes had landed.
           const char* value = std::getenv("EDEN_NX2_OOT_VISUAL_WORKAROUND");
-          return value == nullptr || std::string_view{value} != "0";
+          return value != nullptr && std::string_view{value} == "1";
       }()},
       workers(device.HasBrokenParallelShaderCompiling() ? 1ULL : GetTotalPipelineWorkers(),
               "VkPipelineBuilder", {}, Common::ThreadPlacement::Background),
