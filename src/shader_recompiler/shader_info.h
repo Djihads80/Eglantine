@@ -385,6 +385,12 @@ struct Info {
     /// and storage buffer words (see EvaluateHandleProgram), evaluated for each draw.
     std::vector<std::vector<u32>> handle_programs;
     ImageDescriptors image_descriptors;
+
+    /// Whether the shader uses warp-level operations, which observe the subgroup size.
+    [[nodiscard]] bool UsesWarpOps() const noexcept {
+        return uses_subgroup_vote || uses_subgroup_invocation_id || uses_subgroup_shuffles ||
+               uses_subgroup_mask || uses_quad_shuffles || uses_fswzadd;
+    }
 };
 
 template <typename Descriptors>
