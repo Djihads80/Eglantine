@@ -48,6 +48,15 @@ jobs:
           ref: ${{ inputs.sha }}
           persist-credentials: false
 
+      - name: Restore and save sccache
+        uses: actions/cache@v6
+        with:
+          path: .sccache
+          key: sccache-${{ runner.os }}-msvc-${{ github.sha }}
+          restore-keys: |
+            sccache-${{ runner.os }}-msvc-
+            sccache-${{ runner.os }}-
+
       - name: Setup build from checked-out source
         if: hashFiles('.github/actions/setup-build/action.yml') != ''
         uses: ./.github/actions/setup-build
@@ -157,6 +166,12 @@ jobs:
         with:
           ref: ${{ inputs.sha }}
           persist-credentials: false
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: windows-mingw-pgo
+          max-size: 3G
 
       - name: Setup build from checked-out source
         if: hashFiles('.github/actions/setup-build/action.yml') != ''
