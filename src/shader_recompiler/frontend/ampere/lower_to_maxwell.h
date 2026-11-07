@@ -3102,6 +3102,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 emit(base(0x3828000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) | (u64{insn.words[1]} << 20));
                 break;
             }
+            if (insn.Bits(73, 2) == 1 && insn.Bits(76, 1) && !insn.Bits(75, 1) &&
+                insn.words[1] <= 32 && insn.Bits(24, 8) != 255 && insn.Bits(64, 8) != 255) {
+                // Right funnel shift of the pair (high:low) with neither word zero: the mirror of
+                // the left funnel below, low word as the destination and high word as Rc.
+                emit(base(0x3828000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) |
+                     (u64{insn.Bits(64, 8)} << 39) | (u64{insn.words[1]} << 20));
+                break;
+            }
             if ((insn.Bits(73, 2) != 3 && !is_signed) || insn.Bits(75, 1) || !insn.Bits(80, 1) || insn.words[1] > 32) return fail(index, "native funnel-shift mode");
             const u32 low = insn.Bits(24, 8), high = insn.Bits(64, 8), shift = insn.words[1];
             if (insn.Bits(76, 1)) {
