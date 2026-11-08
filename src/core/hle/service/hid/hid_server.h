@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <unordered_map>
+
 #include "core/hle/service/cmif_types.h"
 #include "core/hle/service/service.h"
 #include "hid_core/hid_types.h"
@@ -191,16 +193,33 @@ private:
                                     ClientAppletResourceUserId aruid);
     // Switch 2 sends vibration every frame with 214: pointer buffers of device handles and values
     // like 206, but the aruid is raw data after an unknown u64 instead of a sent process id.
-    Result SendNx2VibrationValues(
+    Result SendVibrationValuesInMode(
         u64 unknown, AppletResourceUserId aruid,
         InArray<Core::HID::VibrationDeviceHandle, BufferAttr_HipcPointer> vibration_handles,
         InArray<Core::HID::VibrationValue, BufferAttr_HipcPointer> vibration_values);
     // 213 (32 bytes, aruid): sent per controller every frame by Kirby Air Riders (tens of
-    // thousands of auto stub log lines a run); no reply data. Accepted and dropped.
-    Result Unknown213();
-    // 220 (16 bytes, aruid): replies one byte (meaning unknown); answer 0 instead of leaving it to
-    // the message buffer's leftovers.
-    Result Unknown220(Out<u8> out);
+    // thousands of auto stub log lines a run); no reply data. Accepted and dropped until its
+    // layout is known: the first request's raw words are logged for that.
+    void SendVibrationValueInMode(HLERequestContext& ctx);
+    // 220: whether the Switch 2 vibration device behind a handle is mounted, as 211 answers it for
+    // Switch 1 devices.
+    Result IsOunceVibrationDeviceMounted(Out<bool> out_is_mounted,
+                                         Core::HID::VibrationDeviceHandle vibration_device_handle,
+                                         ClientAppletResourceUserId aruid);
+    // 138/139 (Switch 2): a scene id each application stores and reads back.
+    Result SetSceneIdForPrivateApp(ClientAppletResourceUserId aruid, u64 scene_id);
+    Result GetSceneIdForPrivateApp(Out<u64> out_scene_id, ClientAppletResourceUserId aruid);
+    // Switch 2 mouse mode (Nmouse). The pointer ranges (the screen size the pointer moves in) an
+    // application sets with InitializeNmouse2 or SetNmousePointerRanges are what
+    // GetNmousePointerRanges reads back. No mouse is ever attached, so the shared memory the title
+    // hands over stays as it is. InitializeNmouse (3130) stays a placeholder: no title has been
+    // seen calling it, so its layout is unconfirmed.
+    Result InitializeNmouse2(u32 pointer_type, s32 width, s32 height, u32 unknown,
+                             ClientAppletResourceUserId aruid, u64 t_mem_size,
+                             InCopyHandle<Kernel::KTransferMemory> t_mem);
+    Result SetNmousePointerRanges(s32 width, s32 height, ClientAppletResourceUserId aruid);
+    Result GetNmousePointerRanges(Out<s32> out_width, Out<s32> out_height,
+                                  ClientAppletResourceUserId aruid);
     Result ActivateConsoleSixAxisSensor(ClientAppletResourceUserId aruid);
     Result StartConsoleSixAxisSensor(Core::HID::ConsoleSixAxisSensorHandle console_sixaxis_handle,
                                      ClientAppletResourceUserId aruid);
@@ -279,6 +298,13 @@ private:
 
     std::shared_ptr<ResourceManager> resource_manager;
     std::shared_ptr<HidFirmwareSettings> firmware_settings;
+    struct NmousePointerRanges {
+        s32 width;
+        s32 height;
+    };
+    // Keyed by applet resource user id, as the console keeps them per application.
+    std::unordered_map<u64, u64> scene_ids_for_private_app;
+    std::unordered_map<u64, NmousePointerRanges> nmouse_pointer_ranges;
 };
 
 } // namespace Service::HID

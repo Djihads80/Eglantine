@@ -86,7 +86,7 @@ NvResult nvhost_as_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> i
         }
         case 0xb:
             if (g_nx2_driver) {
-                return WrapFixed(this, &nvhost_as_gpu::Nx2GetSyncpointShimInfo, input, output);
+                return WrapFixed(this, &nvhost_as_gpu::GetSyncRoMap, input, output);
             }
             break;
         case 0x14:
@@ -308,10 +308,11 @@ void nvhost_as_gpu::Nx2SparseTile(u64 gpu_address, u64 cpu_address, u64 size) {
 
 void nvhost_as_gpu::OnClose(DeviceFD fd) {}
 
-// Switch 2 NvRm (with characteristics flag 26) asks for the read-only syncpoint shim: a GPU page
-// whose u32 at id * stride reads as that syncpoint's value; NVN waits on syncpoints through it and
-// asserts without one. Same scheme as changes.patch, placed on the last page of the VA range.
-NvResult nvhost_as_gpu::Nx2GetSyncpointShimInfo(IoctlNx2SyncpointShimInfo& params) {
+// NVGPU_AS_IOCTL_GET_SYNC_RO_MAP: Switch 2 NvRm (with characteristics flag 26) asks for the
+// read-only syncpoint shim, a GPU page whose u32 at id * sync_size reads as that syncpoint's
+// value; NVN waits on syncpoints through it and asserts without one. Same scheme as
+// changes.patch, placed on the last page of the VA range.
+NvResult nvhost_as_gpu::GetSyncRoMap(IoctlGetSyncRoMap& params) {
     std::scoped_lock lock(mutex);
     if (!vm.initialised || !gmmu) {
         return NvResult::NotSupported;
@@ -321,11 +322,11 @@ NvResult nvhost_as_gpu::Nx2GetSyncpointShimInfo(IoctlNx2SyncpointShimInfo& param
         nx2_syncpoint_shim = true;
         gmmu->SetNativeSyncpointShim(address);
     }
-    params.address = address;
-    params.stride = sizeof(u32);
-    params.count = Tegra::MemoryManager::NumShimSyncpoints;
+    params.base_gpuva = address;
+    params.sync_size = sizeof(u32);
+    params.num_syncpoints = Tegra::MemoryManager::NumShimSyncpoints;
     LOG_INFO(Service_NVDRV, "Switch 2 syncpoint shim at {:#x} ({} syncpoints)", address,
-             params.count);
+             params.num_syncpoints);
     return NvResult::Success;
 }
 

@@ -17,8 +17,9 @@ class IApplicationFunctions;
 class ICommonStateGetter;
 class IDebugFunctions;
 class IDisplayController;
-class IGraphicsScaleController;
+class IGraphicsScalingParametersFunctions;
 class ILibraryAppletCreator;
+class IPerformanceFunctions;
 class IProcessWindingController;
 class ISelfController;
 class IWindowController;
@@ -32,7 +33,9 @@ public:
 
 private:
     void GetNx2Interface(HLERequestContext& ctx);
-    Result GetGraphicsScaleController(Out<SharedPointer<IGraphicsScaleController>> out_controller);
+    Result GetPerformanceFunctions(Out<SharedPointer<IPerformanceFunctions>> out_functions);
+    Result GetGraphicsScalingParametersFunctions(
+        Out<SharedPointer<IGraphicsScalingParametersFunctions>> out_functions);
     Result GetAudioController(Out<SharedPointer<IAudioController>> out_audio_controller);
     Result GetDisplayController(Out<SharedPointer<IDisplayController>> out_display_controller);
     Result GetProcessWindingController(
