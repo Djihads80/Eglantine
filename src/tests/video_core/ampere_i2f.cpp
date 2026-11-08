@@ -42,4 +42,33 @@ TEST_CASE("Ampere I2F keeps unsigned 16-bit sources unsigned", "[video_core][amp
     REQUIRE(Contains(lowered, 0x5cb8000000170601ULL));
 }
 
+TEST_CASE("Ampere I2F converts 16-bit uniform sources", "[video_core][ampere]") {
+    // Star Fox's graphics shader: I2F.F32.U16 R2, UR4.
+    std::array<Instruction, 2> code{{
+        {{0x00027d06, 0x00000004, 0x08101000, 0x000e6200}},
+        EXIT,
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(lowered));
+    // UR4 is mirrored in R220; preserve unsigned 16-bit conversion.
+    REQUIRE(Contains(lowered, 0x5cb800000dc70602ULL));
+
+    code[0] = {{0x00047d06, 0x10000004, 0x08101000, 0x000ef000}};
+    const auto upper_half = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(upper_half));
+    REQUIRE(Contains(upper_half, 0x5cb804000dc70604ULL));
+    code[0].words[1] = 0x20000004;
+    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(code)));
+
+    code[0] = {{0x00027d06, 0x00000004, 0x08101000, 0x000e6200}};
+
+    code[0].words[2] |= 0x400;
+    const auto signed_lowered = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(signed_lowered));
+    REQUIRE(Contains(signed_lowered, 0x5cb800000dc72602ULL));
+
+    code[0].words[1] = 64;
+    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(code)));
+}
+
 } // namespace

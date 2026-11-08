@@ -6,6 +6,7 @@
 
 #include "core/hle/service/audio/hardware_opus_decoder.h"
 #include "core/hle/service/audio/hardware_opus_decoder_manager.h"
+#include "core/hle/service/audio/nx2_hwacod.h"
 #include "core/hle/service/cmif_serialization.h"
 
 namespace Service::Audio {
@@ -26,12 +27,19 @@ IHardwareOpusDecoderManager::IHardwareOpusDecoderManager(Core::System& system_)
         {7, D<&IHardwareOpusDecoderManager::GetWorkBufferSizeForMultiStreamEx>, "GetWorkBufferSizeForMultiStreamEx"},
         {8, D<&IHardwareOpusDecoderManager::GetWorkBufferSizeExEx>, "GetWorkBufferSizeExEx"},
         {9, D<&IHardwareOpusDecoderManager::GetWorkBufferSizeForMultiStreamExEx>, "GetWorkBufferSizeForMultiStreamExEx"},
+        {100, &IHardwareOpusDecoderManager::OpenHwacodClient, "OpenHwacodClient"},
     };
     // clang-format on
     RegisterHandlers(functions);
 }
 
 IHardwareOpusDecoderManager::~IHardwareOpusDecoderManager() = default;
+
+void IHardwareOpusDecoderManager::OpenHwacodClient(HLERequestContext& ctx) {
+    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+    rb.Push(ResultSuccess);
+    rb.PushIpcInterface<IHwacodClient>(ctx, system);
+}
 
 Result IHardwareOpusDecoderManager::OpenHardwareOpusDecoder(
     Out<SharedPointer<IHardwareOpusDecoder>> out_decoder, OpusParameters params, u32 tmem_size,

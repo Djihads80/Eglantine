@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <thread>
@@ -34,6 +35,9 @@
 #include "shader_recompiler/frontend/ampere/program_address_map.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_debug_control.h"
+#include "video_core/nx2_diag.h"
+#include "video_core/mkw_wave_workaround.h"
 #include "video_core/shader_environment.h"
 #include "video_core/texture_cache/format_lookup_table.h"
 #include "video_core/textures/texture.h"
@@ -46,8 +50,22 @@ constexpr size_t INST_SIZE = sizeof(u64);
 
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
 
+// The shader hash of lowered native code (frame dump "shaders", pipeline cache keys), with a
+// version tag that isolates this experimental ABI.
+static u64 NativeShaderHash(std::span<const u64> code) {
+    return Common::CityHash64(reinterpret_cast<const char*>(code.data()),
+                              code.size() * sizeof(u64)) ^
+           0x4f554e4345000002ULL;
+}
+
 static u64 MakeCbufKey(u32 index, u32 offset) {
     return (static_cast<u64>(index) << 32) | offset;
+}
+
+// Pointer-table entries share the classification map with plain constant buffer pointers.
+static u64 MakeIndirectCbufKey(u32 index, u32 offset, u32 indirect) {
+    return (u64{1} << 63) | (static_cast<u64>(indirect & 0x3fffff) << 40) |
+           MakeCbufKey(index, offset);
 }
 
 static Shader::TextureType ConvertTextureType(const Tegra::Texture::TICEntry& entry) {
@@ -191,11 +209,67 @@ bool GenericEnvironment::IsCbufStorageBufferPointer(u32 index, u32 offset) {
     return mapped;
 }
 
+static void CollectStoragePointerSlots(const ::Common::unordered_map<u64, u8>& types,
+                                       const ::Common::unordered_map<u64, u32>& values,
+                                       std::vector<u64>& pointers, std::vector<u64>& null_slots) {
+    for (const auto& [key, type] : types) {
+        if ((key >> 63) != 0) {
+            continue; // pointer-table entries
+        }
+        if (type != 0) {
+            pointers.push_back(key);
+            continue;
+        }
+        const u32 index = static_cast<u32>(key >> 32);
+        const u32 offset = static_cast<u32>(key);
+        const auto low = values.find(MakeCbufKey(index, offset));
+        const auto high = values.find(MakeCbufKey(index, offset + 4));
+        if (low != values.end() && high != values.end() && low->second == 0 &&
+            high->second == 0) {
+            null_slots.push_back(key);
+        }
+    }
+}
+
+void GenericEnvironment::StoragePointerSlots(std::vector<u64>& pointers,
+                                             std::vector<u64>& null_slots) const {
+    CollectStoragePointerSlots(storage_pointer_types, cbuf_values, pointers, null_slots);
+}
+
+void GenericEnvironment::SeedStoragePointers(std::span<const u64> slots) {
+    for (const u64 key : slots) {
+        storage_pointer_types.emplace(key, u8{1});
+    }
+}
+
+void FileEnvironment::StoragePointerSlots(std::vector<u64>& pointers,
+                                          std::vector<u64>& null_slots) const {
+    CollectStoragePointerSlots(storage_pointer_types, cbuf_values, pointers, null_slots);
+}
+
+bool GenericEnvironment::IsCbufIndirectStorageBufferPointer(u32 index, u32 offset, u32 indirect) {
+    const u64 key = MakeIndirectCbufKey(index, offset, indirect);
+    if (const auto it = storage_pointer_types.find(key); it != storage_pointer_types.end()) {
+        return it->second != 0;
+    }
+    bool mapped = false;
+    if (IsCbufStorageBufferPointer(index, offset)) {
+        const u64 holder =
+            u64{ReadCbufValue(index, offset)} | (u64{ReadCbufValue(index, offset + 4)} << 32);
+        if (gpu_memory->IsFullyMappedRange(holder + indirect, sizeof(u64))) {
+            const u64 address = gpu_memory->Read<u64>(holder + indirect);
+            mapped = address != 0 && gpu_memory->IsWithinGPUAddressRange(address) &&
+                     gpu_memory->IsFullyMappedRange(address, 1);
+        }
+    }
+    storage_pointer_types.emplace(key, static_cast<u8>(mapped));
+    return mapped;
+}
+
 std::optional<u64> GenericEnvironment::Analyze() {
     if (native_source_size) {
         // Include the converted header and a version tag to isolate this experimental ABI.
-        return Common::CityHash64(reinterpret_cast<const char*>(code.data()),
-                                  code.size() * sizeof(u64)) ^ 0x4f554e4345000002ULL;
+        return NativeShaderHash(code);
     }
     const std::optional<u64> size{TryFindSize()};
     if (!size) {
@@ -246,7 +320,7 @@ void GenericEnvironment::Dump(u64 pipeline_hash, u64 shader_hash) {
     DumpImpl(pipeline_hash, shader_hash, code, read_highest, read_lowest, initial_offset, stage);
 }
 
-void GenericEnvironment::Serialize(std::ofstream& file) const {
+void GenericEnvironment::Serialize(std::ofstream& file, bool with_mesh_state) const {
     const u64 code_size{static_cast<u64>(CachedSizeBytes())};
     const u64 num_texture_types{static_cast<u64>(texture_types.size())};
     const u64 num_texture_pixel_formats{static_cast<u64>(texture_pixel_formats.size())};
@@ -300,6 +374,11 @@ void GenericEnvironment::Serialize(std::ofstream& file) const {
         if (stage == Shader::Stage::Geometry) {
             file.write(reinterpret_cast<const char*>(&gp_passthrough_mask),
                        sizeof(gp_passthrough_mask));
+        }
+        if (with_mesh_state && (stage == Shader::Stage::Task || stage == Shader::Stage::Mesh)) {
+            file.write(reinterpret_cast<const char*>(&mesh_registers), sizeof(mesh_registers))
+                .write(reinterpret_cast<const char*>(&mesh_primitive_header),
+                       sizeof(mesh_primitive_header));
         }
     }
 }
@@ -462,6 +541,7 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
     auto lowered = Shader::Ampere::LowerToMaxwell(
         native, {.geometry = geometry,
                  .tensor = native_tensor,
+                 .compact_tensor = native_compact_tensor,
                  .native_code_address = program_base + native_header_size});
     // EDEN_NX2_REJECT=<hex address>,...: treat these programs as rejected (to find which newly
     // lowered program changes a game's behaviour without rebuilding).
@@ -472,6 +552,10 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
         !reject_list.empty() &&
         reject_list.find(fmt::format(",{:x},", program_base)) != std::string::npos) {
         throw Shader::RuntimeError("Native shader at {:#x} rejected by EDEN_NX2_REJECT", program_base);
+    }
+    if (VideoCommon::Nx2Diag::Active()) {
+        VideoCommon::Nx2Diag::Diagnostics::Get().RegisterProgram(
+            program_base, Shader::Ampere::NativeProgramKey(native));
     }
     // EDEN_NX2_SHADER_DUMP=<dir>: keep every captured native program (named by its key) so the
     // lowering can be tested offline against all of a game's shaders.
@@ -547,13 +631,15 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
             program_base, lowered.error_offset, lowered.error, words[0] & 0xfff, words[0],
             words[1], words[2], words[3]);
     }
+    VideoCommon::ApplyMkwZeroDepthFallback(native, lowered);
     auto result = std::make_shared<LoweredNativeCode>();
+    result->native_program_key = Shader::Ampere::NativeProgramKey(native);
     static const bool hash_for_indirect_reset = [] {
         const char* value = std::getenv("EDEN_NX2_RESETFIX");
         return !value || std::string_view{value} != "0";
     }();
     if (hash_for_indirect_reset) {
-        result->diagnostic_key = Shader::Ampere::NativeProgramKey(native);
+        result->diagnostic_key = result->native_program_key;
     }
     result->texture_bound = lowered.required_texture_buffer;
     result->source_size = native_header_size + lowered.source_size;
@@ -570,6 +656,42 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
     // unreachable data. Existing disk-cache serialization carries it with code.
     lowered_code.push_back(0);
     Shader::Ampere::AppendNativeAddressMap(lowered_code, lowered.source_instruction_offsets);
+    // What Analyze returns for this program once the environment holds the lowered code.
+    const u64 shader_hash = NativeShaderHash(lowered_code);
+    if (VideoCommon::Nx2Diag::Active()) {
+        VideoCommon::Nx2Diag::Diagnostics::Get().RegisterProgram(
+            program_base, result->native_program_key, shader_hash);
+    }
+    // EDEN_NX2_REJECT_HASH=<hash>,...: like EDEN_NX2_REJECT, but by native program key (shader
+    // dump file names) or shader hash (frame dump "shaders"), which stay the same between runs.
+    if (static const std::string reject_hashes =
+            [] {
+                const char* text = std::getenv("EDEN_NX2_REJECT_HASH");
+                std::string list = text ? "," + std::string{text} + "," : std::string{};
+                std::ranges::transform(list, list.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::tolower(c));
+                });
+                return list;
+            }();
+        !reject_hashes.empty()) {
+        for (const u64 hash : {result->native_program_key, shader_hash}) {
+            if (reject_hashes.find(fmt::format(",{:016x},", hash)) != std::string::npos) {
+                throw Shader::RuntimeError(
+                    "Native shader at {:#x} ({:016x}) rejected by EDEN_NX2_REJECT_HASH",
+                    program_base, hash);
+            }
+        }
+    }
+    // The same list, changed at runtime by the debug server (docs/nx2/debug-mcp.md).
+    if (VideoCore::Nx2Debug::AnyRejected()) {
+        for (const u64 hash : {result->native_program_key, shader_hash}) {
+            if (VideoCore::Nx2Debug::IsRejected(hash)) {
+                throw Shader::RuntimeError(
+                    "Native shader at {:#x} ({:016x}) rejected by the debug server", program_base,
+                    hash);
+            }
+        }
+    }
     LOG_DEBUG(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
               program_base, result->source_size, lowered.instructions.size());
     return result;
@@ -750,6 +872,7 @@ ComputeEnvironment::ComputeEnvironment(Tegra::Engines::KeplerCompute& kepler_com
         initial_offset = sizeof(sph);
         is_proprietary_driver = true;
         native_tensor = kepler_compute->EmulatesNativeTensorPrograms();
+        native_compact_tensor = kepler_compute->UsesCompactTensorPrograms();
         InitializeNativeCode(std::move(lowered_native_), 0);
         start_address = sizeof(sph);
     }
@@ -794,7 +917,7 @@ u32 ComputeEnvironment::ReadViewportTransformState() {
     return viewport_transform_state;
 }
 
-void FileEnvironment::Deserialize(std::ifstream& file) {
+void FileEnvironment::Deserialize(std::ifstream& file, bool with_mesh_state) {
     u64 code_size{};
     u64 num_texture_types{};
     u64 num_texture_pixel_formats{};
@@ -864,6 +987,11 @@ void FileEnvironment::Deserialize(std::ifstream& file) {
         if (stage == Shader::Stage::Geometry) {
             file.read(reinterpret_cast<char*>(&gp_passthrough_mask), sizeof(gp_passthrough_mask));
         }
+        if (with_mesh_state && (stage == Shader::Stage::Task || stage == Shader::Stage::Mesh)) {
+            file.read(reinterpret_cast<char*>(&mesh_registers), sizeof(mesh_registers))
+                .read(reinterpret_cast<char*>(&mesh_primitive_header),
+                      sizeof(mesh_primitive_header));
+        }
     }
     // Native programs fold bank 1 reads as they did when they were built.
     is_proprietary_driver = texture_bound == 2 || Shader::Ampere::HasNativeAddressMap(code);
@@ -888,6 +1016,14 @@ bool FileEnvironment::IsCbufStorageBufferPointer(u32 index, u32 offset) {
     const auto it = storage_pointer_types.find(MakeCbufKey(index, offset));
     if (it == storage_pointer_types.end()) {
         throw Shader::LogicError("Uncached storage pointer classification");
+    }
+    return it->second != 0;
+}
+
+bool FileEnvironment::IsCbufIndirectStorageBufferPointer(u32 index, u32 offset, u32 indirect) {
+    const auto it = storage_pointer_types.find(MakeIndirectCbufKey(index, offset, indirect));
+    if (it == storage_pointer_types.end()) {
+        throw Shader::LogicError("Uncached storage pointer table classification");
     }
     return it->second != 0;
 }
@@ -959,7 +1095,8 @@ std::optional<Shader::ReplaceConstant> FileEnvironment::GetReplaceConstBuffer(u3
 }
 
 void SerializePipeline(std::span<const char> key, std::span<const GenericEnvironment* const> envs,
-                       const std::filesystem::path& filename, u32 cache_version) try {
+                       const std::filesystem::path& filename, u32 cache_version,
+                       bool with_mesh_state) try {
     std::ofstream file(filename, std::ios::binary | std::ios::ate | std::ios::app);
     file.exceptions(std::ifstream::failbit);
     if (!file.is_open()) {
@@ -978,7 +1115,7 @@ void SerializePipeline(std::span<const char> key, std::span<const GenericEnviron
     const u32 num_envs{static_cast<u32>(envs.size())};
     file.write(reinterpret_cast<const char*>(&num_envs), sizeof(num_envs));
     for (const GenericEnvironment* const env : envs) {
-        env->Serialize(file);
+        env->Serialize(file, with_mesh_state);
     }
     file.write(key.data(), key.size_bytes());
 
@@ -993,7 +1130,8 @@ void SerializePipeline(std::span<const char> key, std::span<const GenericEnviron
 void LoadPipelines(
     std::stop_token stop_loading, const std::filesystem::path& filename, u32 expected_cache_version,
     Common::UniqueFunction<void, std::ifstream&, FileEnvironment> load_compute,
-    Common::UniqueFunction<void, std::ifstream&, std::vector<FileEnvironment>> load_graphics) try {
+    Common::UniqueFunction<void, std::ifstream&, std::vector<FileEnvironment>> load_graphics,
+    bool with_mesh_state) try {
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
         return;
@@ -1030,7 +1168,7 @@ void LoadPipelines(
         file.read(reinterpret_cast<char*>(&num_envs), sizeof(num_envs));
         std::vector<FileEnvironment> envs(num_envs);
         for (FileEnvironment& env : envs) {
-            env.Deserialize(file);
+            env.Deserialize(file, with_mesh_state);
         }
         if (envs.front().ShaderStage() == Shader::Stage::Compute) {
             load_compute(file, std::move(envs.front()));

@@ -30,6 +30,34 @@ namespace Tegra {
 constexpr u32 MacroRegistersStart = 0xE00;
 constexpr u32 ComputeInline = 0x6D;
 
+namespace {
+// Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads. The
+// register writes that set them up only store a value: marking those too made every list fetch
+// after one wait for all the work queued before it (draws included).
+bool WritesMemory(Engines::EngineInterface* engine, Engines::EngineTypes type, u32 method,
+                  u32 count) {
+    if (type == Engines::EngineTypes::KeplerCompute) {
+        const auto* const compute = static_cast<const Engines::KeplerCompute*>(engine);
+        for (u32 i = 0; i < count; ++i) {
+            if (compute->MayWriteMemory(method + i)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if (type == Engines::EngineTypes::MaxwellDMA) {
+        for (u32 i = 0; i < count; ++i) {
+            const u32 current = method + i;
+            if (current >= MacroRegistersStart ||
+                (current < engine->execution_mask.size() && engine->execution_mask[current])) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+} // Anonymous namespace
+
 DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Control::ChannelState& channel_state_)
     : system{system_}
     , memory_manager{memory_manager_}
@@ -192,9 +220,63 @@ bool DmaPusher::Step() {
                                (command_list.snapshot_suspensions & 1) == 0 &&
                                command_list.snapshot_suspensions ==
                                    suspensions.load(std::memory_order_acquire) &&
+                               !std::ranges::binary_search(
+                                   command_list.deferred_entries,
+                                   static_cast<u32>(dma_pushbuffer_subindex)) &&
                                !gpu_written &&
                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
                                                                           header.size * sizeof(u32)));
+        if (!submitted && dma_pushbuffer_subindex < command_list.submitted_offsets.size()) {
+            // An entry parsed from memory instead of its submit-time copy is the way a command
+            // ring the game already refilled gets read as this frame's commands (garbage methods,
+            // unbound subchannels, render targets of absurd size). Count how often the words
+            // differ, by the reason the copy was skipped. Bounded: the first entries only.
+            enum Reason : u32 { Resumed, SuspendedCopy, SuspensionsChanged, GpuWritten, SafeDirty, Count };
+            static std::array<std::atomic<u64>, Count> checked{};
+            static std::array<std::atomic<u64>, Count> differing{};
+            static std::atomic<u64> total_checked{};
+            static constexpr std::array<const char*, Count> names{
+                "resumed entry", "copied during a suspension", "suspension count changed",
+                "GPU-written page", "safe read of dirty memory"};
+            if (total_checked.load(std::memory_order_relaxed) < 50000) {
+                const Reason reason = command_resume_offset != 0                      ? Resumed
+                                      : (command_list.snapshot_suspensions & 1) != 0  ? SuspendedCopy
+                                      : command_list.snapshot_suspensions !=
+                                              suspensions.load(std::memory_order_acquire)
+                                          ? SuspensionsChanged
+                                      : gpu_written ? GpuWritten
+                                                    : SafeDirty;
+                std::vector<u32> live(header.size);
+                memory_manager.ReadBlockUnsafe(dma_state.dma_get, live.data(),
+                                               live.size() * sizeof(u32));
+                const CommandHeader* const copy = command_list.submitted_words.data() +
+                                                  command_list.submitted_offsets[dma_pushbuffer_subindex];
+                u32 first = ~0U, words = 0;
+                for (u32 i = 0; i < header.size; ++i) {
+                    if (copy[i].argument != live[i]) {
+                        first = std::min(first, i);
+                        ++words;
+                    }
+                }
+                ++checked[reason];
+                const u64 n = total_checked.fetch_add(1) + 1;
+                if (words != 0) {
+                    const u64 seen = differing[reason].fetch_add(1);
+                    if (seen < 4) {
+                        LOG_WARNING(HW_GPU,
+                                    "Entry {:#x}+{:#x} parsed from memory ({}) differs from its "
+                                    "submit-time copy in {} words, first at word {}",
+                                    u64{header.addr}, u64{header.size}, names[reason], words, first);
+                    }
+                }
+                if ((n % 10000) == 0) {
+                    for (u32 r = 0; r < Count; ++r) {
+                        LOG_INFO(HW_GPU, "Entries parsed from memory ({}): {} checked, {} differ from the submit-time copy",
+                                 names[r], checked[r].load(), differing[r].load());
+                    }
+                }
+            }
+        }
         if (submitted) {
             const std::span<const CommandHeader> commands{
                 command_list.submitted_words.data() +
@@ -251,11 +333,14 @@ bool DmaPusher::Step() {
     }
 
     if (signal_sync) {
-        VideoCommon::GpuSplit::Get().Drain();
-        rasterizer->SignalFence([this]() {
-            std::scoped_lock lk(sync_mutex);
-            synced = true;
-            sync_cv.notify_all();
+        // SignalFence invalidates the GPU caches, which can record copies into the scheduler: the
+        // back's state, which a drained back still submits from in its idle hook.
+        VideoCommon::GpuSplit::Get().Run([this] {
+            rasterizer->SignalFence([this]() {
+                std::scoped_lock lk(sync_mutex);
+                synced = true;
+                sync_cv.notify_all();
+            });
         });
     }
 
@@ -268,6 +353,15 @@ static const u32 g_semaphore_watch = [] {
     const char* value = std::getenv("EDEN_NX2_SEM_WATCH");
     return value ? static_cast<u32>(std::strtoull(value, nullptr, 16)) : 0U;
 }();
+
+// LOCAL TEST (Zelda): EDEN_NX2_FRONT_BATCH=1 (see ProcessCommands).
+static bool FrontBatchEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_FRONT_BATCH");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
 
 // EDEN_NX2_PB_CHECK also keeps the last parsed entries, for DumpCurrentEntry.
 static const bool g_record_parsed_entries = std::getenv("EDEN_NX2_PB_CHECK") != nullptr;
@@ -287,6 +381,36 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
             dma_state.is_last_call = true;
             index += max_write;
         } else if (dma_state.method_count) {
+            // LOCAL TEST (Zelda), EDEN_NX2_FRONT_BATCH=1: with the split's front running the 3D
+            // engine (FrontCallMethod), a run of incrementing register writes goes to it in one
+            // call instead of CallMethod's per-word dispatch (engine lookup, writer and effect
+            // checks, Front()). A 3D register write can't suspend the channel, so the acquire
+            // check after the run is enough.
+            if (!dma_state.non_incrementing && !dma_increment_once &&
+                dma_state.method >= non_puller_methods && dma_state.method < MacroRegistersStart &&
+                g_semaphore_watch == 0 && FrontBatchEnabled()) {
+                auto& split = VideoCommon::GpuSplit::Get();
+                auto* const subchannel = subchannels[dma_state.subchannel];
+                if (subchannel != nullptr && split.Active() && split.FrontMacros() &&
+                    subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D) {
+                    auto* const maxwell3d = static_cast<Engines::Maxwell3D*>(subchannel);
+                    const size_t available =
+                        (std::min)({size_t{dma_state.method_count}, commands.size() - index,
+                                    size_t{MacroRegistersStart - dma_state.method}});
+                    if (maxwell3d->GetNativeMacroEngine().native_turing && available > 1) {
+                        const u32 count = static_cast<u32>(available);
+                        const bool ends = count == dma_state.method_count;
+                        dma_state.dma_word_offset = u64((word_offset + index + count - 1) * sizeof(u32));
+                        dma_state.is_last_call = ends;
+                        maxwell3d->FrontWriteRun(system, split, dma_state.method,
+                                                 &commands[index].argument, count, ends);
+                        dma_state.method += count;
+                        dma_state.method_count -= count;
+                        index += count;
+                        continue;
+                    }
+                }
+            }
             // Fast-path batching for consecutive non-execution methods in increasing mode
             if (!dma_state.non_incrementing && !dma_increment_once &&
                 dma_state.method >= non_puller_methods &&
@@ -445,10 +569,9 @@ void DmaPusher::CallMethod(u32 argument) {
             ReportUnboundSubchannel();
             return;
         }
-        // Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads.
-        const auto engine_type = subchannel_type[dma_state.subchannel];
-        const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
-                            engine_type == Engines::EngineTypes::MaxwellDMA;
+        const bool writer = split.Active() &&
+                            WritesMemory(subchannel, subchannel_type[dma_state.subchannel],
+                                         dma_state.method, 1);
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
@@ -504,10 +627,9 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
             ReportUnboundSubchannel();
             return;
         }
-        // Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads.
-        const auto engine_type = subchannel_type[dma_state.subchannel];
-        const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
-                            engine_type == Engines::EngineTypes::MaxwellDMA;
+        const bool writer = split.Active() &&
+                            WritesMemory(subchannel, subchannel_type[dma_state.subchannel],
+                                         dma_state.method, dma_state.non_incrementing ? 1 : num_methods);
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
@@ -555,6 +677,23 @@ void DmaPusher::RefreshSnapshot(CommandList& list, u64 now) {
         memory_manager.ReadBlockUnsafe(entry.addr, list.submitted_words.data() + offset,
                                        entry.size * sizeof(u32));
     }
+    list.deferred_entries.clear();
+}
+
+void DmaPusher::RefreshDeferredEntries(CommandList& list) {
+    for (const u32 i : list.deferred_entries) {
+        if (i >= list.command_lists.size() || i >= list.submitted_offsets.size()) {
+            continue;
+        }
+        const CommandListHeader& entry = list.command_lists[i];
+        const u32 offset = list.submitted_offsets[i];
+        if (offset + entry.size > list.submitted_words.size()) {
+            continue;
+        }
+        memory_manager.ReadBlockUnsafe(entry.addr, list.submitted_words.data() + offset,
+                                       entry.size * sizeof(u32));
+    }
+    list.deferred_entries.clear();
 }
 
 bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
@@ -639,8 +778,12 @@ void DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
     const GPUVAddr end_page = (address + size + 0xfff) & ~GPUVAddr{0xfff};
     if (memory_manager.IsMemoryDirty(first_page, end_page - first_page,
                                      VideoCommon::CacheType::BufferCache)) {
-        memory_manager.FlushRegion(first_page, end_page - first_page,
-                                   VideoCommon::CacheType::BufferCache);
+        // The download records into the Vulkan scheduler, which the split's back owns: a drained
+        // back still submits from its idle hook, so the front must not flush these pages itself.
+        VideoCommon::GpuSplit::Get().Run(
+            [memory = &memory_manager, first_page, size = end_page - first_page] {
+                memory->FlushRegion(first_page, size, VideoCommon::CacheType::BufferCache);
+            });
     }
     if (rasterizer == nullptr) {
         return;

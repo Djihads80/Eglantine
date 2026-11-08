@@ -14,7 +14,11 @@
 #endif
 #include <windows.h>
 #endif
+#ifdef __GLIBC__
+#include <execinfo.h>
+#endif
 #include <cstdio>
+#include <string>
 
 #include "common/logging.h"
 #include "common/settings.h"
@@ -78,7 +82,27 @@ void GpuSplit::CheckOwner(const char* where) {
     }
     std::fflush(stderr);
 #else
-    (void)where;
+    // Also while the back is idle: its idle hook submits (Scheduler::FlushDeferred).
+    if (on_back_thread || !instance.back_running.load(std::memory_order_acquire)) {
+        return;
+    }
+    static std::atomic<u32> reports{};
+    if (reports.fetch_add(1) >= 12) {
+        return;
+    }
+    std::string stack;
+#ifdef __GLIBC__
+    void* frames[40];
+    const int count = backtrace(frames, 40);
+    if (char** const symbols = backtrace_symbols(frames, count)) {
+        for (int i = 1; i < count; ++i) {
+            stack += fmt::format("\n  {}", symbols[i]);
+        }
+        std::free(symbols);
+    }
+#endif
+    LOG_ERROR(HW_GPU, "GPU split owner check: {} on a thread other than the back; stack:{}", where,
+              stack);
 #endif
 }
 

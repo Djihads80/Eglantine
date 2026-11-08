@@ -6,12 +6,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
-#include <limits>
 #include <string>
 #include <thread>
 
 #include "common/adpf.h"
 #include "common/error.h"
+#include "common/event_wait.h"
 #include "common/logging.h"
 #include "common/assert.h"
 #include "common/thread.h"
@@ -646,31 +646,30 @@ __attribute__((target("waitpkg,mwaitx")))
 #endif
 bool Event::WaitFor(const std::chrono::nanoseconds time) {
 #ifdef _WIN32
-    auto const start = Common::X64::FencedRDTSC();
     auto const& caps = Common::g_cpu_caps;
-    [[maybe_unused]] auto const end = start + Common::g_wall_clock.NsToTicks(time);
+    const auto deadline = EventWaitDeadline(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()), time);
+    const auto remaining = [deadline] {
+        return deadline - std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch());
+    };
+    const u64 ticks_per_second = Common::g_wall_clock.NsToTicks(std::chrono::seconds{1});
     if (caps.monitorx) {
         while (true) {
             // Armed monitor, as per manual, MWAITX must be conditional if the condition isn't satisfied
             // to prevent a race condition.
             _mm_monitorx(reinterpret_cast<u64*>(std::addressof(is_set)), 0, 0);
             if (!is_set.load()) {
-                // RDTSC may be fenced here due to atomic load
-#ifdef _MSC_VER
-                auto const now = __rdtsc();
-#else
-                auto const now = _rdtsc();
-#endif
-                if (end > now) {
-                    u32 const cycles = std::min<u32>((std::numeric_limits<u32>::max)(), s64(end) - s64(now));
+                const u32 cycles = MwaitxTimeoutCycles(remaining(), ticks_per_second);
+                if (cycles != 0) {
                     // See here: https://github.com/torvalds/linux/blob/948a64995aca6820abefd17f1a4258f5835c5ad9/arch/x86/lib/delay.c#L93
                     // MWAITX accepts a 32-bit input timer which determines the total number of cycles to wait for
                     // NOT THE TOTAL ABSOLUTE TSC VALUE, it's just a delta
                     // BIT[1] = use a timer
                     // Hint = 0: Use C1 state when sleepy (means slower wakeup but better savings)
                     _mm_mwaitx(1 << 1, 0u, cycles);
-                    if (!is_set.load())
-                        return false;
+                    continue;
                 } else
                     return false; //timeout
             }
@@ -678,31 +677,36 @@ bool Event::WaitFor(const std::chrono::nanoseconds time) {
             if (is_set.compare_exchange_weak(expected, false, std::memory_order_release))
                 return true;
         }
-    } else if (caps.waitpkg) {
+    }
+    if (caps.waitpkg) {
         // #UD If CPUID.7.0:ECX.WAITPKG[bit 5]=0.
         while (true) {
             _umonitor(std::addressof(is_set));
-            if (!is_set.load() && !_umwait(0, end)) //umwait is absolute time!!!
-                return false;
+            if (!is_set.load()) {
+                // UMWAIT also wakes early on interrupts, and its result (CF) only reports the OS
+                // limit (IA32_UMWAIT_CONTROL). Wait again until the deadline, as for MWAITX. The
+                // bounded budget keeps the absolute TSC deadline from wrapping.
+                const u32 cycles = MwaitxTimeoutCycles(remaining(), ticks_per_second);
+                if (cycles == 0)
+                    return false; // timeout
+                _umwait(0, Common::X64::FencedRDTSC() + cycles); // umwait is absolute time!!!
+                continue;
+            }
             bool expected = true;
             if (is_set.compare_exchange_weak(expected, false, std::memory_order_release))
                 return true;
         }
-    } else {
-#ifdef _MSC_VER
-        while (!is_set.load() && end > __rdtsc())
-            Common::Windows::SleepForOneTick();
-#else
-        while (!is_set.load() && end > _rdtsc())
-            Common::Windows::SleepForOneTick();
-#endif
-        if (is_set.load())
-            Reset();
-        return true;
     }
+    while (!is_set.load() && remaining() > std::chrono::nanoseconds::zero())
+        Common::Windows::SleepForOneTick();
+    bool expected = true;
+    return is_set.compare_exchange_strong(expected, false, std::memory_order_release);
 #else
     std::unique_lock lk{mutex};
-    if (!condvar.wait_for(lk, time, [this] { return is_set.load(); }))
+    const auto now = std::chrono::steady_clock::now();
+    const auto deadline = std::chrono::steady_clock::time_point{EventWaitDeadline(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()), time)};
+    if (!condvar.wait_until(lk, deadline, [this] { return is_set.load(); }))
         return false;
     is_set = false;
     return true;
@@ -719,7 +723,10 @@ bool Event::WaitFor(const std::chrono::nanoseconds time) {
     return true;
 #else
     std::unique_lock lk{mutex};
-    if (!condvar.wait_for(lk, time, [this] { return is_set.load(); }))
+    const auto now = std::chrono::steady_clock::now();
+    const auto deadline = std::chrono::steady_clock::time_point{EventWaitDeadline(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()), time)};
+    if (!condvar.wait_until(lk, deadline, [this] { return is_set.load(); }))
         return false;
     is_set = false;
     return true;
