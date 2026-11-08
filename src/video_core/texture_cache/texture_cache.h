@@ -552,6 +552,9 @@ void TextureCache<P>::TickFrame() {
         if constexpr (requires { runtime.LogMemoryStatistics(); }) {
             runtime.LogMemoryStatistics();
         }
+        LOG_INFO(HW_GPU, "Texture cache last 600 frames: {} new render targets a clear overwrites "
+                 "whole not uploaded (EDEN_NX2_TC_CLEAR_SKIP)", tc_clear_skips);
+        tc_clear_skips = 0;
         LOG_INFO(HW_GPU, "Texture cache last 600 frames: created {} images, deleted {} (collector {}, {} costly, {} downloaded), {} async decodes, ASTC {} opaque / {} alpha",
                  images_created, images_deleted, gc_deletes + gc_costly_deletes, gc_costly_deletes,
                  gc_download_deletes,
@@ -2930,10 +2933,23 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     // A new render target that the clear binding it overwrites whole (every channel, the whole
     // image) needs no upload from guest memory first: Ocarina of Time creates ~4 such targets a
     // frame outdoors, and uploading them was ~15% of the GPU back thread.
+    // EDEN_NX2_TC_CLEAR_SKIP=0 uploads them as before (A/B; read on first use, after env.txt).
+    static const bool clear_skip = [] {
+        const char* value = std::getenv("EDEN_NX2_TC_CLEAR_SKIP");
+        return value == nullptr || value[0] != '0';
+    }();
     const auto overwritten_by_clear = [&] {
-        if (!clearing_render_targets || !join_copies_to_do.empty() ||
+        if (!clear_skip || !clearing_render_targets || !join_copies_to_do.empty() ||
             new_info.type != ImageType::e2D || new_info.resources.levels != 1 ||
             new_info.resources.layers != 1 || new_info.num_samples != 1) {
+            return false;
+        }
+        // Images RefreshContents does more for than an upload (binding sparse or partial
+        // memory, trimmed levels) take it as before.
+        if (True(new_image.flags & (ImageFlagBits::Sparse | ImageFlagBits::SparseLayers |
+                                    ImageFlagBits::SparseTiles | ImageFlagBits::Unbacked |
+                                    ImageFlagBits::UnwrittenSparse |
+                                    ImageFlagBits::TrimmedLevels))) {
             return false;
         }
         const auto& regs = maxwell3d->regs;
@@ -2981,6 +2997,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     if (overwritten_by_clear()) {
         // Stays CpuModified: UpdateRenderTargets' PrepareImage drops the upload only when
         // IsFullClear agrees the clear covers the whole image, and uploads it otherwise.
+        ++tc_clear_skips;
         runtime.TransitionImageLayout(new_image);
     } else {
         // TODO: Only upload what we need
