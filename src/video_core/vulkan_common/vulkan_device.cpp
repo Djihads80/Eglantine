@@ -655,6 +655,25 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
         }
     }
 
+    // RADV on RDNA4 (GFX12) hangs the gfx ring on VK_EXT_mesh_shader (RX 9060 XT:
+    // ring gfx_0.0.0 timeout in VulkanWorker, MODE1 reset, Device loss). Skip the
+    // extension so mesh pipelines are never built. EDEN_NX2_NO_MESH does the same
+    // for A/B tests; EDEN_NX2_FORCE_MESH=1 opts back in.
+    {
+        const std::string_view device_name{properties.properties.deviceName};
+        const bool radv_gfx12 =
+            is_radv && device_name.find("GFX12") != std::string_view::npos;
+        const bool no_mesh_env = std::getenv("EDEN_NX2_NO_MESH") != nullptr;
+        const bool force_mesh_env = std::getenv("EDEN_NX2_FORCE_MESH") != nullptr;
+        if (extensions.mesh_shader && !force_mesh_env && (radv_gfx12 || no_mesh_env)) {
+            LOG_WARNING(Render_Vulkan, "Disabling VK_EXT_mesh_shader ({})",
+                        no_mesh_env ? "EDEN_NX2_NO_MESH"
+                                    : "RADV GFX12 hangs the gfx ring on mesh shaders");
+            RemoveExtensionFeature(extensions.mesh_shader, features.mesh_shader,
+                                   VK_EXT_MESH_SHADER_EXTENSION_NAME);
+        }
+    }
+
     if (features.shader_float16_int8.shaderFloat16 && is_intel_windows) {
         // Intel's compiler crashes when using fp16 on Astral Chain, disable it for the time being.
         LOG_WARNING(Render_Vulkan, "Intel has broken float16 math");
