@@ -11,6 +11,7 @@
 #include <spirv/unified1/spirv.hpp11>
 
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
+#include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 #include "shader_recompiler/frontend/maxwell/structured_control_flow.h"
 #include "shader_recompiler/frontend/maxwell/translate/impl/impl.h"
@@ -119,6 +120,10 @@ TEST_CASE("Ampere compare exchange preserves both operands and emits atomic SPIR
     IR::Block block{pool};
     AtomicEnvironment env{lowered.instructions};
     Shader::Maxwell::TranslatorVisitor visitor{env, block};
+    for (u64 operand : {254ULL, 255ULL}) {
+        const u64 invalid = (lowered.instructions[2] & ~(255ULL << 20)) | (operand << 20);
+        CHECK_THROWS_AS(visitor.ATOM_cas(invalid), Shader::NotImplementedException);
+    }
     visitor.ATOM_cas(lowered.instructions[2]);
     bool found = false;
     for (auto& inst : block.Instructions()) {

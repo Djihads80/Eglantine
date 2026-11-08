@@ -13,7 +13,7 @@ constexpr Instruction Exit{{0x0000794d, 0, 0x03800000, 0}};
 // bit layouts in Eglantine's Maxwell translators (XMAD, IADD, ISCADD, SHR, MOV).
 struct Machine {
     std::array<u32, 256> regs{};
-    std::array<std::array<u32, 64>, 18> cbufs{};
+    std::array<std::array<u32, 128>, 18> cbufs{};
     bool carry = false;
     std::array<bool, 8> preds{false, false, false, false, false, false, false, true};
     u32 Reg(u64 word, u32 bit) const {
