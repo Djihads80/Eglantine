@@ -495,3 +495,89 @@ STATUS: AGREED
 - Present cadence stays "not measured" until FrameView or a present-timestamp log exists (Turn 4 X1).
 - Gemini posts results below as "Phase 0 results" (not a negotiation turn).
 - The rest of X3 is unchanged: Claude writes 1A and 2, and Gemini writes 1B and 3A. Each phase has one author and one reviewer, and the user tests each phase before the next starts.
+
+---
+
+## Phase 0 results — Gemini (2026-11-08 02:56)
+
+### Test Environment & Reproducibility Setup
+- **Binary:** Existing `build/bin/eden-cli.exe` on `local-combined` (`9450f3faa9`, zero code changes, zero rebuilds).
+- **ROM:** `E:\Projects\Eden-NS2\Games\TLZOT_NSW2_[0400486024DEC000][1.1.1][taodung.com][Emulator].nup` (title `0400486024DEC000`, v1.1.1).
+- **Kokiri Spawn Save:** Isolated NAND directory `.agent/lab/runs/kokiri-nand` populated with the `KokiriForest_Child` save (`b/slot_02`) across `slot_00`..`slot_05` so the title screen's default `"Continue"` button deterministically loads Young Link in Kokiri Forest (confirmed via `game.png` and the `64x36x96` Kokiri fog-volume dispatch marker at `t ≈ 23.3s`), without modifying `%APPDATA%\eglantine\nand`.
+- **Execution:** 9 serial runs via `.agent/skills/nx2-lab-automation/scripts/ab_run.ps1` under `python .agent/nx2.py lablock`:
+  - **Batch 1 (5 unprofiled runs, `-Stay -GameplayWait 55 -MaxSeconds 130`):** Measures true guest `Nx2Frame` FPS and `vi2` composite time without `EDEN_NX2_GPU_PROFILE` per-command timing overhead, plus dumps `draw-list-0.tsv` and `diag-state.json` via `EDEN_NX2_DIAG=1`.
+  - **Batch 2 (4 profiled runs, `-Stay -GameplayWait 35 -MaxSeconds 110`, `EDEN_NX2_GPU_PROFILE=1`):** Measures `GPU back thread per second: compute X ms (Y/s)` on the same configurations. (Note: `EDEN_NX2_GPU_PROFILE=1` adds ~12 ms/frame of host per-command timing overhead across ~68k draws/s, lowering profiled guest FPS from ~39 FPS to ~26–27 FPS across all profiled runs uniformly.)
+- **Present cadence:** **not measured** across all runs (per Turn 4 X1; no visual claims are made).
+
+---
+
+### Summary Table (Steady-State Kokiri Spawn Gameplay)
+
+| Study | Run Directory (Unprofiled / Profiled) | Config (`qt-*.ini` + Env) | Guest `Nx2Frame` FPS (`n` med / mean, `1000/iv_p50`) | `Nx2Frame` `iv_p50` / `iv_p90` / `iv_p99` / `fw_p50` (ms) | `vi2` Steady Windows (#3 / #4 / #5) FPS & `composite` (us) | Back-Thread `compute` Time (`EDEN_NX2_GPU_PROFILE=1`, steady 44s..74s) | Present Cadence |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **0(a) Base (MaxRes OFF)** | `.agent/lab/runs/p0-kokiri-base` / `.agent/lab/runs/p0-kokiri-prof-base` | `qt-kokiri-base.ini` (`Max Resolution` OFF, `frame_gen=false`), `EDEN_NX2_DIAG=1`, `EDEN_NX2_RT_TRACE=1` | **`39.0` / `38.97` / `38.57` FPS** | `25.93` / `28.48` / `29.44` / `15.43` ms | `38.48 / 38.61 / 38.78` FPS, **`composite = 8 / 8 / 8 us`** (`fence = 15360 / 15535 / 15468 us`) | **`12.3 / 12.5 / 12.7 / 12.5 ms/s`** (`3340..3418` dispatches/s, `~0.32 ms/frame`) | not measured |
+| **0(a) MaxRes ON** | `.agent/lab/runs/p0-kokiri-maxres-on` | `qt-kokiri-maxres-on.ini` (`Max Resolution` ON, `frame_gen=false`), `EDEN_NX2_DIAG=1`, `EDEN_NX2_RT_TRACE=1` | **`38.0` / `38.05` / `37.62` FPS** (`-0.95 FPS` vs OFF) | `26.59` / `29.05` / `31.04` / `15.93` ms | `37.55 / 37.99 / 37.90` FPS, **`composite = 8 / 8 / 8 us`** (`fence = 16147 / 15996 / 16003 us`) | *(same 125 dispatches/frame; Pass 4 switches to `64x36x1` 1:1 shader)* | not measured |
+| **0(b) `COOP_HMMA=0`** | `.agent/lab/runs/p0-kokiri-no-coop` / `.agent/lab/runs/p0-kokiri-prof-no-coop` | `qt-kokiri-base.ini` (`Max Resolution` OFF, `frame_gen=false`), `EDEN_NX2_COOP_HMMA=0`, `EDEN_NX2_DIAG=1` | **`39.0` / `38.93` / `38.45` FPS** | `26.01` / `28.61` / `29.99` / `15.46` ms | `38.65 / 38.76 / 38.59` FPS, **`composite = 7 / 7 / 7 us`** (`fence = 15615 / 15386 / 15508 us`) | **`12.2 / 12.4 / 12.5 ms/s`** (`3380..3419` dispatches/s, `~0.32 ms/frame`) | not measured |
+| **0(c)(i) `FG=true, m=2, r=0`** | `.agent/lab/runs/p0-kokiri-fg-m2-r0` / `.agent/lab/runs/p0-kokiri-prof-fg-m2-r0` | `qt-kokiri-fg-m2-r0.ini` (`Max Resolution` OFF, `frame_gen=true, frame_gen_multiplier=2, frame_gen_target_rate=0`), `EDEN_NX2_DIAG=1` | **`39.0` / `39.23` / `38.97` FPS** | `25.66` / `28.16` / `29.49` / `15.37` ms | `38.63 / 38.93 / 38.97` FPS, **`composite = 8 / 7 / 8 us`** (`fence = 15327 / 15280 / 15339 us`) | **`12.0 / 12.4 / 12.8 / 12.6 ms/s`** (`3276..3369` dispatches/s) | not measured |
+| **0(c)(ii) `FG=true, m=2, r=60`** | `.agent/lab/runs/p0-kokiri-fg-m2-r60` / `.agent/lab/runs/p0-kokiri-prof-fg-m2-r60` | `qt-kokiri-fg-m2-r60.ini` (`Max Resolution` OFF, `frame_gen=true, frame_gen_multiplier=2, frame_gen_target_rate=60`), `EDEN_NX2_DIAG=1` | **`39.0` / `38.87` / `38.40` FPS** | `26.04` / `28.43` / `29.81` / `15.51` ms | `38.34 / 38.55 / 38.68` FPS, **`composite = 8 / 8 / 8 us`** (`fence = 15357 / 15474 / 15355 us`) | **`11.8 / 12.0 / 12.1 ms/s`** (`3486..3576` dispatches/s; `28.1 ms` warmup spike at `44.1s`) | not measured |
+
+---
+
+### Detailed Breakdown & Technical Findings
+
+#### 1. Phase 0(a): HUD & Viewport Trace (`EDEN_NX2_DIAG=1`, `EDEN_NX2_RT_TRACE=1`) + `"Max Resolution (built-in)"` OFF vs ON
+
+- **Performance comparison (`p0-kokiri-base` vs `p0-kokiri-maxres-on`):**
+  - **Max Resolution OFF (`.agent/lab/runs/p0-kokiri-base`):** Over 59s of steady Kokiri gameplay (`29.3s..88.0s`), `Nx2Frame` median `n = 39.0` presents/s (mean `38.97`, min `33`, max `41`), median `iv_p50 = 25.93 ms` (implied **`38.57 FPS`**), `fw_p50 = 15.43 ms`. `vi2` 600-present windows #3..#5 report **`38.48 / 38.61 / 38.78 FPS`**, `composite = 8 / 8 / 8 us`.
+  - **Max Resolution ON (`.agent/lab/runs/p0-kokiri-maxres-on`):** Over 60s of steady Kokiri gameplay (`28.5s..88.2s`), `Nx2Frame` median `n = 38.0` presents/s (mean `38.05`, min `29`, max `40`), median `iv_p50 = 26.59 ms` (implied **`37.62 FPS`**, **`-0.95 FPS / +0.66 ms` slower** than OFF), `fw_p50 = 15.93 ms`. `vi2` windows #3..#5 report **`37.55 / 37.99 / 37.90 FPS`**, `composite = 8 / 8 / 8 us`.
+
+- **End-of-frame render-target, post-process, and HUD ordering (`draw-list-0.tsv` + `diag-state.json`):**
+  - **With `"Max Resolution (built-in)"` OFF (`p0-kokiri-base`, 2848 entries, 125 compute dispatches):**
+    1. **3D Scene & Depth/Bloom Passes (`seq 241..2780`):**
+       - Depth/shadow/occlusion passes (`seq 241..1831`, `ps_key = 0x7304e74974b9c915`) draw at `1920x1080` (`rt0 = 0x8113971000`, `0x81170f0000`), `960x540` (`0x8118ac4000`, `0x811967f000`), and `480x270` (`0x8115ee2000`, `0x8115d1d000`).
+       - Main 3D opaque + transparent scene draws (`seq 1834..2762`) render into **`rt0 = 0x8113971000` (`1920x1080`, format `0xe0` `B10G11R11_FLOAT`, `zeta = 1`)**.
+       - Bloom downsample/upsample chain (`seq 2763..2779`, `480x270` down to `32x16`) and final pre-upscale scene pass (`seq 2780`, `vs_key = 0x2c78cc43bc7b80cd`, `ps_key = 0x3efaa3bc738de034`, 3 vertices, `zeta = 1`, `blend = 0`) write the finished `1920x1080` 3D scene into **`rt0 = 0x8114456000` (`1920x1080`, format `0xe0`)**.
+    2. **4-Pass Post-Process Compute Upscaler (`seq 2781..2784`):**
+       - `seq 2781` (Pass 1): `cs = 0x11483b9400`, `grid = 60x45x1`, `block = 192x1x1`, `native_program_key = 0x8475d671e6967428`, `shader_hash = 0xa107e12b6771be48`
+       - `seq 2782` (Pass 2): `cs = 0x11483bae00`, `grid = 1647x1x1`, `block = 96x1x1`, `native_program_key = 0x9387db798781f081`, `shader_hash = 0x33cfe095c9a58a73`
+       - `seq 2783` (Pass 3 — **`InputPass`**): `cs = 0x11483c1100`, `grid = 120x68x1` (`1920/16 x 1088/16`), `block = 128x1x1`, `native_program_key = 0x42593194bb0b2b32`, **`shader_hash = 0xa2fcaa95c5a162f3`** (matches `InputPassHash` in `175c56bafa`).
+       - `seq 2784` (Pass 4 — **`OutputPass`, `1920x1080 -> 2560x1440` upscale + tonemap**): `cs = 0x11483d5300`, `grid = 40x45x1` (`2560/64 x 1440/32`), `block = 128x1x1`, `native_program_key = 0x6f9367bd41dc0b58`, **`shader_hash = 0xcf806c2846075a1f`**.
+    3. **HUD Draws (`seq 2785..2844`, 60 indexed draws of 30 vertices each):**
+       - Drawn **after** Pass 4 (`seq 2784`) directly onto the **`2560x1440` post-upscale target `rt0 = 0x81252ff000` (`format = 0xe0`, `zeta = 0`, `blend = 1`)** using `vs = 0x11483ff200` (`vs_key = 0x4168421a2d1b208f`) and `ps = 0x11483ff500 / 0x1148400300 / 0x11483ff800` (`ps_key = 0x208402f432b31db0`, `0xeb4c0bf6200dc559`, `0xc7bbbd92ab448586`), plus 3 small UI/minimap icon RTs at `seq 2840..2842` (`0x8125241000` `128x128` `0xd5`, `0x8113100000` `192x192` `0xf3`, `0x8125234000` `192x192` `0xf3`).
+    4. **Final Swapbuffer Copy (`seq 2845`):**
+       - Fullscreen quad (`vs = 0x1147c53100`, `ps = 0x1147c53700`, `vs_key = 0xe8191de2bd40becb`, `ps_key = 0x8c509b7db8531b5d`, 6 vertices, `zeta = 0`, `blend = 0`) copies `0x81252ff000` (`2560x1440` `0xe0`) into the `vi2` presentation target `rt0 = 0x210b274000` (`2560x1440` `0xd6` `A8B8G8R8_UNORM`), followed by 2 small housekeeping dispatches (`seq 2846..2847`: `9x5x1` and `1x1x1`).
+
+  - **With `"Max Resolution (built-in)"` ON (`p0-kokiri-maxres-on`, 2824 entries, 125 compute dispatches):**
+    - All `1920x1080` 3D scene targets scale to **`2560x1440`** (`rt0 = 0x8114001000` and pre-upscale scene `rt0 = 0x81151ee000`), `960x540` half-res targets scale to **`1280x720`** (`0x811ba0d000`, `0x811ccd0000`, `0x81154a7000`), and `480x270` quarter-res targets scale to **`640x360`** (`0x8117ee0000`, `0x8118392000`).
+    - In the 4-pass post-process compute chain (`seq 2757..2760`):
+      - `seq 2757` (Pass 1): `cs = 0x11483b9400`, `grid = 80x60x1`, `block = 192x1x1`, `key = 0x8475d671e6967428`, `hash = 0xa107e12b6771be48`
+      - `seq 2758` (Pass 2): `cs = 0x11483bae00`, `grid = 2555x1x1`, `block = 96x1x1`, `key = 0x9387db798781f081`, `hash = 0x33cfe095c9a58a73`
+      - `seq 2759` (Pass 3 — **`InputPass`**): `cs = 0x11483c1100`, `grid = 160x90x1` (`2560/16 x 1440/16`), `block = 128x1x1`, `key = 0x42593194bb0b2b32`, `hash = 0xa2fcaa95c5a162f3`
+      - `seq 2760` (Pass 4 — **`OutputPass`, `2560x1440 -> 2560x1440` 1:1 pass**): **Switches to a different guest shader:** `cs = 0x11483c8e00`, `grid = 64x36x1` (`2560/40 x 1440/40`), `block = 128x1x1`, **`native_program_key = 0xda6df3e54c716df2`**, **`shader_hash = 0x9dfd3ff9ed9cb72a`**.
+
+- **Critical Consequences for Phase 1A & 1B (`D4`, `D6`, `R1`):**
+  1. **HUD Exclusion (`D4`):** There is no separate HUD-to-scene composite pass; HUD quads (`seq 2785..2844`, `zeta = 0, blend = 1`) are drawn directly onto `0x81252ff000` *after* Pass 4 (`seq 2784` / `2760`) writes the upscaled 3D scene to `0x81252ff000`. Therefore:
+     - Replacing Pass 4 with `CameraMotionUpscale` naturally upscales only the 3D scene (`0x8114456000 -> 0x81252ff000`) *before* HUD quads are drawn, leaving HUD elements untouched by DLSS.
+     - Jitter in `vk_rasterizer.cpp` is already gated on `maxwell3d->regs.zeta_enable != 0` (`175c56bafa`), which automatically excludes all HUD draws (`zeta = 0`).
+  2. **Stale `OutputPassHash` & Max Resolution Shader Switch (`D6`, `R1`):**
+     - In `175c56bafa`, `OutputPassHash` was hardcoded to `0x6bd913e1f34e83eb` (`shader->unique_identifier`, which is `NativeShaderHash(lowered_code)` in `src/video_core/shader_environment.cpp:55-59`). Because `lower_to_maxwell.cpp` changed after `175c56bafa`, guest shader `0x11483d5300` (`native_program_key = 0x6f9367bd41dc0b58`) now lowers to **`shader_hash = 0xcf806c2846075a1f`**.
+     - Furthermore, when `"Max Resolution (built-in)"` is **OFF** (the user's default), OoT renders 3D at **`1920x1080`** and dispatches `0x11483d5300` (`native_program_key = 0x6f9367bd41dc0b58`, `shader_hash = 0xcf806c2846075a1f`) to upscale `1920x1080 -> 2560x1440` (**DLSS Super Resolution Quality 1.33x**). When `"Max Resolution (built-in)"` is **ON**, OoT renders 3D at **`2560x1440`** and dispatches `0x11483c8e00` (`native_program_key = 0xda6df3e54c716df2`, `shader_hash = 0x9dfd3ff9ed9cb72a`) for `2560x1440 -> 2560x1440` (**DLAA 1:1**).
+     - **Action for Phase 1A/1B:** In `kepler_compute.cpp` / `vk_rasterizer.cpp`, match InputPass and OutputPass by `shader_cache.ComputeNativeKey()` (which hashes raw guest code before Ampere->Maxwell lowering, so it never breaks across lowering changes):
+       - `InputPass`: `native_program_key = 0x42593194bb0b2b32` (or `shader_hash = 0xa2fcaa95c5a162f3`)
+       - `OutputPass (1080p -> 1440p DLSS SR, Max Resolution OFF)`: `native_program_key = 0x6f9367bd41dc0b58` (or `shader_hash = 0xcf806c2846075a1f`)
+       - `OutputPass (1440p -> 1440p DLAA, Max Resolution ON)`: `native_program_key = 0xda6df3e54c716df2` (or `shader_hash = 0x9dfd3ff9ed9cb72a`), and relax `source_image->Width() >= dest_image->Width()` in `175c56bafa` (`vk_rasterizer.cpp`) to `>` so `2560x1440 -> 2560x1440` DLAA is permitted.
+
+#### 2. Phase 0(b): `EDEN_NX2_COOP_HMMA=0` vs Default (`p0-kokiri-base` / `p0-kokiri-prof-base` vs `p0-kokiri-no-coop` / `p0-kokiri-prof-no-coop`)
+- **Result:** Zero difference in either guest `Nx2Frame` FPS (`38.57 FPS` default vs `38.45 FPS` `COOP_HMMA=0`), `vi2` composite time (`8 us` vs `7 us`), or back-thread `compute` time (`12.3..12.7 ms/s` default vs `12.2..12.5 ms/s` `COOP_HMMA=0`).
+- **Why:**
+  1. OoT only dispatches its 11-pass HMMA network (`0x216c0b0500`) during the title-screen attract movie (`t = 10.9s..22.0s`), where `EDEN_NX2_UPSCALE_REPLACE=1` (default ON in `src/video_core/engines/kepler_compute.cpp:683-819`) **already replaces the 11-pass chain with a `Fermi2D` surface copy** (`Native network pass 0x216c0b0500 replaced by input copy ...`).
+  2. In actual Kokiri Forest gameplay (`t > 23.3s`), OoT uses the 4-pass compute upscaler (`seq 2781..2784`), which contains zero `HMMA` instructions and takes only `~0.32 ms/frame` total across all 125 compute dispatches (`12.5 ms/s` at ~39 FPS).
+  3. This confirms `P1`/`R1`: replacing Pass 4 with DLSS (`CameraMotionUpscale`) is purely an **image-quality upgrade** (replacing OoT's blurry spatial compute upscaler with temporal DLSS SR / DLAA), not a compute-time bottleneck reducer.
+
+#### 3. Phase 0(c): `frame_gen=true` (`(i)` multiplier=2, target_rate=0; `(ii)` multiplier=2, target_rate=60) vs `frame_gen=false`
+- **Result:**
+  - `frame_gen=false` (`p0-kokiri-base` / `p0-kokiri-prof-base`): Guest `Nx2Frame` `n` median **`39.0` presents/s** (`38.57 FPS`), `vi2` **`38.48 / 38.61 / 38.78 FPS`**, `composite = 8 / 8 / 8 us`, back-thread `compute = 12.3..12.7 ms/s`, present cadence: **not measured**.
+  - `(i) frame_gen=true, frame_gen_multiplier=2, frame_gen_target_rate=0` (`p0-kokiri-fg-m2-r0` / `p0-kokiri-prof-fg-m2-r0`): Guest `Nx2Frame` `n` median **`39.0` presents/s** (`38.97 FPS`), `vi2` **`38.63 / 38.93 / 38.97 FPS`**, `composite = 8 / 7 / 8 us`, back-thread `compute = 12.0..12.8 ms/s`, present cadence: **not measured**.
+  - `(ii) frame_gen=true, frame_gen_multiplier=2, frame_gen_target_rate=60` (`p0-kokiri-fg-m2-r60` / `p0-kokiri-prof-fg-m2-r60`): Guest `Nx2Frame` `n` median **`39.0` presents/s** (`38.40 FPS`), `vi2` **`38.34 / 38.55 / 38.68 FPS`**, `composite = 8 / 8 / 8 us`, back-thread `compute = 11.8..12.1 ms/s`, present cadence: **not measured**.
+- **Takeaway for Phase 2:** At the ~39 FPS Kokiri baseline on a 360 Hz display (`VSync` period `2.78 ms`), pushing 2 frames per composite (~78 presents/s) does **not** exhaust the swapchain's `free_queue` or back-pressure guest `Nx2Frame` FPS (`composite` remains `7–8 us` on the `vi2` thread because `Composite` runs on the scheduler worker). Phase 2 is cleared to proceed: adding the VRR half-period hold in `PresentThread` (outside both `queue_mutex` and `swapchain_mutex` per Turn 4 R3.2) plus `TryGetRenderFrame()` (Turn 4 R3.3) and the `bf21a9337b` history fix (Turn 4 R2) will space the generated and real frames by `~12.8 ms` (`T_base / 2`) without stalling the guest.
+
