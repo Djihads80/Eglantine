@@ -2551,10 +2551,16 @@ void RasterizerVulkan::NoteCameraMotionDraw() {
         return;
     }
     const auto& regs = maxwell3d->regs;
-    // Exclude draws while a sample-count occlusion query is active or with point topology (D3):
-    // Ocarina of Time's fog and sun point draws rely on sample-count query reports.
+    // Exclude occlusion-query proxy draws (sample-count query enabled with no depth, stencil, or
+    // color writes) and point topology draws (D3): Ocarina of Time's fog and sun bounding-box /
+    // sphere visibility queries must not be jittered.
+    const bool sample_query_only =
+        regs.zpass_pixel_count_enable != 0 && !regs.depth_write_enabled && !regs.stencil_enable &&
+        (regs.rt_control.count == 0 || regs.rt[0].format == Tegra::RenderTargetFormat::NONE ||
+         (regs.color_mask[0].R == 0 && regs.color_mask[0].G == 0 && regs.color_mask[0].B == 0 &&
+          regs.color_mask[0].A == 0));
     const bool excluded_draw =
-        regs.zpass_pixel_count_enable != 0 ||
+        sample_query_only ||
         maxwell3d->draw_manager.draw_state.topology == Maxwell::PrimitiveTopology::Points;
     const GPUVAddr depth = !excluded_draw && regs.zeta_enable &&
                                    regs.viewport_scale_offset_enabled &&
@@ -2566,27 +2572,6 @@ void RasterizerVulkan::NoteCameraMotionDraw() {
     // tonemap among them) don't, and stay where they are.
     const auto& camera = maxwell3d->state.shader_stages[0].const_buffers[Ocarina::CameraBuffer];
     const bool has_camera = depth != 0 && camera.enabled && camera.size >= Ocarina::CameraBytes;
-    if (regs.rt[0].width >= 1920 && regs.zeta_enable) {
-        static u32 diag_draws{};
-        if (diag_draws < 8) {
-            ++diag_draws;
-            std::array<f32, 16> proj{};
-            if (camera.enabled && camera.size >= Ocarina::CameraBytes &&
-                gpu_memory->IsFullyMappedRange(camera.address, Ocarina::CameraBytes)) {
-                gpu_memory->ReadBlockUnsafe(camera.address + Ocarina::ProjectionOffset, proj.data(),
-                                            sizeof(proj));
-            }
-            LOG_INFO(Render_Vulkan,
-                     "NoteCameraMotionDraw diag[{}]: rt0={}x{} fmt={:#x} zeta_fmt={:#x} "
-                     "zeta_size={}x{} vp_scale_en={} excl={} depth={:#x} cam_en={} cam_addr={:#x} "
-                     "cam_size={:#x} proj=({}, {}, {}, {}, {}, {})",
-                     diag_draws, regs.rt[0].width, regs.rt[0].height,
-                     static_cast<u32>(regs.rt[0].format), static_cast<u32>(regs.zeta.format),
-                     depth_size[0], depth_size[1], regs.viewport_scale_offset_enabled.Value(),
-                     excluded_draw, depth, camera.enabled, camera.address, camera.size, proj[0],
-                     proj[5], proj[12], proj[13], proj[14], proj[15]);
-        }
-    }
     auto& cached = motion.camera;
     if (has_camera && camera.address != cached.address) {
         cached.address = camera.address;
