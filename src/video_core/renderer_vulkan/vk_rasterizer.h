@@ -8,8 +8,10 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <optional>
 #include <span>
 
 #include <boost/container/static_vector.hpp>
@@ -19,6 +21,7 @@
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/ocarina_upscale.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_vulkan/blit_image.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -155,6 +158,8 @@ public:
                                    const Tegra::Texture::TICEntry* depth,
                                    std::array<f32, 2> jitter,
                                    std::array<f32, 2> motion_scale) override;
+    bool AccelerateCameraMotionUpscale(const Tegra::Engines::Fermi2D::Surface& src,
+                                       const Tegra::Engines::Fermi2D::Surface& dst) override;
     Tegra::Engines::AccelerateDMAInterface& AccessAccelerateDMA() override;
     void AccelerateInlineToMemory(GPUVAddr address, size_t copy_size,
                                   std::span<const u8> memory) override;
@@ -240,6 +245,12 @@ private:
     /// Records the dynamic state of the draw being prepared with `pipeline` (null for
     /// DrawTexture's blit).
     void UpdateDynamicStates(const GraphicsPipeline* pipeline);
+
+    /// NVIDIA DLSS in place of Ocarina of Time's anti-aliasing (AccelerateCameraMotionUpscale):
+    /// notes the camera of a draw on a scene depth buffer and jitters the draw.
+    void NoteCameraMotionDraw();
+    /// Starts the jitter for a frame when its scene depth is cleared.
+    void NoteCameraMotionClear();
 
     void HandleTransformFeedback();
 
@@ -368,6 +379,50 @@ private:
         std::atomic<u64> verify_diffs{}; ///< In all
         std::atomic<s64> last_log_ns{};
     } report_stats;
+
+    /// A depth buffer drawn with a perspective camera since the last evaluation of
+    /// AccelerateCameraMotionUpscale, and the state of its last such draw.
+    struct CameraMotionScene {
+        GPUVAddr depth{};
+        VideoCommon::ImageInfo depth_info;
+        GPUVAddr camera{};                     ///< The camera buffer of its last draw.
+        std::array<f32, 16> view_projection{}; ///< That camera's (rows).
+        VkViewport viewport{};   ///< Viewport 0 without the jitter, on the host.
+        f32 y_sign{1.0f};        ///< -1 when the device negates y before the viewport.
+        bool depth_minus_one{};  ///< Device depth from an NDC z of -1 to 1 (else 0 to 1).
+        bool rescaled{};
+        std::array<f32, 2> jitter{}; ///< The jitter of its draws.
+        u32 draws{};
+    };
+    struct CameraMotion {
+        bool armed{}; ///< The game's anti-aliasing has run with DLSS on.
+        std::array<CameraMotionScene, 16> scenes;
+        size_t num_scenes{};
+        /// The last evaluated scene's depth buffer: its clear starts the jitter, and the scene
+        /// camera's draws on depth buffers of its size get it while active. The game draws other
+        /// depth buffers at the same address, so its size counts too.
+        GPUVAddr jitter_depth{};
+        std::array<u32, 2> jitter_depth_size{};
+        bool jitter_ready{}; ///< An evaluation ran since the scene depth was last cleared.
+        bool jitter_active{};
+        u32 phase{};
+        std::array<f32, 2> jitter{};
+        std::array<f32, 2> applied{}; ///< The jitter in the viewports now.
+        /// The last camera buffer read, until the next evaluation.
+        struct {
+            GPUVAddr address{};
+            bool perspective{};
+            std::array<f32, 16> view_projection{};
+        } camera;
+        /// The last evaluation's world to render pixel matrix, and what it was for.
+        std::optional<VideoCommon::OcarinaUpscale::Matrix> previous_screen;
+        GPUVAddr previous_depth{};
+        std::array<u32, 2> previous_size{};
+        bool previous_rescaled{};
+        std::optional<std::chrono::steady_clock::time_point> last_evaluation;
+        u32 evaluations{};
+        bool jittered{}; ///< Some evaluation had jittered draws.
+    } camera_motion;
 };
 
 } // namespace Vulkan

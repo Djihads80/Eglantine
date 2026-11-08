@@ -1357,6 +1357,108 @@ std::optional<VideoCore::GameDlssProbe> TextureCache<P>::ProbeGameDlssOutput(
 }
 
 template <class P>
+bool TextureCache<P>::CameraMotionUpscale(const Tegra::Engines::Fermi2D::Surface& dst,
+                                          const Tegra::Engines::Fermi2D::Surface& src,
+                                          const ImageInfo& depth_info, GPUVAddr depth_address,
+                                          std::array<u32, 2> render_size,
+                                          const std::array<f32, 16>& reprojection,
+                                          std::array<f32, 2> jitter, bool reset) {
+    if constexpr (FRAMEBUFFER_BLITS) {
+        return false;
+    } else {
+        if (dst.width < src.width || dst.height < src.height ||
+            depth_info.size.width != src.width || depth_info.size.height != src.height) {
+            return false;
+        }
+        const Tegra::Engines::Fermi2D::Config copy{
+            .operation = Tegra::Engines::Fermi2D::Operation::SrcCopy,
+            .filter = Tegra::Engines::Fermi2D::Filter::Point,
+            .must_accelerate = true,
+            .dst_x0 = 0,
+            .dst_y0 = 0,
+            .dst_x1 = static_cast<s32>(dst.width),
+            .dst_y1 = static_cast<s32>(dst.height),
+            .src_x0 = 0,
+            .src_y0 = 0,
+            .src_x1 = static_cast<s32>(src.width),
+            .src_y1 = static_cast<s32>(src.height),
+        };
+        const auto result = GetBlitImages(dst, src, copy);
+        if (!result) {
+            return false;
+        }
+        has_deleted_images = false;
+        const ImageId depth_id = FindImage(depth_info, depth_address, RelaxedOptions{});
+        if (has_deleted_images || !depth_id) {
+            return false;
+        }
+        const ImageId dst_id = result->dst_id;
+        const ImageId src_id = result->src_id;
+        PrepareImage(src_id, false, false);
+        PrepareImage(depth_id, false, false);
+        PrepareImage(dst_id, true, false);
+        if (slot_images[depth_id].info.format != PixelFormat::D32_FLOAT) {
+            return false;
+        }
+        const auto host_extent = [](const ImageBase& image) -> std::array<u32, 2> {
+            const bool image_rescaled = True(image.flags & ImageFlagBits::Rescaled);
+            const auto& resolution = Settings::values.resolution_info;
+            return {
+                image_rescaled ? resolution.ScaleUp(image.info.size.width) : image.info.size.width,
+                image_rescaled ? resolution.ScaleUp(image.info.size.height)
+                               : image.info.size.height,
+            };
+        };
+        for (const ImageId id : {src_id, depth_id}) {
+            const ImageBase& image = slot_images[id];
+            if (image.info.num_samples != 1 || image.info.size.width != src.width ||
+                image.info.size.height != src.height || host_extent(image) != render_size) {
+                return false;
+            }
+        }
+        {
+            const ImageBase& dst_image = slot_images[dst_id];
+            const auto dst_host = host_extent(dst_image);
+            if (dst_image.info.num_samples != 1 || dst_image.info.size.width != dst.width ||
+                dst_image.info.size.height != dst.height || dst_host[0] < render_size[0] ||
+                dst_host[1] < render_size[1]) {
+                return false;
+            }
+        }
+        const auto view = [&](ImageId id, const Tegra::Engines::Fermi2D::Surface& surface,
+                              PixelFormat format)
+            -> std::optional<std::pair<FramebufferId, ImageViewId>> {
+            const std::optional base = slot_images[id].TryFindBase(surface.Address());
+            if (!base) {
+                return std::nullopt;
+            }
+            const SubresourceRange range{.base = *base, .extent = {1, 1}};
+            return RenderTargetFromImage(id, ImageViewInfo(ImageViewType::e2D, format, range));
+        };
+        const auto src_view = view(src_id, src, result->src_format);
+        const auto dst_view = view(dst_id, dst, result->dst_format);
+        if (!src_view || !dst_view) {
+            return false;
+        }
+        const std::optional depth_base = slot_images[depth_id].TryFindBase(depth_address);
+        if (!depth_base) {
+            return false;
+        }
+        const ImageViewId depth_view = FindOrEmplaceImageView(
+            depth_id, ImageViewInfo(ImageViewType::e2D, PixelFormat::D32_FLOAT,
+                                    SubresourceRange{.base = *depth_base, .extent = {1, 1}}));
+        if (!depth_view) {
+            return false;
+        }
+        // After the views: creating them may reallocate the framebuffer slots.
+        Framebuffer* const dst_framebuffer = &slot_framebuffers[dst_view->first];
+        return runtime.UpscaleWithCameraMotion(dst_framebuffer, slot_image_views[src_view->second],
+                                               slot_image_views[depth_view], render_size,
+                                               reprojection, jitter, reset);
+    }
+}
+
+template <class P>
 bool TextureCache<P>::TemporalUpscale(const Tegra::Engines::Fermi2D::Surface& dst,
                                       const Tegra::Engines::Fermi2D::Surface& src,
                                       const Tegra::Engines::Fermi2D::Surface& motion_vectors,

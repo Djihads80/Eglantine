@@ -318,6 +318,17 @@ public:
                          const Tegra::Texture::TICEntry* depth, std::array<f32, 2> jitter,
                          std::array<f32, 2> motion_scale);
 
+    /// NVIDIA DLSS (DLAA or Super Resolution) on src into dst with the scene depth at
+    /// depth_address and motion from the camera (see the runtime's UpscaleWithCameraMotion).
+    /// render_size is the scene's size in host pixels. False when it can't run; the caller keeps
+    /// its native dispatch.
+    bool CameraMotionUpscale(const Tegra::Engines::Fermi2D::Surface& dst,
+                             const Tegra::Engines::Fermi2D::Surface& src,
+                             const ImageInfo& depth_info, GPUVAddr depth_address,
+                             std::array<u32, 2> render_size,
+                             const std::array<f32, 16>& reprojection, std::array<f32, 2> jitter,
+                             bool reset);
+
     /// Health check of a game's DLSS network output (dst) against its input (src); see the
     /// runtime's ProbeGameDlssOutput. Returns an earlier check's result when one is ready.
     std::optional<VideoCore::GameDlssProbe> ProbeGameDlssOutput(

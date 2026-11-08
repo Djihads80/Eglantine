@@ -124,6 +124,7 @@ add_library(video_core STATIC
     nx2_page_hash.h
     nx2_perf.h
     nx2_war_probe.h
+    ocarina_upscale.h
     present.h
     pte_kind.h
     query_cache/bank_base.h
@@ -189,6 +190,8 @@ add_library(video_core STATIC
     renderer_vulkan/vk_fsr3_upscaler.h
     renderer_vulkan/vk_dlss_network_probe.cpp
     renderer_vulkan/vk_dlss_network_probe.h
+    renderer_vulkan/vk_camera_motion_pass.cpp
+    renderer_vulkan/vk_camera_motion_pass.h
     renderer_vulkan/vk_compute_pipeline.cpp
     renderer_vulkan/vk_compute_pipeline.h
     renderer_vulkan/vk_cooperative_hmma_test.cpp

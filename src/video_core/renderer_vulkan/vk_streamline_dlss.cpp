@@ -228,6 +228,11 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
         options_changed = true;
         reset = true;
     }
+    if (in.hdr != hdr) {
+        hdr = in.hdr;
+        options_changed = true;
+        reset = true;
+    }
 
     // The game's own setup (Fortune's Weave: render-size motion vectors, reversed depth). Its
     // colour is linear and goes above 1 with no exposure passed, so by default DLSS gets the HDR
@@ -237,9 +242,10 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
     options.mode = ModeFor(in.render_size, in.upscale_size);
     options.outputWidth = in.upscale_size.width;
     options.outputHeight = in.upscale_size.height;
-    options.colorBuffersHDR = EnvInt("EDEN_NX2_DLSS_HDR", 1) != 0 ? sl::eTrue : sl::eFalse;
+    options.colorBuffersHDR =
+        in.hdr && EnvInt("EDEN_NX2_DLSS_HDR", 1) != 0 ? sl::eTrue : sl::eFalse;
     options.useAutoExposure =
-        EnvInt("EDEN_NX2_DLSS_AUTO_EXPOSURE", 1) != 0 ? sl::eTrue : sl::eFalse;
+        in.hdr && EnvInt("EDEN_NX2_DLSS_AUTO_EXPOSURE", 1) != 0 ? sl::eTrue : sl::eFalse;
     const sl::DLSSPreset preset = Preset();
     options.dlaaPreset = preset;
     options.qualityPreset = preset;
@@ -355,7 +361,7 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
         constants.cameraFar = 1000.0f;
         constants.cameraFOV = 1.0f;
         constants.cameraAspectRatio = rw / rh;
-        constants.depthInverted = sl::eTrue;
+        constants.depthInverted = in.depth_inverted ? sl::eTrue : sl::eFalse;
         constants.cameraMotionIncluded = sl::eTrue;
         constants.motionVectors3D = sl::eFalse;
         constants.reset = reset ? sl::eTrue : sl::eFalse;

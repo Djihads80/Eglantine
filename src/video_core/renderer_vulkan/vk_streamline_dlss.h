@@ -30,7 +30,7 @@ public:
 
     struct Inputs {
         Image color;          ///< Jittered linear colour at the render size.
-        Image depth;          ///< Device depth (reversed) at the render size.
+        Image depth;          ///< Device depth at the render size.
         Image motion_vectors; ///< Motion to the previous frame at the render size.
         VkExtent2D render_size;
         VkExtent2D upscale_size;
@@ -39,6 +39,10 @@ public:
         /// Turns a motion vector into render pixels (the render size for UV offsets).
         std::array<f32, 2> motion_vector_scale;
         bool reset;
+        /// Reversed depth (1 near, 0 far), as Fire Emblem draws it.
+        bool depth_inverted{true};
+        /// Linear colour that goes above 1 (DLSS exposes it itself); false for tonemapped colour.
+        bool hdr{true};
     };
 
     /// Throws vk::Exception when Streamline has no DLSS for this device.
@@ -71,6 +75,7 @@ private:
     VkExtent2D render_extent{};
     VkExtent2D upscale_extent{};
     u32 frame_index{};
+    bool hdr{true}; ///< The colour kind the options were last set for.
     vk::Image output_image;
     vk::ImageView output_view;
     vk::Sampler point_sampler;

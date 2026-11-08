@@ -879,6 +879,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         }
     }
 
+    NoteCameraMotionDraw();
     {
         Profile::Scope scope{Profile::Zone::DynamicState};
         UpdateDynamicStates(pipeline);
@@ -1375,6 +1376,9 @@ void RasterizerVulkan::Clear(u32 layer_count) {
     if (!use_color && !use_depth && !use_stencil) {
         return;
     }
+    if (use_depth) {
+        NoteCameraMotionClear();
+    }
 
     std::scoped_lock lock{texture_cache.mutex};
     texture_cache.UpdateRenderTargets(true);
@@ -1576,6 +1580,11 @@ void RasterizerVulkan::DispatchCompute() {
     ComputePipeline* const pipeline{pipeline_cache.CurrentComputePipeline(native_key)};
     if (!pipeline) {
         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute pipeline unavailable");
+        return;
+    }
+    if (kepler_compute->IsNativeMode() &&
+        kepler_compute->ProcessOcarinaUpscale(Settings::GetCurrentProgramID(), native_key,
+                                              pipeline->ShaderHash())) {
         return;
     }
     std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};
@@ -2519,6 +2528,293 @@ bool RasterizerVulkan::AccelerateTemporalUpscale(
     return texture_cache.TemporalUpscale(dst, src, motion_vectors, depth, jitter, motion_scale);
 }
 
+// NVIDIA DLSS (DLAA and Super Resolution) in place of Ocarina of Time's post-tonemap anti-aliasing
+// and upscaling (ocarina_upscale.h). The game draws no jitter and no motion vectors, so the host
+// offsets the viewport of every draw of the scene's camera at the scene's size by a sub-pixel
+// jitter (the depth prepass and the colour pass alike, or the colour pass's equal depth test
+// fails), and DLSS gets motion vectors from the camera alone: each pixel's depth taken back
+// through this frame's camera and forward through the last one's.
+void RasterizerVulkan::NoteCameraMotionDraw() {
+    namespace Ocarina = VideoCommon::OcarinaUpscale;
+    auto& motion = camera_motion;
+    if (!motion.armed) {
+        return;
+    }
+    if (!UsesNvidiaDlss()) {
+        motion.armed = false;
+        motion.jitter_active = false;
+        motion.jitter_ready = false;
+        if (motion.applied != std::array<f32, 2>{}) {
+            motion.applied = {};
+            state_tracker.InvalidateViewports();
+        }
+        return;
+    }
+    const auto& regs = maxwell3d->regs;
+    // Exclude draws while a sample-count occlusion query is active or with point topology (D3):
+    // Ocarina of Time's fog and sun point draws rely on sample-count query reports.
+    const bool excluded_draw =
+        regs.zpass_pixel_count_enable != 0 ||
+        maxwell3d->draw_manager.draw_state.topology == Maxwell::PrimitiveTopology::Points;
+    const GPUVAddr depth = !excluded_draw && regs.zeta_enable &&
+                                   regs.viewport_scale_offset_enabled &&
+                                   regs.zeta.format == Tegra::DepthFormat::Z32_FLOAT
+                               ? regs.zeta.Address()
+                               : 0;
+    const std::array<u32, 2> depth_size{regs.zeta_size.width, regs.zeta_size.height};
+    // The scene's geometry binds its camera. Full-screen passes on the same depth buffer (the
+    // tonemap among them) don't, and stay where they are.
+    const auto& camera = maxwell3d->state.shader_stages[0].const_buffers[Ocarina::CameraBuffer];
+    const bool has_camera = depth != 0 && camera.enabled && camera.size >= Ocarina::CameraBytes;
+    if (regs.rt[0].width >= 1920 && regs.zeta_enable) {
+        static u32 diag_draws{};
+        if (diag_draws < 8) {
+            ++diag_draws;
+            std::array<f32, 16> proj{};
+            if (camera.enabled && camera.size >= Ocarina::CameraBytes &&
+                gpu_memory->IsFullyMappedRange(camera.address, Ocarina::CameraBytes)) {
+                gpu_memory->ReadBlockUnsafe(camera.address + Ocarina::ProjectionOffset, proj.data(),
+                                            sizeof(proj));
+            }
+            LOG_INFO(Render_Vulkan,
+                     "NoteCameraMotionDraw diag[{}]: rt0={}x{} fmt={:#x} zeta_fmt={:#x} "
+                     "zeta_size={}x{} vp_scale_en={} excl={} depth={:#x} cam_en={} cam_addr={:#x} "
+                     "cam_size={:#x} proj=({}, {}, {}, {}, {}, {})",
+                     diag_draws, regs.rt[0].width, regs.rt[0].height,
+                     static_cast<u32>(regs.rt[0].format), static_cast<u32>(regs.zeta.format),
+                     depth_size[0], depth_size[1], regs.viewport_scale_offset_enabled.Value(),
+                     excluded_draw, depth, camera.enabled, camera.address, camera.size, proj[0],
+                     proj[5], proj[12], proj[13], proj[14], proj[15]);
+        }
+    }
+    auto& cached = motion.camera;
+    if (has_camera && camera.address != cached.address) {
+        cached.address = camera.address;
+        cached.perspective = false;
+        if (gpu_memory->IsFullyMappedRange(camera.address, Ocarina::CameraBytes)) {
+            std::array<f32, 16> projection;
+            gpu_memory->ReadBlockUnsafe(camera.address + Ocarina::ProjectionOffset,
+                                        projection.data(), sizeof(projection));
+            cached.perspective = Ocarina::IsPerspective(projection);
+            gpu_memory->ReadBlockUnsafe(camera.address + Ocarina::ViewProjectionOffset,
+                                        cached.view_projection.data(),
+                                        sizeof(cached.view_projection));
+        }
+    }
+    const bool perspective = has_camera && cached.perspective;
+    // Every depth buffer the scene's camera draws at the scene's size, not only the scene's: the
+    // game shades its opaque geometry with an EQUAL test against a copy of the prepass depth, so
+    // both must have the same offset.
+    std::array<f32, 2> jitter{};
+    if (perspective && motion.jitter_active && depth_size == motion.jitter_depth_size) {
+        jitter = motion.jitter;
+    }
+    if (perspective) {
+        CameraMotionScene* scene = nullptr;
+        for (size_t i = 0; i < motion.num_scenes; ++i) {
+            CameraMotionScene& candidate = motion.scenes[i];
+            if (candidate.depth == depth && candidate.depth_info.size.width == depth_size[0] &&
+                candidate.depth_info.size.height == depth_size[1]) {
+                scene = &candidate;
+            }
+        }
+        if (!scene) {
+            // Shadow and effect passes draw smaller depth buffers before the scene's: when the
+            // records are full, a larger buffer takes the smallest one's.
+            const auto area = [](const CameraMotionScene& record) {
+                return u64{record.depth_info.size.width} * record.depth_info.size.height;
+            };
+            if (motion.num_scenes < motion.scenes.size()) {
+                scene = &motion.scenes[motion.num_scenes++];
+            } else if (CameraMotionScene& smallest =
+                           *std::ranges::min_element(motion.scenes, {}, area);
+                       area(smallest) < u64{depth_size[0]} * depth_size[1]) {
+                scene = &smallest;
+            }
+            if (scene) {
+                *scene = CameraMotionScene{};
+                scene->depth = depth;
+                scene->depth_info = VideoCommon::ImageInfo(regs.zeta, regs.zeta_size,
+                                                           regs.anti_alias_samples_mode);
+            }
+        }
+        if (scene) {
+            const bool rescaled = texture_cache.IsRescaling();
+            const float scale = rescaled ? Settings::values.resolution_info.up_factor : 1.0f;
+            scene->camera = camera.address;
+            scene->view_projection = cached.view_projection;
+            scene->viewport = GetViewportState(device, regs, 0, scale);
+            scene->y_sign = device.IsNvViewportSwizzleSupported() &&
+                                    regs.viewport_transform[0].swizzle.y ==
+                                        Maxwell::ViewportSwizzle::NegativeY
+                                ? -1.0f
+                                : 1.0f;
+            scene->depth_minus_one = regs.depth_mode == Maxwell::DepthMode::MinusOneToOne;
+            scene->rescaled = rescaled;
+            scene->jitter = jitter;
+            ++scene->draws;
+        }
+    }
+    if (jitter != motion.applied) {
+        motion.applied = jitter;
+        state_tracker.InvalidateViewports();
+    }
+}
+
+void RasterizerVulkan::NoteCameraMotionClear() {
+    auto& motion = camera_motion;
+    const auto& regs = maxwell3d->regs;
+    if (!motion.armed || !regs.zeta_enable || regs.zeta.Address() != motion.jitter_depth ||
+        std::array<u32, 2>{regs.zeta_size.width, regs.zeta_size.height} !=
+            motion.jitter_depth_size) {
+        return;
+    }
+    if (motion.jitter_ready) {
+        motion.jitter_ready = false;
+        motion.jitter_active = true;
+        return;
+    }
+    // Cleared again with no evaluation since: another clear in the same frame, or the game's
+    // anti-aliasing stopped running (a menu, a load), so its draws mustn't keep the jitter.
+    if (motion.jitter_active && motion.last_evaluation &&
+        std::chrono::steady_clock::now() - *motion.last_evaluation >
+            std::chrono::milliseconds{100}) {
+        motion.jitter_active = false;
+    }
+}
+
+bool RasterizerVulkan::AccelerateCameraMotionUpscale(const Tegra::Engines::Fermi2D::Surface& src,
+                                                     const Tegra::Engines::Fermi2D::Surface& dst) {
+    namespace Ocarina = VideoCommon::OcarinaUpscale;
+    auto& motion = camera_motion;
+    motion.armed = true;
+    // The scene: the depth buffer at the colour's size with the most perspective draws.
+    const CameraMotionScene* scene = nullptr;
+    for (size_t i = 0; i < motion.num_scenes; ++i) {
+        const CameraMotionScene& candidate = motion.scenes[i];
+        if (candidate.draws > 0 && candidate.depth_info.size.width == src.width &&
+            candidate.depth_info.size.height == src.height &&
+            (!scene || candidate.draws > scene->draws)) {
+            scene = &candidate;
+        }
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const auto finish = [&](bool done) {
+        motion.num_scenes = 0;
+        // Camera buffers are rewritten each frame, often at the same addresses.
+        motion.camera = {};
+        if (!done) {
+            // The game's own anti-aliasing draws this frame: no jitter, and no history to keep.
+            motion.jitter_active = false;
+            motion.jitter_ready = false;
+            motion.jitter_depth = 0;
+            motion.jitter_depth_size = {};
+            motion.previous_screen.reset();
+        }
+        return done;
+    };
+    if (!scene) {
+        static u32 no_scene_logged{};
+        if (no_scene_logged < 4) {
+            ++no_scene_logged;
+            LOG_INFO(Render_Vulkan,
+                     "Ocarina of Time anti-aliasing: no matching scene for {}x{} -> {}x{} "
+                     "({} recorded scenes)",
+                     src.width, src.height, dst.width, dst.height, motion.num_scenes);
+            for (size_t i = 0; i < motion.num_scenes; ++i) {
+                const auto& candidate = motion.scenes[i];
+                LOG_INFO(Render_Vulkan, "  scene[{}]: depth={:#x} {}x{} draws={} camera={:#x}", i,
+                         candidate.depth, candidate.depth_info.size.width,
+                         candidate.depth_info.size.height, candidate.draws, candidate.camera);
+            }
+        }
+        return finish(false);
+    }
+    // The scene's viewport must cover the image, so the matrix maps to its pixels.
+    const VkViewport& viewport = scene->viewport;
+    const f32 width = static_cast<f32>(
+        scene->rescaled ? Settings::values.resolution_info.ScaleUp(src.width) : src.width);
+    const f32 height = static_cast<f32>(
+        scene->rescaled ? Settings::values.resolution_info.ScaleUp(src.height) : src.height);
+    if (std::abs(viewport.x) > 0.5f || std::abs(viewport.width - width) > 0.5f ||
+        std::abs(std::min(viewport.y, viewport.y + viewport.height)) > 0.5f ||
+        std::abs(std::abs(viewport.height) - height) > 0.5f) {
+        if (motion.evaluations < 4) {
+            LOG_INFO(Render_Vulkan,
+                     "Ocarina of Time anti-aliasing: viewport ({}, {}, {}x{}) does not cover "
+                     "{}x{}",
+                     viewport.x, viewport.y, viewport.width, viewport.height, width, height);
+        }
+        return finish(false);
+    }
+    // Device depth = offset + scale * NDC z, as the viewport's depth range gives it.
+    const f32 depth_offset = scene->depth_minus_one
+                                 ? (viewport.minDepth + viewport.maxDepth) * 0.5f
+                                 : viewport.minDepth;
+    const f32 depth_scale = scene->depth_minus_one
+                                ? (viewport.maxDepth - viewport.minDepth) * 0.5f
+                                : viewport.maxDepth - viewport.minDepth;
+    const Ocarina::Matrix screen = Ocarina::ScreenMatrix(
+        Ocarina::ViewportMatrix(viewport.x, viewport.y, viewport.width, viewport.height,
+                                scene->y_sign, depth_offset, depth_scale),
+        scene->view_projection);
+    const std::array<u32, 2> size{src.width, src.height};
+    // A gap in the evaluations (a menu, a load) or another scene starts the history again.
+    bool reset = !motion.previous_screen || motion.previous_depth != scene->depth ||
+                 motion.previous_size != size || motion.previous_rescaled != scene->rescaled ||
+                 !motion.last_evaluation ||
+                 now - *motion.last_evaluation > std::chrono::milliseconds{250};
+    std::optional<std::array<f32, 16>> reprojection;
+    if (!reset) {
+        reprojection = Ocarina::Reprojection(*motion.previous_screen, screen);
+    }
+    if (!reprojection) {
+        reset = true;
+        reprojection = std::array<f32, 16>{1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                                           0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+    }
+    const std::array<f32, 2> jitter = scene->jitter;
+    bool done;
+    {
+        std::scoped_lock lock{texture_cache.mutex};
+        done = texture_cache.CameraMotionUpscale(
+            dst, src, scene->depth_info, scene->depth,
+            {static_cast<u32>(width), static_cast<u32>(height)}, *reprojection, jitter, reset);
+    }
+    if (motion.evaluations < 4 || (!done && motion.evaluations < 64)) {
+        LOG_INFO(Render_Vulkan,
+                 "Ocarina of Time anti-aliasing: NVIDIA DLSS {} (scene depth {:#x} {}x{} -> "
+                 "{}x{}, {} draws, camera {:#x}, jitter {},{}, reset {})",
+                 done ? "applied" : "unavailable; the game's own runs", scene->depth, src.width,
+                 src.height, dst.width, dst.height, scene->draws, scene->camera, jitter[0],
+                 jitter[1], reset);
+    }
+    ++motion.evaluations;
+    if (!done) {
+        return finish(false);
+    }
+    motion.jittered |= scene->jitter != std::array<f32, 2>{};
+    if (motion.evaluations == 120 && !motion.jittered) {
+        LOG_WARNING(Render_Vulkan,
+                    "Ocarina of Time anti-aliasing: the scene's depth buffer at {:#x} is never "
+                    "cleared, so its draws get no jitter",
+                    scene->depth);
+    }
+    motion.previous_screen = screen;
+    motion.previous_depth = scene->depth;
+    motion.previous_size = size;
+    motion.previous_rescaled = scene->rescaled;
+    motion.last_evaluation = now;
+    // The next frame's jitter, from when its scene depth is cleared; the rest of this frame (its
+    // interface) is drawn without it.
+    motion.jitter_depth = scene->depth;
+    motion.jitter_depth_size = size;
+    motion.jitter = Ocarina::Jitter(++motion.phase);
+    motion.jitter_ready = true;
+    motion.jitter_active = false;
+    return finish(true);
+}
+
 Tegra::Engines::AccelerateDMAInterface& RasterizerVulkan::AccessAccelerateDMA() {
     return accelerate_dma;
 }
@@ -3075,7 +3371,7 @@ void RasterizerVulkan::UpdateViewportsState(Tegra::Engines::Maxwell3D::Regs& reg
     }
     const bool is_rescaling{texture_cache.IsRescaling()};
     const float scale = is_rescaling ? Settings::values.resolution_info.up_factor : 1.0f;
-    const std::array viewport_list{
+    std::array viewport_list{
         GetViewportState(device, regs, 0, scale),  GetViewportState(device, regs, 1, scale),
         GetViewportState(device, regs, 2, scale),  GetViewportState(device, regs, 3, scale),
         GetViewportState(device, regs, 4, scale),  GetViewportState(device, regs, 5, scale),
@@ -3085,6 +3381,14 @@ void RasterizerVulkan::UpdateViewportsState(Tegra::Engines::Maxwell3D::Regs& reg
         GetViewportState(device, regs, 12, scale), GetViewportState(device, regs, 13, scale),
         GetViewportState(device, regs, 14, scale), GetViewportState(device, regs, 15, scale),
     };
+    // The host's jitter for NVIDIA DLSS (NoteCameraMotionDraw), in host pixels; added after the
+    // scaling so it isn't rounded away.
+    if (camera_motion.applied[0] != 0.0f || camera_motion.applied[1] != 0.0f) {
+        for (VkViewport& viewport : viewport_list) {
+            viewport.x += camera_motion.applied[0];
+            viewport.y += camera_motion.applied[1];
+        }
+    }
     scheduler.Record([this, viewport_list](vk::CommandBuffer cmdbuf) {
         const u32 num_viewports = std::min<u32>(device.GetMaxViewports(), Maxwell::NumViewports);
         const vk::Span<VkViewport> viewports(viewport_list.data(), num_viewports);

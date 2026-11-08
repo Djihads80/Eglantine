@@ -253,6 +253,10 @@ public:
     }
 
     bool IsNativeMode() const { return native_mode; }
+    /// NVIDIA DLSS (DLAA and Super Resolution) in place of Ocarina of Time's post-tonemap
+    /// anti-aliasing / upscaling (ocarina_upscale.h), when the setting is on: true when it
+    /// replaced this dispatch (the network's last pass).
+    bool ProcessOcarinaUpscale(u64 program_id, u64 native_key, u64 shader_hash);
     /// Whether the dispatch being run is a pass of a game DLSS evaluation (Fortune's Weave).
     bool IsDlssDispatch() const { return native_mode && dlss_chain.active; }
     /// Whether the matrix multiplies (tensor-core instructions) of the program being dispatched
@@ -355,6 +359,8 @@ private:
     /// Native dispatches left to skip while a retained network is being replaced (bounded, so a
     /// non-network pass cannot silence the engine forever).
     u32 network_skip_remaining{};
+    /// The tonemapped frame Ocarina of Time's anti-aliasing reads (ProcessOcarinaUpscale).
+    std::optional<Texture::TICEntry> ocarina_input;
 
     /// Mario Kart World's docked photo mode upscales 2560x1440 to 3840x2160 with a tensor-core
     /// network whose passes can't run. After its first rejected pass the next dispatches are
