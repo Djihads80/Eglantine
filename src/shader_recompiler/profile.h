@@ -47,6 +47,8 @@ struct Profile {
     bool support_typeless_image_loads{};
     bool support_demote_to_helper_invocation{};
     bool support_int64_atomics{};
+    /// Native OpAtomicFAddEXT on 32-bit float storage buffer words
+    bool support_float32_atomic_add{};
     bool support_shared_int64_atomics{};
     bool support_derivative_control{};
     bool support_geometry_shader_passthrough{};

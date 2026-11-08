@@ -74,6 +74,7 @@ VK_DEFINE_HANDLE(VmaPool)
             primitive_topology_list_restart)                                                       \
     FEATURE(EXT, ProvokingVertex, PROVOKING_VERTEX, provoking_vertex)                              \
     FEATURE(EXT, Robustness2, ROBUSTNESS_2, robustness2)                                           \
+    FEATURE(EXT, ShaderAtomicFloat, SHADER_ATOMIC_FLOAT, shader_atomic_float)                      \
     FEATURE(EXT, TransformFeedback, TRANSFORM_FEEDBACK, transform_feedback)                        \
     FEATURE(EXT, VertexInputDynamicState, VERTEX_INPUT_DYNAMIC_STATE, vertex_input_dynamic_state)  \
     FEATURE(KHR, CooperativeMatrix, COOPERATIVE_MATRIX, cooperative_matrix)                        \
@@ -973,6 +974,12 @@ FN_MAX_LIMIT_LIST
     bool SupportsTransformFeedbackProvokingVertexPreservation() const {
         return extensions.provoking_vertex &&
                features.provoking_vertex.transformFeedbackPreservesProvokingVertex;
+    }
+
+    /// Returns true if storage buffers support native 32-bit float atomic adds.
+    bool IsFloat32AtomicAddSupported() const {
+        return extensions.shader_atomic_float &&
+               features.shader_atomic_float.shaderBufferFloat32AtomicAdd;
     }
 
     /// Returns true if the device supports VK_KHR_shader_atomic_int64.

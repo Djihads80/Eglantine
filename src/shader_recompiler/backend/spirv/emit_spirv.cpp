@@ -510,6 +510,10 @@ void SetupCapabilities(const Profile& profile, const Info& info, EmitContext& ct
         }
         ctx.AddCapability(spv::Capability::GroupNonUniformShuffle);
     }
+    if (info.uses_atomic_f32_add && profile.support_float32_atomic_add) {
+        ctx.AddExtension("SPV_EXT_shader_atomic_float_add");
+        ctx.AddCapability(spv::Capability::AtomicFloat32AddEXT);
+    }
     if (info.uses_int64_bit_atomics && profile.support_int64_atomics) {
         ctx.AddCapability(spv::Capability::Int64Atomics);
     }
@@ -590,7 +594,8 @@ void RewriteOpcodes(std::vector<u32>& code, std::span<const std::pair<u32, spv::
             return;
         }
         if (opcode == spv::Op::OpGroupNonUniformShuffleXor ||
-            opcode == spv::Op::OpGroupNonUniformQuadBroadcast) {
+            opcode == spv::Op::OpGroupNonUniformQuadBroadcast ||
+            opcode == spv::Op::OpAtomicIAdd) {
             const auto it{std::ranges::find(rewrites, code[offset + 2],
                                             &std::pair<u32, spv::Op>::first)};
             if (it != rewrites.end()) {
