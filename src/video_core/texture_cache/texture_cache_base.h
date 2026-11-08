@@ -44,6 +44,7 @@
 #include "video_core/texture_cache/image_info.h"
 #include "video_core/texture_cache/image_view_base.h"
 #include "video_core/texture_cache/render_targets.h"
+#include "video_core/texture_cache/stale_pages.h"
 #include "video_core/texture_cache/types.h"
 #include "video_core/textures/texture.h"
 
@@ -578,12 +579,7 @@ private:
     void ClearStaleImage(const ImageBase& image);
     /// Clears every device range [gpu_addr, gpu_addr + size) maps to.
     void ClearStaleGpu(GPUVAddr gpu_addr, size_t size);
-    [[nodiscard]] bool IsAllStale(DAddr addr, size_t size) const;
-    void UpdateStaleTracking(u64 run_begin, u64 run_pages, s32 delta);
-    /// Device memory pages (Core::Memory::YUZU_PAGEBITS), not this cache's 1 MiB lookup pages.
-    static constexpr u64 STALE_PAGE_BITS = 12;
-    std::vector<u64> stale_bits; ///< One bit per device page
-    u64 stale_page_count{};
+    StalePages stale_pages;
     u64 tc_stale_skips{};        ///< Uploads skipped (last 600 frames)
     u64 tc_stale_skip_bytes{};
     u64 tc_stale_gpu_written{};  ///< Stale but buffer-written pages: uploaded after all

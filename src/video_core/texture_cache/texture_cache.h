@@ -336,92 +336,29 @@ void TextureCache<P>::RunGarbageCollector() {
 }
 
 template <class P>
-void TextureCache<P>::UpdateStaleTracking(u64 run_begin, u64 run_pages, s32 delta) {
-    if (run_pages != 0) {
-        device_memory.UpdatePagesCachedCount(run_begin << STALE_PAGE_BITS,
-                                             run_pages << STALE_PAGE_BITS, delta);
-    }
-}
-
-template <class P>
 void TextureCache<P>::MarkStale(const ImageBase& image) {
     if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) ||
         False(image.flags & ImageFlagBits::GpuModified) ||
-        True(image.flags & (ImageFlagBits::Sparse | ImageFlagBits::Unbacked)) ||
-        image.guest_size_bytes == 0) {
+        True(image.flags & (ImageFlagBits::Sparse | ImageFlagBits::Unbacked))) {
         return;
-    }
-    // Whole pages only: a page the image shares with other data keeps that data's state.
-    constexpr u64 page_size = u64{1} << STALE_PAGE_BITS;
-    const u64 first = (image.cpu_addr + page_size - 1) >> STALE_PAGE_BITS;
-    const u64 end = (image.cpu_addr + image.guest_size_bytes) >> STALE_PAGE_BITS;
-    if (end <= first || end > (u64{1} << 28)) {
-        return;
-    }
-    if (stale_bits.size() * 64 < end) {
-        stale_bits.resize((end + 63) / 64);
     }
     // Tracked from here on so CPU writes reach WriteMemory. Marking before the image's own
     // tracking goes keeps the pages' write protection from switching off and on again.
-    u64 run_begin = 0;
-    u64 run_pages = 0;
-    for (u64 page = first; page < end; ++page) {
-        u64& word = stale_bits[page / 64];
-        const u64 bit = u64{1} << (page % 64);
-        if ((word & bit) != 0) {
-            UpdateStaleTracking(run_begin, run_pages, 1);
-            run_pages = 0;
-            continue;
-        }
-        word |= bit;
-        ++stale_page_count;
-        if (run_pages == 0) {
-            run_begin = page;
-        }
-        ++run_pages;
-    }
-    UpdateStaleTracking(run_begin, run_pages, 1);
+    stale_pages.Mark(image.cpu_addr, image.guest_size_bytes, [this](DAddr addr, u64 size) {
+        device_memory.UpdatePagesCachedCount(addr, size, 1);
+    });
 }
 
 template <class P>
 void TextureCache<P>::ClearStale(DAddr addr, size_t size) {
-    if (stale_page_count == 0 || size == 0) {
-        return;
-    }
-    constexpr u64 page_size = u64{1} << STALE_PAGE_BITS;
-    const u64 first = addr >> STALE_PAGE_BITS;
-    const u64 end = (std::min<u64>)((addr + size + page_size - 1) >> STALE_PAGE_BITS,
-                                    stale_bits.size() * 64);
-    u64 run_begin = 0;
-    u64 run_pages = 0;
-    for (u64 page = first; page < end;) {
-        u64& word = stale_bits[page / 64];
-        if (word == 0 && page % 64 == 0) {
-            UpdateStaleTracking(run_begin, run_pages, -1);
-            run_pages = 0;
-            page += 64;
-            continue;
-        }
-        const u64 bit = u64{1} << (page % 64);
-        if ((word & bit) != 0) {
-            word &= ~bit;
-            --stale_page_count;
-            if (run_pages == 0) {
-                run_begin = page;
-            }
-            ++run_pages;
-        } else {
-            UpdateStaleTracking(run_begin, run_pages, -1);
-            run_pages = 0;
-        }
-        ++page;
-    }
-    UpdateStaleTracking(run_begin, run_pages, -1);
+    stale_pages.Clear(addr, size, [this](DAddr run_addr, u64 run_size) {
+        device_memory.UpdatePagesCachedCount(run_addr, run_size, -1);
+    });
 }
 
 template <class P>
 void TextureCache<P>::ClearStaleImage(const ImageBase& image) {
-    if (stale_page_count == 0) {
+    if (stale_pages.Count() == 0) {
         return;
     }
     if (False(image.flags & ImageFlagBits::Sparse)) {
@@ -433,7 +370,7 @@ void TextureCache<P>::ClearStaleImage(const ImageBase& image) {
 
 template <class P>
 void TextureCache<P>::ClearStaleGpu(GPUVAddr gpu_addr, size_t size) {
-    if (stale_page_count == 0) {
+    if (stale_pages.Count() == 0) {
         return;
     }
     // Each piece is contiguous in device memory (GetSubmappedRange splits where it is not).
@@ -442,34 +379,6 @@ void TextureCache<P>::ClearStaleGpu(GPUVAddr gpu_addr, size_t size) {
             ClearStale(*device_addr, piece_size);
         }
     }
-}
-
-template <class P>
-bool TextureCache<P>::IsAllStale(DAddr addr, size_t size) const {
-    if (stale_page_count == 0 || size == 0) {
-        return false;
-    }
-    constexpr u64 page_size = u64{1} << STALE_PAGE_BITS;
-    const u64 first = addr >> STALE_PAGE_BITS;
-    const u64 end = (addr + size + page_size - 1) >> STALE_PAGE_BITS;
-    if (end > stale_bits.size() * 64) {
-        return false;
-    }
-    for (u64 page = first; page < end;) {
-        const u64 word = stale_bits[page / 64];
-        if (page % 64 == 0 && page + 64 <= end) {
-            if (word != ~u64{0}) {
-                return false;
-            }
-            page += 64;
-            continue;
-        }
-        if (((word >> (page % 64)) & 1) == 0) {
-            return false;
-        }
-        ++page;
-    }
-    return true;
 }
 
 template <class P>
@@ -653,7 +562,7 @@ void TextureCache<P>::TickFrame() {
                  "Texture cache last 600 frames: stale uploads skipped {} ({} MiB), {} uploaded "
                  "for buffer-written pages; {} MiB of pages marked stale",
                  tc_stale_skips, tc_stale_skip_bytes >> 20, tc_stale_gpu_written,
-                 (stale_page_count << STALE_PAGE_BITS) >> 20);
+                 (stale_pages.Count() << StalePages::PAGE_BITS) >> 20);
         tc_stale_skips = tc_stale_skip_bytes = tc_stale_gpu_written = 0;
         images_uploaded = uploaded_bytes = largest_upload = layer_uploads = 0;
         astc_opaque_images = astc_alpha_images = 0;
@@ -1960,7 +1869,7 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed) && image.dirty_layers.empty() &&
         False(image.flags & (ImageFlagBits::Sparse | ImageFlagBits::SparseLayers |
                              ImageFlagBits::SparseTiles | ImageFlagBits::Unbacked)) &&
-        IsAllStale(image.cpu_addr, image.guest_size_bytes)) {
+        stale_pages.IsAll(image.cpu_addr, image.guest_size_bytes)) {
         if (!Tegra::Nx2MayBeGpuWritten(image.cpu_addr, image.guest_size_bytes)) {
             ++tc_stale_skips;
             tc_stale_skip_bytes += image.guest_size_bytes;
