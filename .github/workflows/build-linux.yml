@@ -170,6 +170,7 @@ jobs:
             -DYUZU_USE_BUNDLED_SDL3=ON
             -DVulkanHeaders_FORCE_BUNDLED=ON
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON
+            -DENABLE_QT_TRANSLATION=ON
             -DENABLE_UPDATE_CHECKER=OFF
             -DUSE_DISCORD_PRESENCE=OFF
             -DUSE_CCACHE=ON
