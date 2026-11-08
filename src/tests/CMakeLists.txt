@@ -30,6 +30,7 @@ add_executable(tests
     core/priority_queue.cpp
     core/internal_network/network.cpp
     video_core/frame_dump_schedule.cpp
+    video_core/framebuffer_limits.cpp
     video_core/memory_tracker.cpp
     video_core/spirv_storage_alignment.cpp
     video_core/pipeline_optimization.cpp
