@@ -7,103 +7,117 @@
 -->
 <!-- lang: en-GB -->
 
-> [!IMPORTANT]
-> **This fork: The Legend of Zelda: Ocarina of Time (Switch 2) is playable here.**
-> It includes upstream Eglantine's `nx2-experimental` and adds fixes on top: no crashes in
-> Kokiri Forest, no brightness flashes, correct fog, fixed save thumbnails, much shorter shader
-> stutter and normal game speed when the frame rate dips.
-> Not 60 FPS yet: about 39-41 FPS at the Kokiri Forest spawn point, on an RTX 5090.
-> The goal is a locked 60 FPS, and help is welcome.
->
-> - **[Switching from upstream Eglantine](#switching-to-this-fork)**: download, your data, going back
-> - [Current state: numbers, shader stutter, known issues](OOT_STATE.md)
-> - [How we got here: the method in one page](OOT_WORKFLOW.md)
-> - [Help wanted: open tasks, easiest first](OOT_HELP_WANTED.md)
-> - [Contribute: build, measure, send a change](OOT_CONTRIBUTING.md)
-> - [Credits](CREDITS_OOT.md)
-
-> [!WARNING]
-> **This is a RESULT FIRST fork.** Changes land here once they work in game, measured and tested, before anyone else has reviewed the code. Much of it is AI-assisted and has not been peer-reviewed. Expect rough edges, and don't take a change here as accepted by upstream Eglantine. Code meant for upstream goes through its normal review there.
-
-
 <h1 align="center">
+  <img src="https://github.com/user-attachments/assets/35031845-4bfa-4916-8bf5-bc3bce67d5e2" alt="Eglantine" width="200">
   <br>
-  <a href="https://git.eden-emu.dev/eden-emu/eden"><img src="https://github.com/user-attachments/assets/35031845-4bfa-4916-8bf5-bc3bce67d5e2" alt="Eglantine" width="200"></a>
-  <br>
-  <b>Eglantine</b>
-  <br>
+  <b>Eglantine</b>, the A-Man-With-A-Plan fork
 </h1>
 
-<h4 align="center"><b>Eglantine</b> is a free and opensource (FOSS) Switch 2 emulator, derived from Eden, Yuzu and Sudachi - started by developer Camille LaVey.
-It's written in C++ with portability in mind, with builds for Windows, Linux and macOS
-</h4>
-
 <p align="center">
-    </a>
-    <a href="https://discord.gg/XkS5NVPTUY">
-        <img src="https://img.shields.io/discord/1367654015269339267?color=5865F2&label=Eglantine&logo=discord&logoColor=white"
-            alt="Discord">
-    </a>
-  
+  <a href="https://github.com/A-Man-With-A-Plan-dev/Eglantine/releases"><b>Download</b></a> |
+  <a href="#why-switch">Why switch</a> |
+  <a href="#switch-in-three-steps">Switch in three steps</a> |
+  <a href="#for-developers">For developers</a> |
+  <a href="https://github.com/A-Man-With-A-Plan-dev/Eglantine/issues">Report a problem</a>
 </p>
 
-<p align="center">
-  <a href="#compatibility">Compatibility</a> |
-  <a href="#development">Development</a> |
-  <a href="#building">Building</a> |
-  <a href="#download">Download</a> |
-  <a href="#support">Support</a> |
-  <a href="#license">License</a>
-</p>
+Eglantine is a free and open-source Switch 2 emulator, derived from Eden, yuzu and Sudachi and
+started by Camille LaVey. This fork is **upstream Eglantine plus several hundred fixes and speed
+improvements**, and it keeps merging upstream. We think it's the better place to play and to
+develop, and we suggest using it as your main Eglantine.
 
-## Compatibility
+## Why switch
 
-The emulator is capable of running Mario Kart World at decent/full speed depending on specs and configurations, and Splatoon Raiders at variable performances
+**1. You lose nothing.** This fork contains all of upstream Eglantine's `nx2-experimental`,
+merged through `797461a8b6` (2026-11-08). New upstream work keeps getting merged in. On top of
+that there are 411 more commits.
 
-A list of supported games will be available in future. Please be patient.
+**2. Games run better.** In the maintainer's testing, every game tried ran better than on upstream
+`nx2-experimental`. Some of the fixes here that upstream doesn't have:
 
-## Development
+| Fix | Effect | Author |
+|---|---|---|
+| Spread shader building over frames | Worst freeze entering a new area with an empty shader cache: 2.3 s → 0.6 s | this fork |
+| Real-time game speed | Ocarina no longer runs in slow motion below 60 FPS | gunvalk |
+| Trap-and-flush native CPU reads | Ocarina, Kokiri Forest: 25.97 → 30.75 FPS | nyakuoff |
+| Wake the GPU thread on submit | Ocarina: about +1.5 FPS | this fork |
+| VRAM budget on large cards | Mario Kart World: 53.0 → 58.7 FPS | win |
+| vi2 returns the release fence | Removes Wonder's 30 FPS lock | Alleexxi |
+| Turing macro RAM and `ClearCode` | Fixes Ocarina's "Native MME failed" errors and flicker (upstream PR #663, still open) | Brandon Bunnelle |
+| Deferred clears before image writes | Fixes Ocarina's terrain blotches | Gavin Schiller |
+| Table-pointer pools, unwritten render targets | Fixes Ocarina's haze | jpkto |
 
-For development discussions, please join us on [Discord](https://discord.gg/XkS5NVPTUY)
+Ocarina of Time (`0400486024DEC000`) gets the most attention. It plays without crashes or flashes
+in our runs, with correct fog, at about 39-41 FPS at the Kokiri Forest spawn point on an RTX 5090.
+Details: [OOT_STATE.md](OOT_STATE.md). Many more ports are listed in
+[UPSTREAM_CANDIDATES.md](UPSTREAM_CANDIDATES.md).
 
-If you would like to contribute, we are open to new developers and pull requests. Please ensure that your work is of a high standard and properly documented. You can also contact any of the developers on Discord or Stoat to learn more about the current state of the emulator.
+**3. Every speed change has an off switch.** Each one is a named switch in
+`src/video_core/nx2_perf.h`. If a game misbehaves, you can turn changes off one at a time, or all of
+them at once with `EDEN_NX2_PERF_OPT=0`, without going back to another build. Changes only become
+default-on after:
+- a verify run against the old code path,
+- a screen-flash check,
+- repeated speed measurements.
 
-## Documentation
+**4. Measured, not guessed.**
+- The log shows frame times every second, and says which shader caused a stutter and how long it
+  took.
+- Automated lab runs (`tools/nx2/lab/`) repeat the same measurement on every change.
+- Every result and decision is written down, in [OOT_STATE.md](OOT_STATE.md) and
+  [OOT_WORKFLOW.md](OOT_WORKFLOW.md).
 
-We have a user manual! See our [User Handbook](./docs/user/README.md).
+**5. Work from many forks, in one place.** Fixes that were scattered across other forks and pull
+requests are ported, conflict-resolved and tested together here, with every author credited in
+[CREDITS_OOT.md](CREDITS_OOT.md).
 
-## Building
+**6. It gives back.** This is not a hostile split. Changes worth having upstream are listed in
+[UPSTREAM_CANDIDATES.md](UPSTREAM_CANDIDATES.md) and sent there as small pull requests, credited
+to their original authors.
 
-See the [General Build Guide](docs/Build.md)
+**7. Switching takes a minute and is reversible.** The fork uses the same user folder as upstream,
+so your keys, firmware, saves and settings carry over.
 
-For information on provided development tooling, see the [Tools directory](./tools)
+## Before you switch
 
-## Download
+Please be aware of the following:
 
-Builds of this fork: [Releases](https://github.com/A-Man-With-A-Plan-dev/Eglantine/releases).
-Upstream Eglantine's builds: [here](https://github.com/Djihads80/Eglantine/releases).
+- **Changes land here first.** They go in once they work in game and are measured, often before
+  anyone else has reviewed the code. Much of it was written with AI tools (Claude, Gemini) and is
+  marked in each commit's `Assisted-by:` line. Expect rough edges.
+- **Tested mostly on one PC** (Ryzen 9 9950X3D, RTX 5090, Windows 11). Slower machines will see
+  lower numbers. Reports from other hardware are very welcome.
+- **Windows is what we build and test.** Linux and macOS builds come from the same CI as upstream's,
+  but get less testing.
+- **Ocarina of Time is not at 60 FPS yet.** It's the goal; [OOT_STATE.md](OOT_STATE.md) explains
+  what limits it.
 
-## Switching to this fork
+## Switch in three steps
 
-**To play:**
+1. Download the latest build from
+   **[Releases](https://github.com/A-Man-With-A-Plan-dev/Eglantine/releases)** and unzip it into
+   its own folder. Don't unzip it over your upstream Eglantine folder.
+2. Back up your saves (`%APPDATA%\eglantine\nand\user\save` on Windows).
+3. Run `eglantine.exe`. It uses the same `%APPDATA%\eglantine` folder as upstream, so your keys,
+   firmware, games list, saves, mods and settings are already there.
 
-1. Download the latest build from [Releases](https://github.com/A-Man-With-A-Plan-dev/Eglantine/releases)
-   and unzip it into its own folder. Don't unzip it over your upstream Eglantine folder.
-2. Run `eglantine.exe`. It uses the same user folder as upstream Eglantine
-   (`%APPDATA%\eglantine` on Windows), so your keys, firmware, games list, saves, mods and settings
-   are already there. Nothing needs to be copied. Back up your saves (`nand\user\save`) first anyway.
-3. The first time you play each game, its shader cache is rebuilt once. Expect some stutter on
-   that first visit to each area.
+The first time you play each game, its shader cache is rebuilt once, so expect some stutter on the
+first visit to each area.
 
-**Going back** is the same: run upstream's `eglantine.exe`. Each time you switch builds the shader
-cache of the game you play is rebuilt, because the two builds store it in different formats. If you
-want to keep both builds side by side, make one of them portable: create an empty folder named
-`user` next to its `eglantine.exe` and copy `keys`, `nand`, `load` and `sdmc` into it from
-`%APPDATA%\eglantine`. That build then keeps its own settings, saves and cache in the `user`
-folder. Don't copy `config`: it can still point at the folders in `%APPDATA%\eglantine`, so set
-the settings up again instead.
+**Going back:** run upstream's `eglantine.exe`. Each switch between the two builds rebuilds the
+shader cache of the game you play, because they store it in different formats.
 
-**To build from source:**
+**Keeping both side by side:** make one of them portable.
+1. Create an empty folder named `user` next to its `eglantine.exe`.
+2. Copy `keys`, `nand`, `load` and `sdmc` into it from `%APPDATA%\eglantine`.
+3. Set up the settings again.
+
+That build then keeps its own settings, saves and cache in `user`. Don't copy `config`: it can
+still point at the folders in `%APPDATA%\eglantine`.
+
+## For developers
+
+**Get the code:**
 
 ```
 git clone --recursive https://github.com/A-Man-With-A-Plan-dev/Eglantine.git
@@ -118,29 +132,35 @@ git switch -c fork-nx2 --track fork/nx2
 git submodule update --init --recursive
 ```
 
-The build steps are the same as upstream's: see the [General Build Guide](docs/Build.md).
+Build steps are the same as upstream's: [General Build Guide](docs/Build.md).
 
-**Reporting problems:** open an [issue here](https://github.com/A-Man-With-A-Plan-dev/Eglantine/issues),
-not on upstream, and say that you use this fork. Include your CPU, GPU, the game, where in the game,
-and `%APPDATA%\eglantine\log\eden_log.txt` from that session. If a game runs worse here than on
-upstream, also try launching it with `EDEN_NX2_PERF_OPT=0` (see [OOT_STATE.md](OOT_STATE.md)).
+**Contribute:** open pull requests against `nx2` here. Your work then reaches everyone who uses
+this fork right away. Where it fits upstream, it can still be sent there as a separate PR.
+- [OOT_CONTRIBUTING.md](OOT_CONTRIBUTING.md): build, measure, send a change.
+- [OOT_HELP_WANTED.md](OOT_HELP_WANTED.md): open tasks, easiest first.
+- [SHADER_STUTTER_NOTES.md](SHADER_STUTTER_NOTES.md): what we know about shader and pipeline
+  stutter.
+- [NX2_NOTES.md](NX2_NOTES.md): notes on the Switch 2 GPU emulation.
+- [AI policy](docs/policies/AI.md) and [coding policy](docs/policies/Coding.md): both apply here as
+  upstream.
 
-## Support
+## Reporting problems
 
-We currently do not take in any donations for the time being
+Open an [issue on this fork](https://github.com/A-Man-With-A-Plan-dev/Eglantine/issues), not on
+upstream. Please include:
 
-If you would prefer to support us in a different way, please join our [Discord](https://discord.gg/XkS5NVPTUY)
+- your CPU and GPU;
+- the game, and where in the game;
+- what you saw;
+- `%APPDATA%\eglantine\log\eden_log.txt` from that session.
 
-## Star History
+If a game runs worse here than on upstream, also try launching it with `EDEN_NX2_PERF_OPT=0`. If
+that fixes it, one of the switches is the cause, and the report tells us which game to check.
 
-<a href="https://www.star-history.com/?repos=djihads80%2Feglantine&type=date&legend=bottom-right">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=djihads80/eglantine&type=date&theme=dark&legend=bottom-right" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=djihads80/eglantine&type=date&legend=bottom-right" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=djihads80/eglantine&type=date&legend=bottom-right" />
- </picture>
-</a>
+## Credits and license
 
-## License
+This fork stands on the work of everyone behind Eglantine, Eden, yuzu and Sudachi, and of the
+contributors listed in [CREDITS_OOT.md](CREDITS_OOT.md). For community discussion, see the
+[Eglantine Discord](https://discord.gg/XkS5NVPTUY).
 
-Eglantine is licensed under the GPLv3 (or any later version). Refer to the [LICENSE.txt](https://github.com/Djihads80/Eglantine/blob/nx2/LICENSE.txt) file.
+Eglantine is licensed under the GPLv3 (or any later version). See [LICENSE.txt](LICENSE.txt).
