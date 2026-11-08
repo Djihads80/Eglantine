@@ -34,6 +34,7 @@ public:
     struct Entry {
         u64 order; ///< Ring position after the release was sent (GpuSplit::WritePosition)
         u32 value;
+        s32 channel{-1}; ///< The channel that queued it (EDEN_NX2_ACQ_STATS)
     };
 
     static Nx2SemaphoreLedger& Get() {
@@ -64,8 +65,8 @@ public:
     }
 
     /// A 32-bit puller release of `value` to the word at `device_address` was queued.
-    void NoteRelease(u64 device_address, u32 value, u64 order) {
-        entries[device_address] = Entry{order, value};
+    void NoteRelease(u64 device_address, u32 value, u64 order, s32 channel = -1) {
+        entries[device_address] = Entry{order, value, channel};
     }
 
     /// The word gets a value the front cannot know (reduction, 64-bit payload).
@@ -109,6 +110,18 @@ private:
 // queue keep that order. Off by default: a release from a dispatch sent later (another channel,
 // a later submit) would not be waited for. From sylvieistaken/selevet-eglantine bce3c83739
 // (shintasku/selevet-eglantine-linux).
+/// EDEN_NX2_ACQ_STATS=1: the split's acquires that drain the back, by who last wrote the word
+/// they wait on (puller.cpp, logged every 5 s): a release of the same channel the back already
+/// ran, a release of another channel, a compute QMD release, or a writer the front does not see
+/// (the CPU, 3D reports). With the time drained and the time suspended after the drain.
+[[nodiscard]] inline bool Nx2AcqStats() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_ACQ_STATS");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
 class Nx2QmdReleaseTargets {
 public:
     static bool Enabled() {

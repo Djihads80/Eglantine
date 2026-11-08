@@ -80,6 +80,8 @@ public:
         std::chrono::steady_clock::time_point since;
         std::chrono::steady_clock::time_point last_fences; ///< When it last released fences
         bool reported;
+        int stats_class{-1}; ///< EDEN_NX2_ACQ_STATS: who last wrote the word (puller.cpp)
+        u64 stats_since{};   ///< EDEN_NX2_ACQ_STATS: when its drain ended (steady ns)
 
         [[nodiscard]] bool Matches(u32 current) const;
     };

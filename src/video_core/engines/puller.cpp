@@ -4,8 +4,11 @@
 // SPDX-FileCopyrightText: 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
+#include <string>
 
 #include "common/assert.h"
 #include "common/logging.h"
@@ -79,7 +82,8 @@ void NoteRelease(DmaPusher& dma_pusher, GPUVAddr address, u32 payload) {
         return;
     }
     if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address)) {
-        Ledger::Get().NoteRelease(*device, payload, VideoCommon::GpuSplit::Get().WritePosition());
+        Ledger::Get().NoteRelease(*device, payload, VideoCommon::GpuSplit::Get().WritePosition(),
+                                  dma_pusher.channel_state.bind_id);
     }
 }
 
@@ -139,6 +143,81 @@ void CountLedgerAcquire() {
     VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireLedger, 1);
 }
 
+// EDEN_NX2_ACQ_STATS: acquires that drained the back, by who last wrote their word.
+struct AcquireStats {
+    std::array<std::atomic<u64>, 4> drains{};
+    std::array<std::atomic<u64>, 4> met{}; ///< Of the drains, the recorded release meets it
+    std::array<std::atomic<u64>, 4> drain_ns{};
+    std::array<std::atomic<u64>, 4> suspends{};
+    std::array<std::atomic<u64>, 4> suspend_ns{};
+    std::array<std::atomic<u64>, 4> resume_drains{}; ///< Drains polling a suspended acquire
+    std::array<std::atomic<u64>, 4> resume_drain_ns{};
+    std::atomic<u64> window_start{};
+};
+AcquireStats g_acquire_stats;
+
+// 0: a puller release of this channel, 1: of another channel, 2: a compute QMD release, 3: none
+// the front saw (the CPU, 3D reports). `met`: the recorded release meets the acquire.
+int AcquireClass(DmaPusher& dma_pusher, GPUVAddr address, u32 value, Ledger::Compare compare,
+                 bool& met) {
+    met = false;
+    const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address);
+    if (!device) {
+        return 3;
+    }
+    if (const Ledger::Entry* entry = Ledger::Get().Find(*device)) {
+        met = Ledger::Met(compare, entry->value, value);
+        return entry->channel == dma_pusher.channel_state.bind_id ? 0 : 1;
+    }
+    return Nx2QmdReleaseTargets::Contains(*device) ? 2 : 3;
+}
+
+u64 SteadyNowNs() {
+    return static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch())
+                                .count());
+}
+
+void ReportAcquireStats() {
+    AcquireStats& stats = g_acquire_stats;
+    const u64 now = SteadyNowNs();
+    u64 start = stats.window_start.load(std::memory_order_relaxed);
+    if (start == 0) {
+        stats.window_start.compare_exchange_strong(start, now, std::memory_order_relaxed);
+        return;
+    }
+    if (now - start < 5'000'000'000ULL ||
+        !stats.window_start.compare_exchange_strong(start, now, std::memory_order_relaxed)) {
+        return;
+    }
+    static constexpr std::array<const char*, 4> names{"same channel", "other channel",
+                                                      "compute QMD", "CPU or report"};
+    const auto take = [](std::atomic<u64>& value) {
+        return value.exchange(0, std::memory_order_relaxed);
+    };
+    const double seconds = static_cast<double>(now - start) / 1e9;
+    std::string line;
+    for (size_t i = 0; i < names.size(); ++i) {
+        const u64 drains = take(stats.drains[i]);
+        const u64 met = take(stats.met[i]);
+        const u64 drain_ns = take(stats.drain_ns[i]);
+        const u64 suspends = take(stats.suspends[i]);
+        const u64 suspend_ns = take(stats.suspend_ns[i]);
+        const u64 resume_drains = take(stats.resume_drains[i]);
+        const u64 resume_drain_ns = take(stats.resume_drain_ns[i]);
+        line += fmt::format(" | {}: {:.0f} drains ({:.0f} met by the release) {:.1f} ms, {:.0f} "
+                            "suspended {:.1f} ms, {:.0f} resume drains {:.1f} ms",
+                            names[i], static_cast<double>(drains) / seconds,
+                            static_cast<double>(met) / seconds,
+                            static_cast<double>(drain_ns) / 1e6 / seconds,
+                            static_cast<double>(suspends) / seconds,
+                            static_cast<double>(suspend_ns) / 1e6 / seconds,
+                            static_cast<double>(resume_drains) / seconds,
+                            static_cast<double>(resume_drain_ns) / 1e6 / seconds);
+    }
+    LOG_INFO(HW_GPU, "Split acquires that drained, per second over {:.1f} s{}", seconds, line);
+}
+
 // EDEN_NX2_QMD_ACQUIRE_SKIP=1: an acquire on a word compute QMDs release does not drain the back
 // (semaphore_ledger.h, Nx2QmdReleaseTargets).
 bool QmdAcquireSkip(DmaPusher& dma_pusher, GPUVAddr address) {
@@ -185,7 +264,14 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     }
     // The release may still be queued for the split GPU thread's back half (and the caches
     // ReadSemaphoreWord asks are its state).
+    const int stats_class = pending_acquire->stats_class;
+    const u64 drain_start = stats_class >= 0 ? SteadyNowNs() : 0;
     DrainBack();
+    if (stats_class >= 0) {
+        g_acquire_stats.resume_drains[stats_class].fetch_add(1, std::memory_order_relaxed);
+        g_acquire_stats.resume_drain_ns[stats_class].fetch_add(SteadyNowNs() - drain_start,
+                                                               std::memory_order_relaxed);
+    }
     const u32 current = ReadSemaphoreWord(dma_pusher, pending_acquire->address);
     if (Nx2SemaphoreWaiters::Get().Latched(this)) {
         if (static std::atomic<u32> rescued{};
@@ -271,6 +357,11 @@ bool Puller::ResumeAcquire(DmaPusher& dma_pusher) {
     // counting those made the count odd ("suspended") at random, so submit-time snapshots were
     // thrown away for about half of all entries (CommandList::snapshot_suspensions).
     if (pending_acquire) {
+        if (const int stats_class = pending_acquire->stats_class; stats_class >= 0) {
+            g_acquire_stats.suspends[stats_class].fetch_add(1, std::memory_order_relaxed);
+            g_acquire_stats.suspend_ns[stats_class].fetch_add(
+                SteadyNowNs() - pending_acquire->stats_since, std::memory_order_relaxed);
+        }
         pending_acquire.reset();
         dma_pusher.suspensions.fetch_add(1, std::memory_order_release);
         Nx2SemaphoreWaiters::Get().Remove(this);
@@ -414,7 +505,22 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             CountLedgerAcquire();
             return;
         }
+        const bool stats = Nx2AcqStats() && VideoCommon::GpuSplit::Get().Active();
+        bool stats_met = false;
+        const int stats_class =
+            stats ? AcquireClass(dma_pusher, acquire.address, acquire.value,
+                                 CompareOf(acquire.operation), stats_met)
+                  : -1;
+        const u64 drain_start = stats ? SteadyNowNs() : 0;
         DrainBack();
+        if (stats) {
+            g_acquire_stats.drains[stats_class].fetch_add(1, std::memory_order_relaxed);
+            g_acquire_stats.met[stats_class].fetch_add(stats_met ? 1 : 0,
+                                                       std::memory_order_relaxed);
+            g_acquire_stats.drain_ns[stats_class].fetch_add(SteadyNowNs() - drain_start,
+                                                            std::memory_order_relaxed);
+            ReportAcquireStats();
+        }
         if (acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
             return;
         }
@@ -427,6 +533,8 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         dma_pusher.rasterizer->ReleaseFences();
         if (!waiters.Latched(this) && !acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
             pending_acquire = acquire;
+            pending_acquire->stats_class = stats_class;
+            pending_acquire->stats_since = stats ? SteadyNowNs() : 0;
             dma_pusher.suspensions.fetch_add(1, std::memory_order_release);
             VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireWaits, 1);
         } else {
