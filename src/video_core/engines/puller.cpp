@@ -104,7 +104,7 @@ void ForgetRelease(DmaPusher& dma_pusher, GPUVAddr address) {
 // read without flushing the caches, which belong to the back: a value they hold but memory
 // does not yet is newer, and sync words count up, so memory meeting the acquire is enough.
 bool AcquireMetWithoutDrain(DmaPusher& dma_pusher, GPUVAddr address, u32 value,
-                            Ledger::Compare compare) {
+                            Ledger::Compare compare, bool* by_qmd = nullptr) {
     auto& split = VideoCommon::GpuSplit::Get();
     if (!Ledger::Enabled() || !split.Active()) {
         return false;
@@ -114,10 +114,13 @@ bool AcquireMetWithoutDrain(DmaPusher& dma_pusher, GPUVAddr address, u32 value,
         return false;
     }
     if (const Ledger::Entry* entry = Ledger::Get().Find(*device)) {
-        const bool entry_met = Ledger::Met(compare, entry->value, value);
+        const bool entry_met = Ledger::EntryMet(*entry, compare, value);
         const bool queued = entry->order > split.Consumed();
         if (queued) {
             // The word will hold this release's value when the back passes the acquire.
+            if (by_qmd != nullptr) {
+                *by_qmd = entry_met && entry->from_qmd;
+            }
             return entry_met;
         }
         if (entry_met && Ledger::KeepsConsumed()) {
@@ -174,9 +177,9 @@ bool AcquireNarrow() {
 // EDEN_NX2_ACQ_VERIFY=1: every acquire the front lets pass without draining the back is checked
 // on the back where it stands in the ring (the word flushed first): MISMATCH when the word does
 // not meet it there, counted per way it passed and logged for the first ones.
-enum class VerifyPath : u32 { Ledger, QmdSkip, Narrow, Resume, Count };
+enum class VerifyPath : u32 { Ledger, QmdLedger, QmdSkip, Narrow, Resume, Count };
 constexpr std::array<const char*, static_cast<size_t>(VerifyPath::Count)> verify_names{
-    "ledger", "QMD skip", "narrow", "resume"};
+    "ledger", "QMD ledger", "QMD skip", "narrow", "resume"};
 struct AcquireVerify {
     std::array<std::atomic<u64>, static_cast<size_t>(VerifyPath::Count)> checked{};
     std::array<std::atomic<u64>, static_cast<size_t>(VerifyPath::Count)> mismatches{};
@@ -599,10 +602,11 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             return;
         }
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireChecks, 1);
-        if (AcquireMetWithoutDrain(dma_pusher, acquire.address, acquire.value,
-                                   CompareOf(acquire.operation))) {
+        if (bool by_qmd = false; AcquireMetWithoutDrain(dma_pusher, acquire.address,
+                                                        acquire.value, CompareOf(acquire.operation),
+                                                        &by_qmd)) {
             CountLedgerAcquire();
-            VerifyOnBack(dma_pusher, acquire, VerifyPath::Ledger);
+            VerifyOnBack(dma_pusher, acquire, by_qmd ? VerifyPath::QmdLedger : VerifyPath::Ledger);
             return;
         }
         if (QmdAcquireSkip(dma_pusher, acquire.address)) {

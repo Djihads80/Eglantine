@@ -278,6 +278,8 @@ private:
     FrontState& Front(VideoCommon::GpuSplit& split);
     void FrontHandBack();
     void FrontApply(FrontState& state, u32 method, u32 argument);
+    /// EDEN_NX2_QMD_LEDGER: replays a QMD signal on the front's shadow scheduler.
+    void FrontPredictQmdReleases(FrontState& state, u32 method, u32 argument);
     MacroEngine& FrontMacroEngine(FrontState& state);
     std::span<u32> FrontMacroPositions(FrontState& state);
     void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state);
