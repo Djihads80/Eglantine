@@ -1153,6 +1153,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
         case IR::Opcode::GlobalAtomicAnd32: return And;
         case IR::Opcode::GlobalAtomicOr32: return Or;
         case IR::Opcode::GlobalAtomicXor32: return Xor;
+        case IR::Opcode::GlobalAtomicCompareExchange32: return CompareExchange;
         case IR::Opcode::GlobalAtomicExchange32: return Exchange;
         case IR::Opcode::GlobalAtomicAddF32: return AddF32;
         default: return std::nullopt;
@@ -1174,9 +1175,9 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
         const auto kind = static_cast<GlobalAtomic>(index);
         const Id type{kind == AddF32 ? F32[1] : U32[1]};
         const Id func_id{OpFunction(type, spv::FunctionControlMask::MaskNone,
-                                    TypeFunction(type, U64, type))};
+                                    TypeFunction(type, U64, kind == CompareExchange ? U32[2] : type))};
         const Id addr{OpFunctionParameter(U64)};
-        const Id value{OpFunctionParameter(type)};
+        const Id value{OpFunctionParameter(kind == CompareExchange ? U32[2] : type)};
         define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2,
                     [&](Id pointer, Id ssbo, Id word) {
                         const auto atomic = [&](Id (Sirit::Module::*op)(Id, Id, Id, Id, Id)) {
@@ -1192,6 +1193,10 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
                         case Or: OpReturnValue(atomic(&Sirit::Module::OpAtomicOr)); break;
                         case Xor: OpReturnValue(atomic(&Sirit::Module::OpAtomicXor)); break;
                         case Exchange: OpReturnValue(atomic(&Sirit::Module::OpAtomicExchange)); break;
+                        case CompareExchange:
+                            OpReturnValue(OpAtomicCompareExchange(U32[1], pointer, scope, zero, zero,
+                                OpCompositeExtract(U32[1], value, 1), OpCompositeExtract(U32[1], value, 0)));
+                            break;
                         case Inc:
                             OpReturnValue(OpFunctionCall(U32[1], increment_cas_ssbo, word, value, ssbo));
                             break;

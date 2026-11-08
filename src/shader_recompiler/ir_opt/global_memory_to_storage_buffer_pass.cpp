@@ -118,6 +118,7 @@ bool IsGlobalMemory(const IR::Inst& inst) {
     case IR::Opcode::GlobalAtomicOr32:
     case IR::Opcode::GlobalAtomicXor32:
     case IR::Opcode::GlobalAtomicExchange32:
+    case IR::Opcode::GlobalAtomicCompareExchange32:
     case IR::Opcode::GlobalAtomicIAdd64:
     case IR::Opcode::GlobalAtomicSMin64:
     case IR::Opcode::GlobalAtomicUMin64:
@@ -170,6 +171,7 @@ bool IsGlobalMemoryWrite(const IR::Inst& inst) {
     case IR::Opcode::GlobalAtomicOr32:
     case IR::Opcode::GlobalAtomicXor32:
     case IR::Opcode::GlobalAtomicExchange32:
+    case IR::Opcode::GlobalAtomicCompareExchange32:
     case IR::Opcode::GlobalAtomicIAdd64:
     case IR::Opcode::GlobalAtomicSMin64:
     case IR::Opcode::GlobalAtomicUMin64:
@@ -252,6 +254,8 @@ IR::Opcode GlobalToStorage(IR::Opcode opcode) {
         return IR::Opcode::StorageAtomicOr32;
     case IR::Opcode::GlobalAtomicXor32:
         return IR::Opcode::StorageAtomicXor32;
+    case IR::Opcode::GlobalAtomicCompareExchange32:
+        return IR::Opcode::StorageAtomicCompareExchange32;
     case IR::Opcode::GlobalAtomicExchange32:
         return IR::Opcode::StorageAtomicExchange32;
     case IR::Opcode::GlobalAtomicIAdd64:
@@ -1522,6 +1526,7 @@ void Replace(IR::Block& block, IR::Inst& inst, const IR::U32& storage_index,
     case IR::Opcode::GlobalAtomicOr32:
     case IR::Opcode::GlobalAtomicXor32:
     case IR::Opcode::GlobalAtomicExchange32:
+    case IR::Opcode::GlobalAtomicCompareExchange32:
     case IR::Opcode::GlobalAtomicIAdd64:
     case IR::Opcode::GlobalAtomicSMin64:
     case IR::Opcode::GlobalAtomicUMin64:

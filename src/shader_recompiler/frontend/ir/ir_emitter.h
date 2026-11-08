@@ -290,6 +290,7 @@ public:
     [[nodiscard]] U32U64 GlobalAtomicAnd(const U64& pointer_offset, const U32U64& value);
     [[nodiscard]] U32U64 GlobalAtomicOr(const U64& pointer_offset, const U32U64& value);
     [[nodiscard]] U32U64 GlobalAtomicXor(const U64& pointer_offset, const U32U64& value);
+    [[nodiscard]] U32 GlobalAtomicCompareExchange(const U64& pointer_offset, const U32& compare, const U32& value);
     [[nodiscard]] U32U64 GlobalAtomicExchange(const U64& pointer_offset, const U32U64& value);
 
     [[nodiscard]] F32 GlobalAtomicF32Add(const U64& pointer_offset, const Value& value,

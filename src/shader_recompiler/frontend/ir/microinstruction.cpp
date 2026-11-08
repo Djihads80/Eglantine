@@ -132,6 +132,7 @@ bool Inst::MayHaveSideEffects() const noexcept {
     case Opcode::GlobalAtomicOr32:
     case Opcode::GlobalAtomicXor32:
     case Opcode::GlobalAtomicExchange32:
+    case Opcode::GlobalAtomicCompareExchange32:
     case Opcode::GlobalAtomicIAdd64:
     case Opcode::GlobalAtomicSMin64:
     case Opcode::GlobalAtomicUMin64:
@@ -168,6 +169,7 @@ bool Inst::MayHaveSideEffects() const noexcept {
     case Opcode::StorageAtomicOr32:
     case Opcode::StorageAtomicXor32:
     case Opcode::StorageAtomicExchange32:
+    case Opcode::StorageAtomicCompareExchange32:
     case Opcode::StorageAtomicIAdd64:
     case Opcode::StorageAtomicSMin64:
     case Opcode::StorageAtomicUMin64:
