@@ -388,6 +388,13 @@ struct Values {
                                                        true};
     // NVIDIA DLSS (through NVIDIA Streamline) in place of a game's DLSS.
     SwitchableSetting<bool> nvidia_dlss{linkage, false, "nvidia_dlss", Category::Renderer};
+    SwitchableSetting<DlssQuality> nvidia_dlss_quality{linkage,
+                                                       DlssQuality::Quality,
+                                                       "nvidia_dlss_quality",
+                                                       Category::Renderer,
+                                                       Specialization::Default,
+                                                       true,
+                                                       true};
     SwitchableSetting<AspectRatio, true> aspect_ratio{linkage,
                                                       AspectRatio::R16_9,
                                                       "aspect_ratio",

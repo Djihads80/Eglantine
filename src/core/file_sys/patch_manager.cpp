@@ -520,7 +520,15 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
         if (patch.title_id != title_id || patch.module != name) {
             continue;
         }
-        if (std::find(disabled.cbegin(), disabled.cend(), patch.name) != disabled.cend()) {
+        if (patch.name == "Max Resolution (built-in)" && Settings::values.nvidia_dlss.GetValue()) {
+            if (Settings::values.nvidia_dlss_quality.GetValue() != Settings::DlssQuality::DLAA) {
+                LOG_INFO(Loader,
+                         "    - Skipping \"{}\": NVIDIA DLSS quality is set to Super Resolution "
+                         "(use DLAA for native 1440p)",
+                         patch.name);
+                continue;
+            }
+        } else if (std::find(disabled.cbegin(), disabled.cend(), patch.name) != disabled.cend()) {
             LOG_INFO(Loader, "    - Skipping \"{}\": disabled in Add-Ons", patch.name);
             continue;
         }

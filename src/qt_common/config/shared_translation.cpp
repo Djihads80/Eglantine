@@ -160,9 +160,13 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "instead of AMD FSR 3.1, or in place of its own anti-aliasing / upscaling.\n"
               "Needs NVIDIA's Streamline loader, and NVIDIA DLSS unless the NVIDIA app has "
               "downloaded it; Eglantine does not ship NVIDIA's files. Use the download button "
-              "below.\nWorks in The Legend of Zelda: Ocarina of Time (as DLSS Super Resolution "
-              "1080p->1440p when Max Resolution is off, or DLAA 1440p->1440p when Max Resolution "
-              "is on).\nTakes effect when a game starts."));
+              "below.\nWorks in The Legend of Zelda: Ocarina of Time.\n"
+              "Takes effect when a game starts."));
+    INSERT(Settings, nvidia_dlss_quality, tr("NVIDIA DLSS Quality:"),
+           tr("Selects the NVIDIA DLSS upscaling quality mode:\n"
+              "Performance, Balanced, Quality, or DLAA (native resolution anti-aliasing).\n"
+              "In Ocarina of Time, DLAA renders 3D at full 1440p (Docked), while Quality, "
+              "Balanced, and Performance upscale from 1080p to 1440p."));
     INSERT(Settings, anti_aliasing, tr("Anti-Aliasing Method:"),
            tr("The anti-aliasing method to use.\nSMAA offers the best quality.\nFXAA "
               "can produce a more stable picture in lower resolutions."));
@@ -536,6 +540,13 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                               PAIR(AntiAliasing, None, tr("None")),
                               PAIR(AntiAliasing, Fxaa, tr("FXAA")),
                               PAIR(AntiAliasing, Smaa, tr("SMAA")),
+                          }});
+    translations->insert({Settings::EnumMetadata<Settings::DlssQuality>::Index(),
+                          {
+                              PAIR(DlssQuality, Performance, tr("Performance")),
+                              PAIR(DlssQuality, Balanced, tr("Balanced")),
+                              PAIR(DlssQuality, Quality, tr("Quality")),
+                              PAIR(DlssQuality, DLAA, tr("DLAA")),
                           }});
     translations->insert({Settings::EnumMetadata<Settings::AspectRatio>::Index(),
                           {
