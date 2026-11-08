@@ -70,9 +70,4 @@ build() {
 
 package() {
   DESTDIR="$pkgdir" cmake --install "$srcdir/build"
-
-  # The desktop entry uses the Eglantine icon name; the upstream install uses
-  # the older Eden filename, so install an alias that matches the desktop file.
-  install -Dm644 "$srcdir/eglantine/dist/dev.eden_emu.eden.svg" \
-    "$pkgdir/usr/share/icons/hicolor/scalable/apps/dev.eglantine.eglantine.svg"
 }

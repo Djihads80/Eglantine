@@ -245,7 +245,7 @@ jobs:
           "$tools/linuxdeploy-$arch.AppImage" --appdir AppDir \
             --executable build/release/bin/eglantine \
             --executable build/release/bin/eden-cli \
-            --desktop-file dist/dev.eden_emu.eden.desktop \
+            --desktop-file dist/dev.eglantine.eglantine.desktop \
             --icon-file "$icon" \
             --plugin qt \
             --output appimage
