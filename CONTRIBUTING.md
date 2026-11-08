@@ -2,7 +2,7 @@
 
 Eglantine has lots of different ways that you can contribute to its efforts, even without knowing how to write code:
 
-- Join our [Discord](https://discord.gg/jCCZ58VExk) community
+- Join our [Discord](https://discord.gg/XkS5NVPTUY) community
 - Submit [bug reports or feature requests](https://github.com/Djihads80/Eglantine/issues)
 - Improve documentation or share reproducible testing results
 - Contribute to our [translation efforts](./dist/languages/README.md)
@@ -47,4 +47,4 @@ Before opening a pull request, make sure your branch is up-to-date with Eglantin
 
 Alongside the other contribution methods listed up top, you can also choose to contribute through documentation, organization, or community guides. These can be done either through the code contribution methods described above, or created externally and shared via our Discord community.
 
-If you have an external tool/page that you believe would be handy to integrate/link into Eglantine, please discuss it with the developers on [Discord](https://discord.gg/jCCZ58VExk). **Do not submit vibe-coded or AI generated tools or applications**.
+If you have an external tool/page that you believe would be handy to integrate/link into Eglantine, please discuss it with the developers on [Discord](https://discord.gg/XkS5NVPTUY). **Do not submit vibe-coded or AI generated tools or applications**.
