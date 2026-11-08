@@ -5,6 +5,11 @@ Last updated: 2026-11-08 01:00 local (merged `upstream/nx2` `74db237124` and `up
 ## Goal
 Play The Legend of Zelda: Ocarina of Time (`0400486024DEC000`) at a locked 60 FPS without crashes.
 
+## FORK SWITCH PREPARED 2026-11-08 (not pushed)
+- README `a5ac8fdc57`: "Switching to this fork" section (download from the fork's Releases, shared `%APPDATA%\eglantine`, shader cache rebuilt per switch, portable `user` folder for side-by-side without copying `config`, which holds absolute paths, build/remote commands, report here). `84b60c9da8`: docs name the fork's `nx2` as the public branch.
+- Plan: the user pushes `local-combined` to the fork's `nx2` (fast-forward: `origin/nx2` is an ancestor) and keeps `oot-60fps-wip` as an alias. Upstream's CI then works on the fork unchanged (daily builds from `nx2`, no secrets needed; Discord ping only runs on Djihads80). Actions must be enabled on the fork. Only Windows/MSVC is built locally; Linux/macOS CI is untested.
+- Never use GitHub's "Sync fork" > "Discard commits" on the fork's `nx2`. Upstream comes in through local merges.
+
 ## MERGE COMPLETED 2026-11-08 ~01:00 (`upstream/nx2-experimental` `797461a8b6` & `upstream/nx2` `74db237124` -> `local-combined` `e409a882a5`)
 - Merged `upstream/nx2-experimental` (`db093d7325` -> `6f03cf1324`, then `797461a8b6` -> `e409a882a5`) and `upstream/nx2` (`74db237124` -> `b2535f4875`) into `local-combined` following `.agent/plan-review/nx2exp-merge-negotiation.md` (`D1`–`D14`, `R1`–`R4`) and `.agent/plan-review/nx2exp-merge-appendix.md` (all 70 conflicted files resolved, plus the 3 follow-up commits `9a362357a2` `DontInline`+`OpSwitch` global-memory helpers, `eab2c2246d` `MIN_COMPATIBLE_CACHE_VERSION=20` disk-cache upgrade, and `a61fb4154d` GCC shadow fix).
 - Preserved all 5 local invariants: `frames_ahead` and `present_one_ahead` stay OFF (`DefaultOffMask` and `always_off`), OoT visual workaround stays opt-in (`EDEN_NX2_OOT_VISUAL_WORKAROUND`), `Nx2Perf` tables consistent, lock-free/allocation-free per-draw hot path, and 64 SSBO slots.
