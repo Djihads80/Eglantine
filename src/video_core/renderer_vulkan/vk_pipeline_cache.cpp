@@ -466,6 +466,16 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .support_vote = device.IsSubgroupFeatureSupported(VK_SUBGROUP_FEATURE_VOTE_BIT),
         .support_shuffle_relative =
             device.IsSubgroupFeatureSupported(VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT),
+        .support_subgroup_broadcast =
+            device.IsSubgroupFeatureSupported(VK_SUBGROUP_FEATURE_BALLOT_BIT),
+        .prefer_software_matrix_broadcast = driver_id == VK_DRIVER_ID_MESA_TURNIP,
+        // ComputePipeline uses this same condition to request GuestWarpSize for warp ops.
+        // TensorMulAdd marks subgroup invocation/shuffle usage, so its pipelines take that path.
+        .required_compute_subgroup_size =
+            device.IsExtSubgroupSizeControlSupported() &&
+                    device.IsGuestWarpSizeSupported(VK_SHADER_STAGE_COMPUTE_BIT)
+                ? GuestWarpSize
+                : 0U,
         .supported_subgroup_stages = supported_subgroup_stages,
         .support_viewport_index_layer_non_geometry =
             device.IsExtShaderViewportIndexLayerSupported(),

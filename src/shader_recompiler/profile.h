@@ -41,6 +41,10 @@ struct Profile {
     bool support_quad_shuffles{};
     bool support_vote{};
     bool support_shuffle_relative{};
+    bool support_subgroup_broadcast{};
+    bool prefer_software_matrix_broadcast{};
+    /// Required subgroup size for compute pipelines using warp operations, or zero if unspecified.
+    u32 required_compute_subgroup_size{};
     u32 supported_subgroup_stages{0x7F};
     bool support_viewport_index_layer_non_geometry{};
     bool support_viewport_mask{};

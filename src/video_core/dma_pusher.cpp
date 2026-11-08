@@ -206,6 +206,10 @@ bool DmaPusher::Step() {
         // billions of instances and lost the device loading a race).
         bool gpu_written =
             IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+        static const bool accurate_list_copy = [] {
+            const char* value = std::getenv("EDEN_NX2_ACCURATE_LIST_COPY");
+            return value && value[0] == '1' && value[1] == '\0';
+        }();
         if (!gpu_written && VideoCommon::GpuSplit::Get().Active() &&
             VideoCommon::GpuSplit::Get().WaitForWriters()) {
             gpu_written =
@@ -284,14 +288,15 @@ bool DmaPusher::Step() {
                 header.size};
             RecordParsedEntry(header, commands);
             command_resume_offset += ProcessCommands(commands, 0);
-        } else if (use_safe) {
-            Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
-            const std::span<const CommandHeader> commands{headers.data(), headers.size()};
+        } else if ((!use_safe || (accurate_list_copy && gpu_written)) &&
+                   ReadGpuWrittenCommands(dma_state.dma_get, static_cast<u32>(header.size))) {
+            const std::span<const CommandHeader> commands{command_headers.data(), header.size};
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
-        } else if (ReadGpuWrittenCommands(dma_state.dma_get, static_cast<u32>(header.size))) {
-            const std::span<const CommandHeader> commands{command_headers.data(), header.size};
+        } else if (use_safe) {
+            Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
+            const std::span<const CommandHeader> commands{headers.data(), headers.size()};
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);

@@ -381,6 +381,19 @@ void QueryCacheBase<Traits>::NotifyWFI() {
     }
 
     impl->ForEachStreamer([](StreamerInterface* streamer) { streamer->PresyncWrites(); });
+    static const bool skip_empty = [] {
+        const char* value = std::getenv("EDEN_NX2_WFI_QUERY_SKIP");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (skip_empty) {
+        bool has_prepared_writes = false;
+        impl->ForEachStreamer([&has_prepared_writes](StreamerInterface* streamer) {
+            has_prepared_writes |= streamer->HasPreparedSyncWrites();
+        });
+        if (!has_prepared_writes) {
+            return;
+        }
+    }
     impl->runtime.Barriers(true);
     impl->ForEachStreamer([](StreamerInterface* streamer) { streamer->SyncWrites(); });
     impl->runtime.Barriers(false);

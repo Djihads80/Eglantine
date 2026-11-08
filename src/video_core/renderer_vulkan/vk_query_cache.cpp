@@ -226,6 +226,11 @@ public:
         return !pending_sync.empty();
     }
 
+    bool HasPreparedSyncWrites() const override {
+        return std::ranges::any_of(sync_values_stash,
+                                  [](const auto& values) { return !values.empty(); });
+    }
+
     void SyncWrites() override {
         if (sync_values_stash.empty()) {
             return;

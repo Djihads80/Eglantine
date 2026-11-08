@@ -30,6 +30,8 @@ class System;
 
 namespace VideoCommon {
 class GpuSplit;
+/// Thrown when the OoT bilinear stand-in replaces a native dispatch.
+struct OcarinaUpscaleReplaced {};
 }
 
 namespace Tegra {
@@ -273,6 +275,8 @@ public:
     /// Whether those matrix multiplies use the compact software form (one shared helper per
     /// program) instead of the inline expansion: Ocarina of Time's network.
     [[nodiscard]] bool UsesCompactTensorPrograms() const;
+    /// Opt-in spatial stand-in for the captured gameplay output pass, not the movie network.
+    bool ProcessOcarinaUpscale(u64 program_id, u64 unique_hash);
 
     /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by
     /// the front instead of CallMethod for native compute engines: runs their macros and macro
@@ -395,6 +399,9 @@ private:
 
     /// Retrieves information about a specific TIC entry from the TIC buffer.
     Texture::TICEntry GetTICEntry(u32 tic_index) const;
+
+    /// The TIC entry an image handle in constant bank 0 points to.
+    std::optional<Texture::TICEntry> ComputeImageHandle(u32 offset) const;
 
     /// Retrieves information about a specific TSC entry from the TSC buffer.
     Texture::TSCEntry GetTSCEntry(u32 tsc_index) const;
