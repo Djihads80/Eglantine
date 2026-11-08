@@ -118,12 +118,17 @@ DmaPusher::~DmaPusher() = default;
 std::string DmaPusher::Nx2EntrySources() const {
     std::string text;
     for (const auto& entry : entry_sources) {
-        text += fmt::format("{}[{:#x} {} words, entry {}{}, {}, list {:.1f} ms old{}]",
+        // copy flags: 1 from the start, 2 copied, 4 copy not during a suspension, 8 no
+        // suspension since, 16 GPU-written, 32 GPU-written before waiting, 64 waited for writers,
+        // 128 copy used; >> 8: copied at (0 submit, 1 queued, 2 resume)
+        text += fmt::format("{}[{:#x} {} words, entry {}{}, {}, list {:.1f} ms old{}, copy flags "
+                            "{:#x}]",
                             text.empty() ? "" : " then ", entry.address, entry.size, entry.index,
                             entry.resumed_at != 0 ? fmt::format(" resumed at {}", entry.resumed_at)
                                                   : std::string{},
                             entry.source, static_cast<double>(entry.list_age_ns) / 1e6,
-                            entry.deferred ? ", copy deferred (map pending)" : "");
+                            entry.deferred ? ", copy deferred (map pending)" : "",
+                            entry.copy_flags);
     }
     return text;
 }
@@ -231,6 +236,19 @@ void DmaPusher::NoteEntryWords(const CommandListHeader& header, const char* sour
         if (resume_offset == 0 || entry_sources[1].address != header.addr) {
             entry_sources[0] = entry_sources[1];
         }
+        if (long_method_entries_left != 0 && resume_offset == 0) {
+            --long_method_entries_left;
+            std::array<u32, 6> first{};
+            for (size_t i = 0; i < first.size() && i < commands.size(); ++i) {
+                first[i] = commands[i].argument;
+            }
+            LOG_WARNING(HW_GPU,
+                        "Channel {}: after the long method, entry {} at {:#x} ({} words, {}) "
+                        "starts {:08x} with {} words of the method left",
+                        channel_state.bind_id, dma_pushbuffer_subindex, header.addr.Value(),
+                        header.size.Value(), source, fmt::join(first, " "),
+                        dma_state.method_count);
+        }
         entry_sources[1] = EntrySource{
             .address = header.addr,
             .size = static_cast<u32>(header.size),
@@ -240,6 +258,7 @@ void DmaPusher::NoteEntryWords(const CommandListHeader& header, const char* sour
             .list_age_ns = list.submit_ns != 0 ? SteadyNs() - list.submit_ns : 0,
             .deferred = std::ranges::binary_search(list.deferred_entries,
                                                    static_cast<u32>(dma_pushbuffer_subindex)),
+            .copy_flags = entry_copy_flags,
         };
     }
     if (!record_parsed_entries && !ResumeSameWords()) {
@@ -356,8 +375,10 @@ bool DmaPusher::Step() {
             dma_increment_once = false;
         }
         const std::span<const CommandHeader> commands{command_list.prefetch_command_list};
+        in_built_list = true;
         command_resume_offset +=
             ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
+        in_built_list = false;
         if (puller.HasPendingAcquire()) {
             return false;
         }
@@ -493,6 +514,16 @@ bool DmaPusher::Step() {
                                !gpu_written &&
                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
                                                                           header.size * sizeof(u32)));
+        entry_copy_flags =
+            (command_resume_offset == 0 ? 1U : 0U) |
+            (dma_pushbuffer_subindex < command_list.submitted_offsets.size() ? 2U : 0U) |
+            ((command_list.snapshot_suspensions & 1) == 0 ? 4U : 0U) |
+            (command_list.snapshot_suspensions == suspensions.load(std::memory_order_acquire)
+                 ? 8U
+                 : 0U) |
+            (gpu_written ? 16U : 0U) | (written_before ? 32U : 0U) |
+            (writers_waited ? 64U : 0U) | (submitted ? 128U : 0U) |
+            (static_cast<u32>(command_list.copied_at) << 8);
         const bool resume_same = ResumeSameWords() && command_resume_offset != 0 &&
                                  entry_record.address == header.addr &&
                                  entry_record.size == header.size &&
@@ -698,6 +729,70 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
                     static_cast<u32>(word_offset + index), command_header.argument};
             }
             // No command active - this is the first word of a new one
+            if (long_method_headers_left != 0 && !in_built_list) [[unlikely]] {
+                --long_method_headers_left;
+                LOG_WARNING(HW_GPU,
+                            "Channel {}: header after the long method: {:#010x} at word {} of "
+                            "entry {} (mode {}, method {:#x} sub {}, {} words, subchannel {})",
+                            channel_state.bind_id, command_header.argument, word_offset + index,
+                            dma_pushbuffer_subindex, static_cast<u32>(command_header.mode.Value()),
+                            static_cast<u32>(command_header.method),
+                            static_cast<u32>(command_header.subchannel),
+                            static_cast<u32>(command_header.method_count),
+                            subchannels[command_header.subchannel] != nullptr ? "bound"
+                                                                               : "unbound");
+            }
+            // A method that claims far more words than its entry has left is a misparse more
+            // likely than data continued in the next entry: say where the words came from.
+            if (const size_t left = commands.size() - index - 1;
+                command_header.mode != SubmissionMode::Inline &&
+                static_cast<size_t>(command_header.method_count) > left + 256 &&
+                g_nx2_ampere.load(std::memory_order_relaxed)) {
+                static std::atomic<u32> reported{};
+                if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
+                    std::array<u32, 4> before{};
+                    for (size_t i = 0; i < before.size() && i < index; ++i) {
+                        before[before.size() - 1 - i] = commands[index - 1 - i].argument;
+                    }
+                    // Against the list's submit-time copy of this entry, when it has one.
+                    std::string copy = "no copy";
+                    if (!dma_pushbuffer.empty()) {
+                        const CommandList& list = dma_pushbuffer.front();
+                        if (dma_pushbuffer_subindex < list.submitted_offsets.size() &&
+                            dma_pushbuffer_subindex < list.command_lists.size()) {
+                            const u32 offset = list.submitted_offsets[dma_pushbuffer_subindex];
+                            const size_t size = list.command_lists[dma_pushbuffer_subindex].size;
+                            size_t differ = 0;
+                            size_t first = ~size_t{0};
+                            for (size_t i = 0; word_offset + i < size && i < commands.size() &&
+                                               offset + word_offset + i <
+                                                   list.submitted_words.size();
+                                 ++i) {
+                                if (list.submitted_words[offset + word_offset + i].argument !=
+                                    commands[i].argument) {
+                                    ++differ;
+                                    first = (std::min)(first, word_offset + i);
+                                }
+                            }
+                            copy = differ == 0 ? std::string{"same as its copy"}
+                                               : fmt::format("{} words differ from its copy, the "
+                                                             "first at word {}",
+                                                             differ, first);
+                        }
+                    }
+                    long_method_headers_left = 6;
+                    long_method_entries_left = 4;
+                    LOG_WARNING(HW_GPU,
+                                "Channel {}: header {:#010x} at word {} (method {:#x} sub {}, {} "
+                                "words) with {} left in the entry ({}); words before {:08x}; "
+                                "entries {}",
+                                channel_state.bind_id, command_header.argument,
+                                word_offset + index, static_cast<u32>(command_header.method),
+                                static_cast<u32>(command_header.subchannel),
+                                static_cast<u32>(command_header.method_count),
+                                left, copy, fmt::join(before, " "), Nx2EntrySources());
+                }
+            }
             switch (command_header.mode) {
             case SubmissionMode::Increasing:
                 SetState(command_header);

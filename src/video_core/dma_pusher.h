@@ -334,7 +334,14 @@ public:
         const char* source{"none"};
         u64 list_age_ns{};
         bool deferred{};
+        u32 copy_flags{}; ///< Why the submit-time copy was or wasn't used (Step)
     };
+    u32 entry_copy_flags{};
+    /// After a method longer than its entry (the long-header warning): the headers that follow
+    /// its last word are logged, to tell data continued in the next entries from a misparse.
+    u32 long_method_headers_left{};
+    u32 long_method_entries_left{};
+    bool in_built_list{};
     std::array<EntrySource, 2> entry_sources{};
     void NoteEntryWords(const CommandListHeader& header, const char* source,
                         std::span<const CommandHeader> commands, size_t resume_offset);
