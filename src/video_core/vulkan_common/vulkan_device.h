@@ -1205,6 +1205,29 @@ FN_MAX_LIMIT_LIST
         return properties.driver.driverID == VK_DRIVER_ID_MOLTENVK;
     }
 
+    /// Returns true when the given token is listed in the comma-separated EDEN_NX2_AMD_FIX_OFF
+    /// launch environment variable (valid tokens: robust2, fatomic, hmma_defer).
+    static bool IsAmdFixDisabled(std::string_view token) noexcept {
+        static const std::string_view value = []() -> std::string_view {
+            const char* raw = std::getenv("EDEN_NX2_AMD_FIX_OFF");
+            return raw != nullptr ? std::string_view{raw} : std::string_view{};
+        }();
+        size_t start = 0;
+        while (start < value.size()) {
+            const size_t end = value.find(',', start);
+            const std::string_view item = value.substr(
+                start, end == std::string_view::npos ? std::string_view::npos : end - start);
+            if (item == token) {
+                return true;
+            }
+            if (end == std::string_view::npos) {
+                break;
+            }
+            start = end + 1;
+        }
+        return false;
+    }
+
     /// The multiple vertex input binding strides must be. Metal needs 4 bytes, which MoltenVK
     /// reports as minVertexInputBindingStrideAlignment through VK_KHR_portability_subset.
     u32 GetMinVertexInputBindingStrideAlignment() const noexcept {
