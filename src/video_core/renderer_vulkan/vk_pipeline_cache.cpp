@@ -887,8 +887,13 @@ ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
         // hadn't allocated yet) has no binding for it, and the disk cache keeps that version for
         // later sessions: Ocarina of Time's bush leaves never appeared in Castle Town. Rebuild it
         // once the slot holds a buffer.
-        if (pipeline && !pipeline->null_pointer_slots.empty() && pipeline->pointer_rebuilds < 4 &&
-            NullPointerSlotFilled(*pipeline)) {
+        // EDEN_NX2_POINTER_REBUILD=0: never (A/B; read on first use, after env.txt).
+        static const bool pointer_rebuild = [] {
+            const char* value = std::getenv("EDEN_NX2_POINTER_REBUILD");
+            return value == nullptr || value[0] != '0';
+        }();
+        if (pointer_rebuild && pipeline && !pipeline->null_pointer_slots.empty() &&
+            pipeline->pointer_rebuilds < 4 && NullPointerSlotFilled(*pipeline)) {
             auto rebuilt{CreateComputePipeline(key, shader, pipeline.get())};
             if (rebuilt) {
                 LOG_INFO(Render_Vulkan,
