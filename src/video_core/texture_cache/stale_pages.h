@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdlib>
 #include <type_traits>
 #include <vector>
 
@@ -18,6 +19,16 @@ public:
     /// Device memory pages (Core::Memory::YUZU_PAGEBITS), not the texture cache's lookup pages.
     static constexpr u64 PAGE_BITS = 12;
     static constexpr u64 PAGE_SIZE = u64{1} << PAGE_BITS;
+
+    /// EDEN_NX2_TC_SKIP_STALE=0 marks nothing and skips no upload (the switch Lichii #463 had
+    /// before it shipped unconditional; kept for A/B). Read on first use, after env.txt.
+    [[nodiscard]] static bool Enabled() {
+        static const bool enabled = [] {
+            const char* value = std::getenv("EDEN_NX2_TC_SKIP_STALE");
+            return value == nullptr || value[0] != '0';
+        }();
+        return enabled;
+    }
 
     /// Marks the pages wholly inside [addr, addr + size): a page shared with other data keeps
     /// that data's state.
