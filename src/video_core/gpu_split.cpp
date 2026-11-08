@@ -313,6 +313,23 @@ void GpuSplit::WaitForSpace(size_t words) {
     }
 }
 
+std::string GpuSplit::Nx2DebugState() const {
+    if (!active) {
+        return "off";
+    }
+    return fmt::format(
+        "written {} published {}/{} consumed {} (front cache {}), {} words pending, back {}{}{}, "
+        "quiet {}, hook requested {}, back waiting {} (wake {}), front waiting {} (drained {})",
+        write_position, published_local, published.load(std::memory_order_relaxed),
+        consumed.load(std::memory_order_relaxed), consumed_cache, pending_count,
+        back_running.load(std::memory_order_relaxed) ? "running" : "stopped",
+        g_back_busy.load(std::memory_order_relaxed) ? " busy" : "",
+        idle_hook != nullptr ? "" : " (no idle hook)", back_quiet.load(std::memory_order_relaxed),
+        hook_requested.load(std::memory_order_relaxed),
+        back_waiting.load(std::memory_order_relaxed), wake.load(std::memory_order_relaxed),
+        front_waiting.load(std::memory_order_relaxed), drained.load(std::memory_order_relaxed));
+}
+
 void GpuSplit::RequestIdleHook() {
     hook_requested.store(true, std::memory_order_seq_cst);
     wake.fetch_add(1, std::memory_order_seq_cst);

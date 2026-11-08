@@ -115,6 +115,21 @@ DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Cont
 
 DmaPusher::~DmaPusher() = default;
 
+std::string DmaPusher::Nx2DebugState() {
+    std::string state = fmt::format("{} lists queued (at {}), suspensions {}",
+                                    dma_pushbuffer.size(), dma_pushbuffer_subindex,
+                                    suspensions.load(std::memory_order_relaxed));
+    if (const auto& acquire = puller.Nx2PendingAcquire()) {
+        state += fmt::format(
+            ", acquire {:#x} op {} value {:#x} (word {:#x}) for {} ms", acquire->address,
+            acquire->operation, acquire->value, memory_manager.Read<u32>(acquire->address),
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - acquire->since)
+                .count());
+    }
+    return state;
+}
+
 void DmaPusher::DispatchCalls() {
     // The sub-index is kept: a channel suspended on a semaphore resumes inside its command list.
     dma_state.is_last_call = true;

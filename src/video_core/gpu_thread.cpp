@@ -216,6 +216,11 @@ u64 ThreadManager::PushCommand(CommandData&& command_data, bool block, bool is_a
     return fence;
 }
 
+std::string ThreadManager::Nx2DebugState() const {
+    return fmt::format("commands pushed {} signalled {}", state.last_fence,
+                       state.signaled_fence.load(std::memory_order_relaxed));
+}
+
 void ThreadManager::NotifyShutdown() {
     if (thread.joinable()) {
         thread.request_stop();

@@ -9,6 +9,7 @@
 #include <functional>
 #include <list>
 #include <mutex>
+#include <string>
 
 #include "common/common_types.h"
 
@@ -75,6 +76,11 @@ public:
 
     void WaitHost(u32 syncpoint_id, u32 expected_value);
 
+    /// Hang report (WaitForFrame timeouts): the syncpoints in use with their guest and host
+    /// values and the thresholds waited for, and the last increments with the thread that made
+    /// each (B: split back, G: GPU thread, C: any other).
+    [[nodiscard]] std::string Nx2DebugState();
+
     bool IsReadyGuest(u32 syncpoint_id, u32 expected_value) const {
         return !IsValid(syncpoint_id) ||
                syncpoints_guest[syncpoint_id].load(std::memory_order_acquire) >= expected_value;
@@ -110,6 +116,15 @@ private:
     /// `guard`. Increment takes `guard` only when it is nonzero.
     std::array<std::atomic<u32>, NUM_MAX_SYNCPOINTS> pending_guest{};
     std::array<std::atomic<u32>, NUM_MAX_SYNCPOINTS> pending_host{};
+
+    struct Nx2Increment {
+        std::atomic<u64> word{}; ///< value | id << 32 | host << 40 | tag << 48
+        std::atomic<u64> ns{};
+        std::atomic<u32> thread{};
+    };
+    void Nx2NoteIncrement(u32 syncpoint_id, u32 value, bool host);
+    std::array<Nx2Increment, 32> nx2_increments{};
+    std::atomic<u32> nx2_increment_count{};
 
     std::mutex guard;
     std::condition_variable wait_guest_cv;

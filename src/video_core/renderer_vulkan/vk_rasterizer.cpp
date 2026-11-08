@@ -1518,6 +1518,12 @@ bool RasterizerVulkan::Nx2TickComplete(u64 tick) {
     return buffer_cache_runtime.TickComplete(tick);
 }
 
+std::string RasterizerVulkan::Nx2DebugState() {
+    return fmt::format("tick {} (GPU done to {}), flush pending {}, fences: {}",
+                       scheduler.CurrentTick(), scheduler.GetMasterSemaphore().KnownGpuTick(),
+                       scheduler.Nx2FlushPending(), fence_manager.Nx2DebugState());
+}
+
 bool RasterizerVulkan::BeginFlushBatch() {
     std::scoped_lock lock{buffer_cache.mutex};
     buffer_cache.BeginDownloadBatch();

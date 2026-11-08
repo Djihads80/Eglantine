@@ -2016,6 +2016,7 @@ private:
     // Eden's GPU thread has processed the frame. Otherwise the game laps the GPU thread and
     // rewrites command memory it hasn't read yet.
     u32 m_wait_timeouts{};
+    u32 m_hang_reports{};
     struct PresentStats {
         long long frame_us{}, fence_us{}, composite_us{}, pace_us{}, max_fence_us{};
         long long max_frame_us{}, hitches{};
@@ -2170,6 +2171,17 @@ private:
                     }
                 }
                 wake->cv.wait_for(lk, std::chrono::milliseconds{unless_gpu_waits ? 1 : 50});
+            }
+            // What the GPU side holds when a frame never finishes (the split's 4 s presents).
+            if (!wake->done && system.IsPoweredOn() && m_hang_reports < 16 &&
+                std::chrono::steady_clock::now() >= deadline) {
+                ++m_hang_reports;
+                LOG_WARNING(Service,
+                            "nx2:vi2 present #{} fence ({}, {}) not reached in 4 s (now {}, GPU "
+                            "waits {}), hang report: {}",
+                            m_presents, fence_id, fence_value,
+                            syncpoints.GetGuestSyncpointValue(fence_id),
+                            system.GPU().HasSuspendedChannels(), system.GPU().Nx2HangReport());
             }
         }
         if (unless_gpu_waits && !syncpoints.IsReadyGuest(fence_id, fence_value)) {

@@ -180,6 +180,9 @@ public:
     void DispatchCalls();
 
     /// Switch 2: true while the channel is suspended on a semaphore acquire.
+    /// Hang report (any thread, racy reads): queued lists and the pending acquire.
+    [[nodiscard]] std::string Nx2DebugState();
+
     [[nodiscard]] bool HasPendingAcquire() const {
         return puller.HasPendingAcquire();
     }

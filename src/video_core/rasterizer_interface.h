@@ -10,6 +10,7 @@
 #include <functional>
 #include <optional>
 #include <span>
+#include <string>
 #include <utility>
 #include "common/common_types.h"
 #include "common/polyfill_thread.h"
@@ -117,6 +118,11 @@ public:
     /// for the per-page write ticks (Tegra::Nx2LastGpuWriteTick). True without ticks.
     virtual bool Nx2TickComplete([[maybe_unused]] u64 tick) {
         return true;
+    }
+
+    /// Hang report (any thread, racy reads): the backend's submission and fence state.
+    [[nodiscard]] virtual std::string Nx2DebugState() {
+        return {};
     }
 
     /// Buffer cache flushes this thread makes until EndFlushBatch share one GPU wait, there.

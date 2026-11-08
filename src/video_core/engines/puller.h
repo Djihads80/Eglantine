@@ -89,6 +89,10 @@ public:
     [[nodiscard]] bool HasPendingAcquire() const {
         return pending_acquire.has_value();
     }
+    /// The pending acquire, for hang reports.
+    [[nodiscard]] const std::optional<PendingAcquire>& Nx2PendingAcquire() const {
+        return pending_acquire;
+    }
     /// When the pending acquire began (only while HasPendingAcquire).
     [[nodiscard]] std::chrono::steady_clock::time_point PendingSince() const {
         return pending_acquire ? pending_acquire->since : std::chrono::steady_clock::time_point{};
