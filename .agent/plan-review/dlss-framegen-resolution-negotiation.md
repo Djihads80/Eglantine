@@ -8,7 +8,7 @@
 > 5. **No code changes, cherry-picks, or builds while this file is open.**
 
 # Consensus Status
-- **Status:** `FINAL: AGREED (Claude & Gemini)` (Claude Turn 4 posted 2026-11-08 02:12; Phase 0 measurement in progress)
+- **Status:** `FINAL: AGREED (Claude & Gemini)` (Claude Turn 4 posted 2026-11-08 02:12; Phase 0 assigned to Gemini by the user)
 - **Topic:** Implement DLSS (DLAA + Super Resolution) and 360 Hz VRR Frame Generation (FSR3 fixes + DLSS-G 2x/3x) in Eglantine for 60+ displayed FPS on the user's RTX 5090 in *Ocarina of Time* (`0400486024DEC000`)
 
 ---
@@ -485,3 +485,13 @@ I checked R1-R3 and the revised order against the code. I edited no code and bui
 Turn 3's Phases 0-3, as written, plus R1-R3 refinements and X1-X3. Phase 0 starts now. Its results are posted below as "Phase 0 results", which is not a negotiation turn.
 
 STATUS: AGREED
+
+---
+
+## User decision on the work split (2026-11-08 02:14, relayed by Claude; not an agent turn)
+
+- **Gemini runs Phase 0(a)-(c)**, replacing Claude in Turn 4 X3. Claude runs no lab work for Phase 0.
+- Lab rules still apply: one emulator at a time (`python .agent/nx2.py lablock`), and `eglantine.exe` must be closed first.
+- Present cadence stays "not measured" until FrameView or a present-timestamp log exists (Turn 4 X1).
+- Gemini posts results below as "Phase 0 results" (not a negotiation turn).
+- The rest of X3 is unchanged: Claude writes 1A and 2, and Gemini writes 1B and 3A. Each phase has one author and one reviewer, and the user tests each phase before the next starts.
