@@ -347,7 +347,8 @@ void TextureCache<P>::UpdateStaleTracking(u64 run_begin, u64 run_pages, s32 delt
 
 template <class P>
 void TextureCache<P>::MarkStale(const ImageBase& image) {
-    if (!tc_skip_stale || False(image.flags & ImageFlagBits::GpuModified) ||
+    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) ||
+        False(image.flags & ImageFlagBits::GpuModified) ||
         True(image.flags & (ImageFlagBits::Sparse | ImageFlagBits::Unbacked)) ||
         image.guest_size_bytes == 0) {
         return;
@@ -1958,7 +1959,7 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
 
     // Made where a dropped GPU-written image left stale bytes (MarkStale): nothing to upload.
     // Pages the buffer cache wrote on the GPU may hold data written back since: upload those.
-    if (tc_skip_stale && image.dirty_layers.empty() &&
+    if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed) && image.dirty_layers.empty() &&
         False(image.flags & (ImageFlagBits::Sparse | ImageFlagBits::SparseLayers |
                              ImageFlagBits::SparseTiles | ImageFlagBits::Unbacked)) &&
         IsAllStale(image.cpu_addr, image.guest_size_bytes)) {

@@ -7,7 +7,6 @@
 #pragma once
 
 #include <atomic>
-#include <cstdlib>
 #include <deque>
 #include <limits>
 #include <map>
@@ -573,6 +572,7 @@ private:
     /// guest memory stale (the GPU's data is gone). Its whole pages are marked here and kept
     /// tracked, so CPU writes, unmaps and write-backs clear them. An image made entirely on marked
     /// pages starts without an upload: the upload would only copy stale bytes the GPU overwrites.
+    /// Switch 2 titles only: the buffer cache feeds Nx2MayBeGpuWritten for them alone.
     void MarkStale(const ImageBase& image);
     void ClearStale(DAddr addr, size_t size);
     void ClearStaleImage(const ImageBase& image);
@@ -580,10 +580,6 @@ private:
     void ClearStaleGpu(GPUVAddr gpu_addr, size_t size);
     [[nodiscard]] bool IsAllStale(DAddr addr, size_t size) const;
     void UpdateStaleTracking(u64 run_begin, u64 run_pages, s32 delta);
-    bool tc_skip_stale{[] {
-        const char* value = std::getenv("EDEN_NX2_TC_SKIP_STALE");
-        return value == nullptr || value[0] != '0'; // EDEN_NX2_TC_SKIP_STALE=0: off
-    }()};
     /// Device memory pages (Core::Memory::YUZU_PAGEBITS), not this cache's 1 MiB lookup pages.
     static constexpr u64 STALE_PAGE_BITS = 12;
     std::vector<u64> stale_bits; ///< One bit per device page
