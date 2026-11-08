@@ -377,6 +377,19 @@ public:
         return GetDriverID() != VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS;
     }
 
+    /// AMD's own drivers can spend minutes on a software HMMA compute pipeline (Ocarina of
+    /// Time's upscaling network) and then fail it with VK_ERROR_OUT_OF_HOST_MEMORY. Such
+    /// pipelines are built on their own worker and their dispatches skipped until they exist,
+    /// instead of stalling the GPU thread. Pipelines on the cooperative-matrix path are not
+    /// software HMMA and are built normally.
+    bool DefersSoftwareMatrixPipelines() const {
+        if (IsAmdFixDisabled("hmma_defer")) {
+            return false;
+        }
+        const VkDriverIdKHR id = GetDriverID();
+        return id == VK_DRIVER_ID_AMD_PROPRIETARY || id == VK_DRIVER_ID_AMD_OPEN_SOURCE;
+    }
+
     /// Returns true for tile-based deferred renderers.
     bool IsTiler() const {
         switch (GetDriverID()) {
