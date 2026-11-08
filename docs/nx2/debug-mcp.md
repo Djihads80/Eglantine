@@ -347,6 +347,25 @@ which stay the same between runs, unlike the addresses `EDEN_NX2_REJECT` takes. 
 `reject_shaders` without relaunching. The key covers the captured code, so recompute it when the
 capture rules change.
 
+## Unattended debug sessions
+
+`tools/nx2/debug-session.sh [eglantine args]` starts the emulator with the MCP server and this
+debug server on, and `tools/nx2/session_watch.py` records evidence next to it in
+`<data>/eglantine/debug-sessions/<timestamp>/`:
+
+- `timeline.jsonl`: the MCP timeline with repeats collapsed and IPC calls counted per command.
+  `ipc-tail.jsonl` keeps the last 4000 IPC calls in full.
+- `snap-*`: status, screenshot, threads and backtraces, taken on a crash event, a burst of unmapped
+  guest accesses, a host fault or device loss. The burst also pauses the emulator.
+- `stderr.txt` and `crashtrace.txt`: the emulator's stderr and a backtrace of the faulting thread,
+  written by `crashtrace.so` (built from `tools/nx2/crashtrace.c` and preloaded by the script).
+  Kernel core dumps are off for the run. A `-g1` build gives file and line in the trace.
+- `POSTMORTEM.md`: written when the server goes away: triggers, symbolized trace, stderr tail,
+  systemd's crash line, and the last log and IPC events.
+
+`WATCH_ARGS` replaces the watcher options. The default traces IPC of the `nx2:` services
+(`--ipc-prefix nx2:`); set it empty to trace nothing, or add `--no-pause`.
+
 ## Limits
 
 - Vulkan only for `capture_frame`, `reject_shaders` and `read_gpu_memory`: the drain point is in
