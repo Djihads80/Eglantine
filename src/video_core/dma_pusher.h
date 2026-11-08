@@ -182,6 +182,8 @@ public:
     /// Switch 2: true while the channel is suspended on a semaphore acquire.
     /// Hang report (any thread, racy reads): queued lists and the pending acquire.
     [[nodiscard]] std::string Nx2DebugState();
+    /// The last two entries parsed: GPU address, size, list index, where the words came from.
+    [[nodiscard]] std::string Nx2EntrySources() const;
 
     [[nodiscard]] bool HasPendingAcquire() const {
         return puller.HasPendingAcquire();
@@ -282,6 +284,9 @@ public:
     Control::ChannelState& channel_state;
 
     DmaState dma_state{};
+    /// The game's method state while one of Eden's own lists runs (Step).
+    std::optional<DmaState> outer_dma_state;
+    bool outer_increment_once{};
 
     // Switch 2: methods whose data continues in a later GPFIFO entry, set aside while other
     // command buffers run (NVN interleaves several, so more than one can be pending).
@@ -319,6 +324,18 @@ public:
         size_t resumed_at{}; ///< Resume offset of the parse in progress (0: from the start)
     };
     EntryRecord entry_record;
+    /// The last two entries parsed and where their words came from (always kept, for reports
+    /// of misparsed commands: Nx2EntrySources).
+    struct EntrySource {
+        GPUVAddr address{};
+        u32 size{};
+        size_t index{};
+        size_t resumed_at{};
+        const char* source{"none"};
+        u64 list_age_ns{};
+        bool deferred{};
+    };
+    std::array<EntrySource, 2> entry_sources{};
     void NoteEntryWords(const CommandListHeader& header, const char* source,
                         std::span<const CommandHeader> commands, size_t resume_offset);
     void LogIllegalBlock();

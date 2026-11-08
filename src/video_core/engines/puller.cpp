@@ -25,6 +25,7 @@
 #include "video_core/engines/puller.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_split.h"
+#include "video_core/host1x/syncpoint_manager.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_quick_bind.h"
@@ -521,6 +522,16 @@ void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
         OnBack([rasterizer = dma_pusher.rasterizer] { rasterizer->ReleaseFences(); });
         break;
     case Puller::FenceOperation::Increment:
+        // A syncpoint past the table comes from misparsed commands: say where they were read.
+        if (const u32 id = static_cast<u32>(regs.fence_action.syncpoint_id.Value());
+            id >= Tegra::Host1x::SyncpointManager::NUM_MAX_SYNCPOINTS) {
+            static std::atomic<u32> reported{};
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
+                LOG_WARNING(HW_GPU, "Channel {}: increment of syncpoint {} (misparsed commands?) "
+                            "in {}",
+                            dma_pusher.channel_state.bind_id, id, dma_pusher.Nx2EntrySources());
+            }
+        }
         OnBack([rasterizer = dma_pusher.rasterizer, id = static_cast<u32>(regs.fence_action.syncpoint_id.Value())] {
             rasterizer->SignalSyncPoint(id);
         });

@@ -115,10 +115,25 @@ DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Cont
 
 DmaPusher::~DmaPusher() = default;
 
+std::string DmaPusher::Nx2EntrySources() const {
+    std::string text;
+    for (const auto& entry : entry_sources) {
+        text += fmt::format("{}[{:#x} {} words, entry {}{}, {}, list {:.1f} ms old{}]",
+                            text.empty() ? "" : " then ", entry.address, entry.size, entry.index,
+                            entry.resumed_at != 0 ? fmt::format(" resumed at {}", entry.resumed_at)
+                                                  : std::string{},
+                            entry.source, static_cast<double>(entry.list_age_ns) / 1e6,
+                            entry.deferred ? ", copy deferred (map pending)" : "");
+    }
+    return text;
+}
+
 std::string DmaPusher::Nx2DebugState() {
-    std::string state = fmt::format("{} lists queued (at {}), suspensions {}",
-                                    dma_pushbuffer.size(), dma_pushbuffer_subindex,
-                                    suspensions.load(std::memory_order_relaxed));
+    std::string state = fmt::format(
+        "{} lists queued (at {}), suspensions {}, method {:#x} sub {} with {} words left{}",
+        dma_pushbuffer.size(), dma_pushbuffer_subindex, suspensions.load(std::memory_order_relaxed),
+        dma_state.method, dma_state.subchannel, dma_state.method_count,
+        dma_state.non_incrementing ? " (non-incrementing)" : "");
     if (const auto& acquire = puller.Nx2PendingAcquire()) {
         state += fmt::format(
             ", acquire {:#x} op {} value {:#x} (word {:#x}) for {} ms", acquire->address,
@@ -211,6 +226,22 @@ bool KeepsCopy(const Tegra::CommandList& list) {
 // Before an entry's words are parsed: keep them when parsing from its start.
 void DmaPusher::NoteEntryWords(const CommandListHeader& header, const char* source,
                                std::span<const CommandHeader> commands, size_t resume_offset) {
+    {
+        const auto& list = dma_pushbuffer.front();
+        if (resume_offset == 0 || entry_sources[1].address != header.addr) {
+            entry_sources[0] = entry_sources[1];
+        }
+        entry_sources[1] = EntrySource{
+            .address = header.addr,
+            .size = static_cast<u32>(header.size),
+            .index = dma_pushbuffer_subindex,
+            .resumed_at = resume_offset,
+            .source = source,
+            .list_age_ns = list.submit_ns != 0 ? SteadyNs() - list.submit_ns : 0,
+            .deferred = std::ranges::binary_search(list.deferred_entries,
+                                                   static_cast<u32>(dma_pushbuffer_subindex)),
+        };
+    }
     if (!record_parsed_entries && !ResumeSameWords()) {
         return;
     }
@@ -290,11 +321,50 @@ bool DmaPusher::Step() {
     }
 
     if (prefetch_size > 0) {
+        // Lists Eden builds (the syncpoint increments appended after a submission, fence waits)
+        // are not part of the game's command stream. A method the game's last entry left
+        // unfinished took their words as its data: the increments were lost, the syncpoint stayed
+        // one below the submitted max for good, and every present then waited 4 s for its frame
+        // (Mario Kart World, about one boot in seven with the GPU thread split). The method goes
+        // on in the game's next entry. EDEN_NX2_ISOLATE_BUILT_LISTS=0: parse them inside it.
+        static const bool isolate = [] {
+            const char* value = std::getenv("EDEN_NX2_ISOLATE_BUILT_LISTS");
+            return value == nullptr || value[0] != '0';
+        }();
+        if (command_resume_offset == 0 &&
+            (dma_state.method_count != 0 || dma_state.skip_words != 0 ||
+             dma_state.length_pending != 0)) {
+            static std::atomic<u32> reported{};
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 32) {
+                LOG_WARNING(HW_GPU,
+                            "Channel {}: one of Eden's lists ({} words) comes inside method {:#x} "
+                            "of subchannel {} ({} words left, non-incrementing {}, {} to skip), "
+                            "{}",
+                            channel_state.bind_id, prefetch_size, dma_state.method,
+                            dma_state.subchannel, dma_state.method_count,
+                            dma_state.non_incrementing, dma_state.skip_words,
+                            isolate ? "kept for the game's next entry" : "parsed as its data");
+            }
+        }
+        if (command_resume_offset == 0 && isolate) {
+            outer_dma_state = dma_state;
+            outer_increment_once = dma_increment_once;
+            dma_state.method_count = 0;
+            dma_state.length_pending = 0;
+            dma_state.skip_words = 0;
+            dma_state.non_incrementing = false;
+            dma_increment_once = false;
+        }
         const std::span<const CommandHeader> commands{command_list.prefetch_command_list};
         command_resume_offset +=
             ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         if (puller.HasPendingAcquire()) {
             return false;
+        }
+        if (outer_dma_state) {
+            dma_state = *outer_dma_state;
+            dma_increment_once = outer_increment_once;
+            outer_dma_state.reset();
         }
         command_resume_offset = 0;
         dma_pushbuffer.pop_front();
