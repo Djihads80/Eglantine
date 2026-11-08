@@ -1325,6 +1325,13 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     if (draw_state.draw_element_count <= 6) {
         return pipeline;
     }
+    // Switch 2 titles also draw things they keep with more vertices and no depth buffer, such as
+    // the glyphs of a font atlas, each drawn once: skipping one lost it for the session (Star
+    // Fox's menus lost their most common letters). Their cached pipelines are all built at boot,
+    // so only new ones reach this: wait for those unless the draw is depth-tested.
+    if (Settings::CurrentProgramIsSwitch2()) {
+        return pipeline;
+    }
     graphics_miss = "async-build";
     return nullptr;
 }
