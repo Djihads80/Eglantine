@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "common/assert.h"
+#include "video_core/texture_cache/types.h"
 #include "video_core/textures/texture.h"
 
 namespace VideoCommon {
@@ -25,6 +26,22 @@ namespace VideoCommon {
     }
     ASSERT_MSG(false, "Invalid number of samples={}", num_samples);
     return {0, 0};
+}
+
+/// The copy from the single-sample scratch image an MSAA upload lands in to the MSAA image.
+/// The upload writes the scratch image at the copy's own offset, in samples; the MSAA image's
+/// offset and extent are in pixels.
+[[nodiscard]] inline ImageCopy MsaaUploadCopy(const BufferImageCopy& copy, int num_samples) {
+    const auto [samples_x, samples_y] = SamplesLog2(num_samples);
+    return ImageCopy{
+        .src_subresource = copy.image_subresource,
+        .dst_subresource = copy.image_subresource,
+        .src_offset = copy.image_offset,
+        .dst_offset = {copy.image_offset.x >> samples_x, copy.image_offset.y >> samples_y,
+                       copy.image_offset.z},
+        .extent = {copy.image_extent.width >> samples_x, copy.image_extent.height >> samples_y,
+                   copy.image_extent.depth},
+    };
 }
 
 [[nodiscard]] inline int NumSamples(Tegra::Texture::MsaaMode msaa_mode) {

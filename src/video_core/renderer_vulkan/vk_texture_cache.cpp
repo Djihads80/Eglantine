@@ -2809,19 +2809,10 @@ void Image::UploadMemory(VkBuffer buffer, VkDeviceSize offset,
             CopyBufferToImage(cmdbuf, src_buffer, temp_vk_image, vk_aspect_mask, false, vk_copies);
         });
 
-        const auto [samples_x, samples_y] = VideoCommon::SamplesLog2(info.num_samples);
         boost::container::small_vector<VideoCommon::ImageCopy, 16> image_copies;
         image_copies.reserve(copies.size());
         for (const auto& copy : copies) {
-            VideoCommon::ImageCopy image_copy{};
-            image_copy.src_offset = {0, 0, 0};
-            image_copy.dst_offset = {copy.image_offset.x >> samples_x,
-                                     copy.image_offset.y >> samples_y, copy.image_offset.z};
-            image_copy.src_subresource = copy.image_subresource;
-            image_copy.dst_subresource = copy.image_subresource;
-            image_copy.extent = {copy.image_extent.width >> samples_x,
-                                 copy.image_extent.height >> samples_y, copy.image_extent.depth};
-            image_copies.push_back(image_copy);
+            image_copies.push_back(VideoCommon::MsaaUploadCopy(copy, info.num_samples));
         }
 
         if (msaa_upload_is_depth) {
