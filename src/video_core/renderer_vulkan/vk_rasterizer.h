@@ -101,7 +101,9 @@ public:
     void FlushAll() override;
     void FlushRegion(DAddr addr, u64 size,
                      VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
-    GpuWrittenList ReadGpuWrittenCommandList(DAddr addr, std::span<u8> out) override;
+    GpuWrittenList ReadGpuWrittenCommandList(DAddr addr, std::span<u8> out,
+                                             u64* pending_tick = nullptr) override;
+    bool IsGpuTickDone(u64 tick) override;
     void NoteGpuWrittenCommandListSynced(DAddr page) override;
     bool BeginFlushBatch() override;
     void EndFlushBatch() override;

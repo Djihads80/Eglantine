@@ -501,11 +501,16 @@ struct ListCopyStats {
     u64 waits{};
     u64 unsubmitted{}; ///< Of waits: the copy was not handed to the worker yet
     u64 polled{};      ///< Of waits: done while polling (ListWaitSpin)
+    u64 pending{};     ///< Reads that suspended their channel instead (read again once done)
     std::chrono::nanoseconds waited{};
     std::chrono::nanoseconds longest{};
 };
 ListCopyStats g_list_copy_stats;
 } // Anonymous namespace
+
+void BufferCacheRuntime::NoteListCopyPending() {
+    ++g_list_copy_stats.pending;
+}
 
 void BufferCacheRuntime::NoteListCopyRead() {
     ListCopyStats& stats = g_list_copy_stats;
@@ -523,10 +528,11 @@ void BufferCacheRuntime::NoteListCopyRead() {
     LOG_INFO(Render_Vulkan,
              "GPU-written command list copies read in {:.1f} s: {}, {} waited for the GPU ({} "
              "not yet submitted, {} done while polling): {:.1f} ms waiting, {:.0f} us on "
-             "average, {:.0f} us at most",
+             "average, {:.0f} us at most; {} suspended their channel instead (read again once "
+             "done, counted again)",
              seconds, stats.reads, stats.waits, stats.unsubmitted, stats.polled, waited_ms,
              stats.waits != 0 ? waited_ms * 1000.0 / static_cast<double>(stats.waits) : 0.0,
-             std::chrono::duration<double, std::micro>(stats.longest).count());
+             std::chrono::duration<double, std::micro>(stats.longest).count(), stats.pending);
     stats = {};
     stats.window_start = now;
 }

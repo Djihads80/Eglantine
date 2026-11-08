@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 #include "common/scope_exit.h"
@@ -113,6 +114,13 @@ DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Cont
 
 DmaPusher::~DmaPusher() = default;
 
+bool DmaPusher::CanResumeAcquire() {
+    if (pending_list_tick) {
+        return rasterizer->IsGpuTickDone(*pending_list_tick);
+    }
+    return puller.CanResumeAcquire(*this);
+}
+
 void DmaPusher::DispatchCalls() {
     // The sub-index is kept: a channel suspended on a semaphore resumes inside its command list.
     dma_state.is_last_call = true;
@@ -187,6 +195,21 @@ bool KeepsCopy(const Tegra::CommandList& list) {
     const u64 max_age = ResnapshotMaxAgeNs();
     return max_age != 0 && list.submit_ns != 0 && SteadyNs() - list.submit_ns > max_age;
 }
+
+// A GPU-written command list whose copy the GPU has not finished suspends its channel at that
+// entry, as an acquire does, instead of waiting for the copy (zortos293/Lichii #752): the other
+// channels and the queued work run meanwhile. EDEN_NX2_LIST_SUSPEND=0 waits as before. Read on
+// the first list read, after env.txt.
+bool ListSuspendEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_LIST_SUSPEND");
+        const bool on = value == nullptr || value[0] != '0';
+        LOG_INFO(HW_GPU, "GPU-written command lists: a copy not done yet {} (EDEN_NX2_LIST_SUSPEND)",
+                 on ? "suspends its channel" : "is waited for");
+        return on;
+    }();
+    return enabled;
+}
 } // Anonymous namespace
 
 // Before an entry's words are parsed: keep them when parsing from its start.
@@ -212,6 +235,20 @@ bool DmaPusher::Step() {
     if (!ib_enable || dma_pushbuffer.empty()) {
         return false;
     }
+    // Waiting for the GPU's copy of a command list this channel reads next (ReadGpuWrittenCommands).
+    if (pending_list_tick) {
+        if (!rasterizer->IsGpuTickDone(*pending_list_tick)) {
+            return false;
+        }
+        pending_list_tick.reset();
+        resumed_list_read = true;
+    }
+    // Only for the entry that suspended: an acquire still waiting, the safe-read path or a stopped
+    // split must not leave it set for a later list (which would then skip its writer wait).
+    const bool resuming_list = resumed_list_read;
+    SCOPE_EXIT {
+        resumed_list_read = false;
+    };
     const u64 suspensions_before = suspensions.load(std::memory_order_relaxed);
     const auto suspended_since = puller.PendingSince();
     if (!puller.ResumeAcquire(*this)) {
@@ -285,7 +322,7 @@ bool DmaPusher::Step() {
     auto& current_command = command_list.command_lists[dma_pushbuffer_subindex];
     const CommandListHeader& header = current_command;
     dma_state.dma_get = header.addr;
-    if (command_resume_offset == 0) {
+    if (command_resume_offset == 0 && !resuming_list) {
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::GpfifoEntries, 1);
     }
 
@@ -445,7 +482,14 @@ bool DmaPusher::Step() {
             NoteEntryWords(header, "memory (safe)", commands, command_resume_offset);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
-        } else if (ReadGpuWrittenCommands(dma_state.dma_get, static_cast<u32>(header.size))) {
+        } else if (bool pending = false;
+                   ReadGpuWrittenCommands(dma_state.dma_get, static_cast<u32>(header.size),
+                                          ListSuspendEnabled() ? &pending : nullptr) ||
+                   pending) {
+            if (pending) {
+                // Parsed again once the GPU copied the list; other channels run meanwhile.
+                return false;
+            }
             const std::span<const CommandHeader> commands{command_headers.data(), header.size};
             RecordParsedEntry(header, commands);
             NoteEntryWords(header, "GPU-written list copy", commands, command_resume_offset);
@@ -1034,7 +1078,7 @@ bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
     return false;
 }
 
-bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
+bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count, bool* pending) {
     // The pages are marked as command list pages: from the next write on, the buffer cache copies
     // them to host memory right after the dispatch or copy that writes them and submits. The
     // front then waits only for the back to run that work and for the GPU to finish the copy, not
@@ -1058,7 +1102,11 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
     if (!written) {
         return false;
     }
-    if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+    // Resuming after the copy's tick: the back ran the list's writer before the suspension
+    // (this wait ran then), and waiting again would wait for the other channels' work queued
+    // meanwhile too.
+    const bool resumed = std::exchange(resumed_list_read, false);
+    if (auto& split = VideoCommon::GpuSplit::Get(); split.Active() && !resumed) {
         split.WaitForWriters();
     }
     using GpuWrittenList = VideoCore::RasterizerInterface::GpuWrittenList;
@@ -1074,7 +1122,16 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
         GpuWrittenList where = GpuWrittenList::Synced;
         if (Tegra::Nx2IsGpuWritten(*device)) {
             VideoCommon::Nx2Profile::Scope scope{VideoCommon::Nx2Profile::Zone::CommandListCopy};
-            where = rasterizer->ReadGpuWrittenCommandList(*device, part);
+            u64 tick = 0;
+            where = rasterizer->ReadGpuWrittenCommandList(*device, part,
+                                                          pending != nullptr ? &tick : nullptr);
+            if (where == GpuWrittenList::Pending) {
+                // The copy is still on the GPU: the channel waits for it without blocking the
+                // others (Step parses this entry again once IsGpuTickDone).
+                pending_list_tick = tick;
+                *pending = true;
+                return false;
+            }
         }
         if (where == GpuWrittenList::Unknown) {
             return false;

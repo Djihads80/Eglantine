@@ -104,10 +104,21 @@ public:
         Unknown, ///< Neither: the caller drains, flushes the page and notes it synced
         Copied,  ///< `out` (within one 4 KiB page) is filled from the copy made after its writer
         Synced,  ///< Guest memory holds the page: no GPU work wrote it since it was flushed
+        /// Only with `pending_tick`: the copy is not done yet, `*pending_tick` is the host GPU
+        /// tick that completes it. Ask again once IsGpuTickDone(*pending_tick).
+        Pending,
     };
+    /// With `pending_tick`, a copy the GPU is still making returns Pending instead of waiting.
     virtual GpuWrittenList ReadGpuWrittenCommandList([[maybe_unused]] DAddr addr,
-                                                     [[maybe_unused]] std::span<u8> out) {
+                                                     [[maybe_unused]] std::span<u8> out,
+                                                     [[maybe_unused]] u64* pending_tick = nullptr) {
         return GpuWrittenList::Unknown;
+    }
+
+    /// Whether the host GPU passed `tick`, without waiting. Asks for deferred work to be
+    /// submitted when the tick is not submitted yet, so it completes.
+    virtual bool IsGpuTickDone([[maybe_unused]] u64 tick) {
+        return true;
     }
 
     /// Switch 2: the front flushed this command list page with the split drained.
