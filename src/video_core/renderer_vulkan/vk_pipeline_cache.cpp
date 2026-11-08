@@ -847,8 +847,16 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     if (title_id == 0x0400C3F00006E000ULL) {
         base_dir /= "mkw_zero_depth_v1";
     }
-    if (!Common::FS::CreateDir(shader_dir) || !Common::FS::CreateDir(base_dir)) {
-        LOG_ERROR(Common_Filesystem, "Failed to create pipeline cache directories");
+    if (!Common::FS::CreateDirs(base_dir)) {
+        LOG_ERROR(Render_Vulkan,
+                  "Pipeline cache disabled for this session: failed to create the cache "
+                  "directory for title {:016x}",
+                  title_id);
+        // Do not keep writing to the previous title's cache files.
+        pipeline_cache_filename.clear();
+        mesh_pipeline_cache_filename.clear();
+        used_pipelines_filename.clear();
+        vulkan_pipeline_cache_filename.clear();
         return;
     }
     pipeline_cache_filename = base_dir / "vulkan.bin";
