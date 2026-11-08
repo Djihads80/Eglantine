@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <optional>
+#include <set>
 
 #include <filesystem>
 #include <QElapsedTimer>
@@ -506,8 +507,7 @@ private:
 #endif
 
     MultiplayerState* multiplayer_state = nullptr;
-    bool asked_recommended_mkw_settings = false;
-    bool asked_recommended_oot_settings = false;
+    std::set<u64> asked_recommended_settings;
 
     GRenderWindow* render_window = nullptr;
     GameList* game_list = nullptr;

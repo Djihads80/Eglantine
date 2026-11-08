@@ -350,6 +350,50 @@ constexpr std::array<std::pair<u32, const char*>, 5> default_game_icon_sizes{
     std::make_pair(256, QT_TRANSLATE_NOOP("MainWindow", "Full Size (256x256)")),
 };
 
+QString DescribeRecommendedSettings(const Settings::GamePreset& preset) {
+    const auto labels = ConfigurationShared::InitializeTranslations(nullptr);
+    const auto enums = ConfigurationShared::ComboboxEnumeration(nullptr);
+    // The graphics configuration populates VSync choices separately from the shared translations.
+    enums->emplace(Settings::EnumMetadata<Settings::VSyncMode>::Index(),
+                   ConfigurationShared::ComboboxTranslations{
+                       {static_cast<u32>(Settings::VSyncMode::Immediate),
+                        QCoreApplication::translate("MainWindow", "Immediate")},
+                       {static_cast<u32>(Settings::VSyncMode::Mailbox), QStringLiteral("Mailbox")},
+                       {static_cast<u32>(Settings::VSyncMode::Fifo), QStringLiteral("FIFO")},
+                       {static_cast<u32>(Settings::VSyncMode::FifoRelaxed),
+                        QStringLiteral("FIFO Relaxed")}});
+    QStringList descriptions;
+    for (const auto& recommendation : preset.settings) {
+        const auto* setting = Settings::values.linkage.by_key.at(recommendation.key);
+        QString label = QString::fromStdString(recommendation.key);
+        if (const auto it = labels->find(setting->Id()); it != labels->end() &&
+            !it->second.first.isEmpty()) {
+            label = it->second.first;
+        }
+        if (label.endsWith(QLatin1Char(':'))) {
+            label.chop(1);
+        }
+        QString value = QString::fromStdString(recommendation.value);
+        if (setting->IsEnum()) {
+            if (const auto it = enums->find(setting->EnumIndex()); it != enums->end()) {
+                const auto enum_value = static_cast<u32>(std::stoul(recommendation.value));
+                for (const auto& [id, text] : it->second) {
+                    if (id == enum_value) {
+                        value = text;
+                        break;
+                    }
+                }
+            }
+        } else if (setting->TypeId() == "bool") {
+            value = recommendation.value == "true"
+                        ? QCoreApplication::translate("MainWindow", "On")
+                        : QCoreApplication::translate("MainWindow", "Off");
+        }
+        descriptions.append(QStringLiteral("%1: %2").arg(label, value));
+    }
+    return descriptions.join(QLatin1Char('\n'));
+}
+
 QString GetTranslatedGameIconSize(size_t index) {
     return QCoreApplication::translate("MainWindow", default_game_icon_sizes[index].second);
 }
@@ -1974,93 +2018,78 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         QtCommon::system->ApplySettings();
     }
 
-    const auto offer_recommended_settings =
-        [&](u64 program_id, bool& asked, Settings::Setting<bool>& skip_prompt_setting,
-            const QString& title, const QString& text,
-            bool (*apply_preset)(Settings::Values&, u64, bool)) {
-            if (!allow_recommended_settings_prompt || skip_prompt_setting.GetValue() ||
-                title_id != program_id || asked) {
-                return;
-            }
-            asked = true;
-            QDialog dialog(this);
-            dialog.setWindowTitle(title);
-            QVBoxLayout layout(&dialog);
-            QLabel description(text, &dialog);
-            description.setWordWrap(true);
-            layout.addWidget(&description);
+    const auto* preset = Settings::FindGamePreset(title_id);
+    if (preset != nullptr && allow_recommended_settings_prompt &&
+        !UISettings::values.skipped_recommended_settings.contains(title_id) &&
+        asked_recommended_settings.insert(title_id).second) {
+        const QString game_name = QString::fromUtf8(preset->name);
+        QDialog dialog(this);
+        dialog.setWindowTitle(tr("Recommended %1 settings").arg(game_name));
+        QVBoxLayout layout(&dialog);
+        QLabel description(
+            tr("Use the recommended settings for %1?\n\n%2\n\n"
+               "Choose Yes to use them for this launch. Remember these settings saves them for "
+               "%1. Skipping this prompt uses your saved settings on future launches.")
+                .arg(game_name, DescribeRecommendedSettings(*preset)),
+            &dialog);
+        description.setWordWrap(true);
+        layout.addWidget(&description);
 
-            QCheckBox remember_settings(tr("Remember these settings"), &dialog);
-            remember_settings.setEnabled(per_game_config.has_value());
-            remember_settings.setToolTip(
-                tr("Choose Yes to save the recommended settings in this game's configuration."));
-            layout.addWidget(&remember_settings);
-            QCheckBox skip_prompt(tr("Skip this prompt next time"), &dialog);
-            layout.addWidget(&skip_prompt);
+        QCheckBox remember_settings(tr("Remember these settings"), &dialog);
+        remember_settings.setEnabled(per_game_config.has_value());
+        remember_settings.setToolTip(
+            tr("Choose Yes to save the recommended settings in this game's configuration."));
+        layout.addWidget(&remember_settings);
+        QCheckBox skip_prompt(tr("Skip this prompt next time"), &dialog);
+        layout.addWidget(&skip_prompt);
 
-            QDialogButtonBox buttons(QDialogButtonBox::Yes | QDialogButtonBox::No, &dialog);
-            buttons.button(QDialogButtonBox::No)->setDefault(true);
-            buttons.button(QDialogButtonBox::No)->setFocus();
-            connect(buttons.button(QDialogButtonBox::Yes), &QPushButton::clicked, &dialog,
-                    [&dialog] { dialog.done(QDialog::Accepted); });
-            connect(buttons.button(QDialogButtonBox::No), &QPushButton::clicked, &dialog,
-                    &QDialog::reject);
-            layout.addWidget(&buttons);
+        QDialogButtonBox buttons(QDialogButtonBox::Yes | QDialogButtonBox::No, &dialog);
+        buttons.button(QDialogButtonBox::No)->setDefault(true);
+        buttons.button(QDialogButtonBox::No)->setFocus();
+        connect(buttons.button(QDialogButtonBox::Yes), &QPushButton::clicked, &dialog,
+                [&dialog] { dialog.done(QDialog::Accepted); });
+        connect(buttons.button(QDialogButtonBox::No), &QPushButton::clicked, &dialog,
+                &QDialog::reject);
+        layout.addWidget(&buttons);
 
-            ControllerNavigation controller_navigation(QtCommon::system->HIDCore());
-            connect(&controller_navigation, &ControllerNavigation::TriggerKeyboardEvent, &dialog,
-                    [&dialog](Qt::Key key) {
-                        if (key == Qt::Key_Down || key == Qt::Key_Right) {
-                            key = Qt::Key_Tab;
-                        } else if (key == Qt::Key_Up || key == Qt::Key_Left) {
-                            key = Qt::Key_Backtab;
-                        } else if (key == Qt::Key_Enter || key == Qt::Key_Return) {
-                            if (auto* button = qobject_cast<QAbstractButton*>(dialog.focusWidget())) {
-                                button->click();
-                                return;
-                            }
+        ControllerNavigation controller_navigation(QtCommon::system->HIDCore());
+        connect(&controller_navigation, &ControllerNavigation::TriggerKeyboardEvent, &dialog,
+                [&dialog](Qt::Key key) {
+                    if (key == Qt::Key_Down || key == Qt::Key_Right) {
+                        key = Qt::Key_Tab;
+                    } else if (key == Qt::Key_Up || key == Qt::Key_Left) {
+                        key = Qt::Key_Backtab;
+                    } else if (key == Qt::Key_Enter || key == Qt::Key_Return) {
+                        if (auto* button = qobject_cast<QAbstractButton*>(dialog.focusWidget())) {
+                            button->click();
+                            return;
                         }
-                        auto* target = dialog.focusWidget();
-                        QCoreApplication::postEvent(
-                            target ? target : &dialog,
-                            new QKeyEvent(QEvent::KeyPress, key, Qt::NoModifier));
-                    });
-            const bool accepted = dialog.exec() == QDialog::Accepted;
-            controller_navigation.UnloadController();
-            skip_prompt_setting = skip_prompt.isChecked();
-            const bool players_were_global = Settings::values.players.UsingGlobal();
-            config->SaveAllValues();
-            Settings::values.players.SetGlobal(players_were_global);
-            LOG_INFO(Config, "Recommended settings for {:016X} accepted: {}", program_id, accepted);
-            if (apply_preset(Settings::values, title_id, accepted)) {
-                QtCommon::system->ApplySettings();
-                Settings::UpdateGPUAccuracy();
-                if (remember_settings.isChecked() && per_game_config) {
-                    per_game_config->SaveAllValues();
-                }
-                LOG_INFO(Config,
-                         "Applied recommended settings for {:016X} after per-game configuration",
-                         program_id);
+                    }
+                    auto* target = dialog.focusWidget();
+                    QCoreApplication::postEvent(
+                        target ? target : &dialog,
+                        new QKeyEvent(QEvent::KeyPress, key, Qt::NoModifier));
+                });
+        const bool accepted = dialog.exec() == QDialog::Accepted;
+        controller_navigation.UnloadController();
+        if (skip_prompt.isChecked()) {
+            UISettings::values.skipped_recommended_settings.insert(title_id);
+        }
+        const bool players_were_global = Settings::values.players.UsingGlobal();
+        config->SaveAllValues();
+        Settings::values.players.SetGlobal(players_were_global);
+        LOG_INFO(Config, "Recommended settings for {:016X} accepted: {}", title_id, accepted);
+        if (Settings::ApplyGamePreset(Settings::values, title_id, accepted)) {
+            QtCommon::system->ApplySettings();
+            Settings::UpdateGPUAccuracy();
+            if (remember_settings.isChecked() && per_game_config) {
+                per_game_config->SaveAllValues();
             }
-        };
-    offer_recommended_settings(
-        Settings::MarioKartWorldProgramId, asked_recommended_mkw_settings,
-        UISettings::values.skip_mkw_settings_prompt, tr("Recommended Mario Kart World settings"),
-        tr("Use the recommended settings for Mario Kart World?\n\n"
-           "Vulkan, 1x resolution, GPU Fast, asynchronous shaders, BC3, conservative VRAM, "
-           "reactive flushing off, FIFO Relaxed VSync, handheld mode, ScaleForce, and FXAA.\n\n"
-           "Choose Yes to use them for this launch. Remember these settings saves them for "
-           "Mario Kart World. Skipping this prompt uses your saved settings on future launches."),
-        Settings::ApplyMarioKartWorldPreset);
-    offer_recommended_settings(
-        Settings::OcarinaOfTimeProgramId, asked_recommended_oot_settings,
-        UISettings::values.skip_oot_settings_prompt, tr("Recommended Ocarina of Time settings"),
-        tr("Use the recommended settings for Ocarina of Time?\n\n"
-           "Vulkan, 1x resolution, GPU Fast, asynchronous shaders, BC3, conservative VRAM, "
-           "reactive flushing on, FIFO Relaxed VSync, docked mode, ScaleForce, and FXAA.\n\n"
-           "Choose Yes to use them for this launch. Remember these settings saves them for "
-           "Ocarina of Time. Skipping this prompt uses your saved settings on future launches."),
-        Settings::ApplyOcarinaOfTimePreset);
+            LOG_INFO(Config,
+                     "Applied recommended settings for {:016X} after per-game configuration",
+                     title_id);
+        }
+    }
 
     Settings::LogSettings();
 

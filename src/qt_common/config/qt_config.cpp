@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/game_presets.h"
 #include "common/logging.h"
 #include "input_common/main.h"
 #include "qt_config.h"
@@ -288,6 +289,24 @@ void QtConfig::ReadUIValues() {
     ReadCategory(Settings::Category::Ui);
     ReadCategory(Settings::Category::UiGeneral);
 
+    auto& skipped = UISettings::values.skipped_recommended_settings;
+    skipped.clear();
+    // Preserve choices saved before prompts were indexed by program ID.
+    if (!Exists("UI", "skipped_recommended_settings\\size")) {
+        if (ReadBooleanSetting("skip_mkw_settings_prompt", false)) {
+            skipped.insert(Settings::MarioKartWorldProgramId);
+        }
+        if (ReadBooleanSetting("skip_oot_settings_prompt", false)) {
+            skipped.insert(Settings::OcarinaOfTimeProgramId);
+        }
+    }
+    const int skipped_size = BeginArray("skipped_recommended_settings");
+    for (int i = 0; i < skipped_size; ++i) {
+        SetArrayIndex(i);
+        skipped.insert(ReadUnsignedIntegerSetting("program_id"));
+    }
+    EndArray();
+
     EndGroup();
 }
 
@@ -499,6 +518,14 @@ void QtConfig::SaveUIValues() {
 
     WriteCategory(Settings::Category::Ui);
     WriteCategory(Settings::Category::UiGeneral);
+
+    BeginArray("skipped_recommended_settings");
+    int skipped_index = 0;
+    for (const u64 program_id : UISettings::values.skipped_recommended_settings) {
+        SetArrayIndex(skipped_index++);
+        WriteIntegerSetting("program_id", program_id);
+    }
+    EndArray();
 
     WriteStringSetting(
         std::string("theme"), UISettings::values.theme,
