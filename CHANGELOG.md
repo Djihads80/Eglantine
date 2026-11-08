@@ -12,6 +12,7 @@ New entries go under `## [Unreleased]`; `tools/ci/bump-version.sh` turns them in
 - Less shader rebuilds
 - Changed dir from eden to eglantine
 - Overall better performances and fixes
+- Fixed Closing Software dialog's theme.
 
 ## [0.1.0]
 
