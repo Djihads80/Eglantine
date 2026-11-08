@@ -88,6 +88,12 @@ struct RuntimeInfo {
     VaryingState previous_stage_stores;
     /// Fragment stage after a mesh program: generic inputs it writes per primitive.
     std::bitset<32> per_primitive_generics{};
+    /// Last pre-rasterization stage: generic outputs the fragment stage reads screen-linear.
+    /// They are written times Position.w and the fragment stage reads them perspective-correct
+    /// times FragCoord.w, so clipping a primitive close to the camera interpolates them right.
+    std::bitset<32> noperspective_outputs{};
+    /// Fragment stage: the previous stage writes noperspective_outputs (not a mesh program).
+    bool scaled_noperspective_inputs{};
     std::map<IR::Attribute, IR::Attribute> previous_stage_legacy_stores_mapping;
 
     bool convert_depth_mode{};

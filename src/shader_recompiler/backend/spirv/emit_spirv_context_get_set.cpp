@@ -314,7 +314,15 @@ Id EmitGetAttribute(EmitContext& ctx, IR::Attribute attr, Id vertex) {
         }
         const Id pointer{
             AttrPointer(ctx, generic.pointer_type, vertex, generic.id, ctx.Const(element))};
-        const Id value{ctx.OpLoad(generic.component_type, pointer)};
+        Id value{ctx.OpLoad(generic.component_type, pointer)};
+        if (ctx.stage == Stage::Fragment && ctx.noperspective_as_smooth_inputs[index]) {
+            // Written times Position.w and interpolated perspective-correct: undo with 1/w.
+            // Only float inputs are marked, and DefineInputs forces FragCoord for them.
+            ASSERT(generic.load_op == InputGenericLoadOp::None && ValidId(ctx.input_position));
+            const Id frag_w{ctx.OpLoad(
+                ctx.F32[1], ctx.OpAccessChain(ctx.input_f32, ctx.input_position, ctx.Const(3u)))};
+            value = ctx.OpFMul(ctx.F32[1], value, frag_w);
+        }
         return [&ctx, generic, value]() {
             switch (generic.load_op) {
             case InputGenericLoadOp::Bitcast:

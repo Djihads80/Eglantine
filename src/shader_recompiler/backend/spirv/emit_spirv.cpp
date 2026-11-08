@@ -510,6 +510,10 @@ void SetupCapabilities(const Profile& profile, const Info& info, EmitContext& ct
         }
         ctx.AddCapability(spv::Capability::GroupNonUniformShuffle);
     }
+    if (info.uses_atomic_f32_add && profile.support_float32_atomic_add) {
+        ctx.AddExtension("SPV_EXT_shader_atomic_float_add");
+        ctx.AddCapability(spv::Capability::AtomicFloat32AddEXT);
+    }
     if (info.uses_int64_bit_atomics && profile.support_int64_atomics) {
         ctx.AddCapability(spv::Capability::Int64Atomics);
     }
@@ -590,7 +594,8 @@ void RewriteOpcodes(std::vector<u32>& code, std::span<const std::pair<u32, spv::
             return;
         }
         if (opcode == spv::Op::OpGroupNonUniformShuffleXor ||
-            opcode == spv::Op::OpGroupNonUniformQuadBroadcast) {
+            opcode == spv::Op::OpGroupNonUniformQuadBroadcast ||
+            opcode == spv::Op::OpAtomicIAdd) {
             const auto it{std::ranges::find(rewrites, code[offset + 2],
                                             &std::pair<u32, spv::Op>::first)};
             if (it != rewrites.end()) {
@@ -648,7 +653,9 @@ void PatchMeshInstructions(std::vector<u32>& code, const EmitContext& ctx) {
 } // Anonymous namespace
 
 std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_info, IR::Program& program, Bindings& bindings) {
+    const std::optional<u32> tensor_scratch_word{ReserveCooperativeHmmaScratch(profile, program)};
     EmitContext ctx{profile, runtime_info, program, bindings};
+    ctx.tensor_scratch_word = tensor_scratch_word;
     DefineSoftwareMatrixFunctions(ctx, program);
     const Id main{DefineMain(ctx, program)};
     DefineEntryPoint(program, ctx, main);
@@ -663,6 +670,10 @@ std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_in
     std::vector<u32> code{ctx.Assemble()};
     RewriteOpcodes(code, ctx.opcode_rewrites);
     PatchMeshInstructions(code, ctx);
+    if (ctx.cooperative_hmma) {
+        PatchCooperativeHmma(code, *ctx.cooperative_hmma);
+    }
+    program.info.uses_cooperative_matrix = ctx.cooperative_hmma.has_value();
     return code;
 }
 

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 
 #include <sirit/sirit.h>
 #include "common/container/unordered_set.h"
@@ -160,6 +161,14 @@ struct GenericElementInfo {
     Id id{};
     u32 first_element{};
     u32 num_components{};
+};
+
+struct CooperativeHmmaTypes {
+    Id float16{};
+    Id float16x2{};
+    Id matrix_a{};
+    Id matrix_b{};
+    Id matrix_c{};
 };
 
 class EmitContext final : public Sirit::Module {
@@ -352,6 +361,8 @@ public:
     bool need_input_position_indirect{};
     Id input_position{};
     std::array<InputGenericInfo, 32> input_generics{};
+    /// Screen-linear fragment inputs read through perspective interpolation, times FragCoord.w.
+    std::array<bool, 32> noperspective_as_smooth_inputs{};
 
     Id output_point_size{};
     Id output_position{};
@@ -366,6 +377,11 @@ public:
     Id frag_depth{};
 
     std::array<Id, 2> software_matrix_functions{};
+    std::optional<CooperativeHmmaTypes> cooperative_hmma; ///< Set when a program lowers HMMA to it
+    /// Set when HMMA runs on 16x16x16 matrices: each 32-lane subgroup owns 384 words of shared
+    /// memory from this word (A, B and C/D tiles of 16x16 fp16, 128 words each).
+    std::optional<u32> tensor_scratch_word;
+    Id tensor_subgroup_id{};
     std::vector<Id> interfaces;
     std::vector<std::pair<u32, spv::Op>> opcode_rewrites;
 

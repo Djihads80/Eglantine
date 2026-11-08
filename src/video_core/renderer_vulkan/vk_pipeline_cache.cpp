@@ -37,6 +37,7 @@
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vertex_repack.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
+#include "video_core/renderer_vulkan/vk_cooperative_hmma_test.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -71,7 +72,7 @@ using VideoCommon::GraphicsEnvironment;
 // translated again at boot and written back under the new one. Bump MIN_COMPATIBLE_CACHE_VERSION
 // too only when the record layout (environment or key serialization) changes, which deletes older
 // caches. 20 changed the environment layout; the keys last changed before it.
-constexpr u32 CACHE_VERSION = 31;
+constexpr u32 CACHE_VERSION = 35;
 constexpr u32 MIN_COMPATIBLE_CACHE_VERSION = 20;
 constexpr size_t VULKAN_CACHE_FLUSH_PIPELINES = 128;
 constexpr size_t VULKAN_CACHE_FLUSH_MIN_SECONDS = 30;
@@ -327,6 +328,33 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
     }
     info.force_early_z = key.state.early_z != 0;
     info.y_negate = key.state.y_negate != 0;
+    // Transform feedback would capture the scaled values, a passthrough geometry shader doesn't
+    // scale the outputs it writes itself, and indexed attribute reads in the fragment stage don't
+    // undo the scaling, so all three keep native noperspective interpolation.
+    const bool geometry_passthrough{key.unique_hashes[4] != 0 &&
+                                    programs[4].is_geometry_passthrough};
+    if (key.unique_hashes[5] != 0 && !geometry_passthrough && key.state.xfb_enabled == 0 &&
+        !programs[5].info.loads_indexed_attributes) {
+        const bool has_tess{key.unique_hashes[3] != 0};
+        const bool last_pre_raster{
+            (stage == Shader::Stage::VertexB && !has_tess && !has_geometry) ||
+            (stage == Shader::Stage::TessellationEval && !has_geometry) ||
+            (stage == Shader::Stage::Geometry && has_geometry)};
+        if (stage == Shader::Stage::Fragment) {
+            info.scaled_noperspective_inputs =
+                previous_program && (previous_program->stage == Shader::Stage::VertexB ||
+                                     previous_program->stage == Shader::Stage::TessellationEval ||
+                                     previous_program->stage == Shader::Stage::Geometry);
+        }
+        if (last_pre_raster) {
+            const auto& fragment_info{programs[5].info};
+            for (size_t index = 0; index < 32; ++index) {
+                if (fragment_info.interpolation[index] == Shader::Interpolation::NoPerspective) {
+                    info.noperspective_outputs.set(index);
+                }
+            }
+        }
+    }
     return info;
 }
 
@@ -404,6 +432,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                                 !DriverCachesPipelines(device_)},
       workers(device.HasBrokenParallelShaderCompiling() ? 1ULL : GetTotalPipelineWorkers(),
               "VkPipelineBuilder", {}, Common::ThreadPlacement::Background),
+      deferred_workers(1, "VkDeferredPipelines", {}, Common::ThreadPlacement::Background),
       serialization_thread(1, "VkPipelineSerialization", {},
                            Common::ThreadPlacement::Background) {
     const auto& float_control{device.FloatControlProperties()};
@@ -474,6 +503,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .support_demote_to_helper_invocation =
             device.IsExtShaderDemoteToHelperInvocationSupported(),
         .support_int64_atomics = device.IsExtShaderAtomicInt64Supported(),
+        .support_float32_atomic_add = device.IsFloat32AtomicAddSupported(),
         .support_shared_int64_atomics = device.IsSharedInt64AtomicsSupported(),
         .support_derivative_control = true,
         .support_geometry_shader_passthrough = device.IsNvGeometryShaderPassthroughSupported(),
@@ -507,6 +537,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .has_broken_unsigned_image_offsets = false,
         .has_broken_signed_operations = false,
         .has_broken_fp16_float_controls = driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY,
+        .max_compute_shared_memory_size = device.GetMaxComputeSharedMemorySize(),
         .has_broken_fp32_denorm_flush = driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY,
         .ignore_nan_fp_comparisons = false,
         .has_broken_spirv_subgroup_mask_vector_extract_dynamic =
@@ -522,6 +553,13 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .min_ssbo_alignment = device.GetStorageBufferAlignment(),
         .max_user_clip_distances = device.GetMaxUserClipDistances()
     };
+    profile.support_cooperative_hmma =
+        device.IsCooperativeHmmaSupported() && TestCooperativeHmma(device);
+    profile.support_cooperative_hmma_16x16x16 =
+        !profile.support_cooperative_hmma && device.IsCooperativeHmma16x16x16Supported();
+    if (profile.support_cooperative_hmma_16x16x16) {
+        LOG_INFO(Render_Vulkan, "Guest tensor operations run on 16x16x16 cooperative matrices");
+    }
 
     host_info = Shader::HostTranslateInfo{
         .min_ssbo_alignment = device.GetStorageBufferAlignment(),
@@ -560,6 +598,10 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
     }
 
     LOG_INFO(Render_Vulkan, "DynamicState setting value: {}", u32(Settings::values.dyna_state.GetValue()));
+    LOG_INFO(Render_Vulkan, "Float32 storage atomic adds: {}",
+             profile.support_float32_atomic_add && profile.support_descriptor_aliasing
+                 ? "native"
+                 : "compare-exchange loop");
 
     dynamic_features = {};
     dynamic_features.driver_id = device.GetDriverID();
@@ -1247,6 +1289,12 @@ void PipelineCache::EvictUnusedPipelines() {
     if (device.IsMoltenVK()) {
         return;
     }
+    // EDEN_NX2_PRELOAD_ALL_PIPELINES asked for every cached pipeline built: evicting the ones not
+    // used yet threw the preload away after 9000 frames (Ocarina: 22,510 of 24,285, then rebuilt
+    // one by one in new places).
+    if (PreloadAllPipelines()) {
+        return;
+    }
     // Each built pipeline holds ~0.45 MB of driver memory and none was ever destroyed, so it grew
     // with every place a session went (title 1: 1,500 on its title screen alone). One unused for
     // this long is destroyed; it takes 2-3 ms to build again from the driver's pipeline cache.
@@ -1678,12 +1726,17 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
         const auto name{fmt::format("Shader {:016x}", key.unique_hash)};
         spv_module.SetObjectNameEXT(name.c_str());
     }
-    Common::ThreadWorker* const thread_worker{build_in_parallel ? &workers : nullptr};
+    const bool deferred = program.info.uses_software_matrix &&
+                          !program.info.uses_cooperative_matrix &&
+                          device.DefersSoftwareMatrixPipelines();
+    Common::ThreadWorker* const thread_worker{deferred            ? &deferred_workers
+                                              : build_in_parallel ? &workers
+                                                                  : nullptr};
     return std::make_unique<ComputePipeline>(device, scheduler, vulkan_pipeline_cache, descriptor_pool,
                                              guest_descriptor_queue, descriptor_buffer_ring,
                                              thread_worker, statistics,
                                              &shader_notify, program.info, std::move(spv_module),
-                                             key.unique_hash);
+                                             key.unique_hash, deferred);
 
 } catch (const Shader::Exception& exception) {
     LOG_ERROR(Render_Vulkan, "{}", exception.what());
@@ -1791,9 +1844,21 @@ vk::PipelineCache PipelineCache::LoadVulkanPipelineCache(const std::filesystem::
         file.read(cache_data.data(), cache_size);
 
         LOG_INFO(Render_Vulkan,
-                 "Loaded Vulkan driver pipeline cache: ", Common::FS::PathToUTF8String(filename));
+                 "Loaded Vulkan driver pipeline cache: {}", Common::FS::PathToUTF8String(filename));
 
-        return create_pipeline_cache(cache_size, cache_data.data());
+        try {
+            return create_pipeline_cache(cache_size, cache_data.data());
+        } catch (const vk::Exception& e) {
+            // The blob came from another driver or driver version (e.g. switching between
+            // MoltenVK and KosmicKrisp on macOS): the driver rejects it. Start empty instead of
+            // aborting, and drop the stale file so the next run doesn't retry it.
+            LOG_ERROR(Render_Vulkan,
+                      "Driver rejected the Vulkan pipeline cache file ({}), starting with an empty "
+                      "cache and deleting it",
+                      e.what());
+            Common::FS::RemoveFile(filename);
+            return create_pipeline_cache(0, nullptr);
+        }
 
     } catch (const std::ios_base::failure& e) {
         LOG_ERROR(Common_Filesystem, "{}", e.what());

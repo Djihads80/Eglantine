@@ -74,8 +74,10 @@ VK_DEFINE_HANDLE(VmaPool)
             primitive_topology_list_restart)                                                       \
     FEATURE(EXT, ProvokingVertex, PROVOKING_VERTEX, provoking_vertex)                              \
     FEATURE(EXT, Robustness2, ROBUSTNESS_2, robustness2)                                           \
+    FEATURE(EXT, ShaderAtomicFloat, SHADER_ATOMIC_FLOAT, shader_atomic_float)                      \
     FEATURE(EXT, TransformFeedback, TRANSFORM_FEEDBACK, transform_feedback)                        \
     FEATURE(EXT, VertexInputDynamicState, VERTEX_INPUT_DYNAMIC_STATE, vertex_input_dynamic_state)  \
+    FEATURE(KHR, CooperativeMatrix, COOPERATIVE_MATRIX, cooperative_matrix)                        \
     FEATURE(KHR, Maintenance5, MAINTENANCE_5, maintenance5)                                        \
     FEATURE(KHR, Maintenance6, MAINTENANCE_6, maintenance6)                                        \
     FEATURE(KHR, PipelineExecutableProperties, PIPELINE_EXECUTABLE_PROPERTIES,                     \
@@ -375,6 +377,19 @@ public:
         return GetDriverID() != VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS;
     }
 
+    /// AMD's own drivers can spend minutes on a software HMMA compute pipeline (Ocarina of
+    /// Time's upscaling network) and then fail it with VK_ERROR_OUT_OF_HOST_MEMORY. Such
+    /// pipelines are built on their own worker and their dispatches skipped until they exist,
+    /// instead of stalling the GPU thread. Pipelines on the cooperative-matrix path are not
+    /// software HMMA and are built normally.
+    bool DefersSoftwareMatrixPipelines() const {
+        if (IsAmdFixDisabled("hmma_defer")) {
+            return false;
+        }
+        const VkDriverIdKHR id = GetDriverID();
+        return id == VK_DRIVER_ID_AMD_PROPRIETARY || id == VK_DRIVER_ID_AMD_OPEN_SOURCE;
+    }
+
     /// Returns true for tile-based deferred renderers.
     bool IsTiler() const {
         switch (GetDriverID()) {
@@ -485,7 +500,7 @@ FN_MAX_LIMIT_LIST
 
     /// Returns true if the device supports float16 natively.
     bool IsFloat16Supported() const {
-        return features.shader_float16_int8.shaderFloat16;
+        return float16_math;
     }
 
     /// Returns true if the device can run shaders built against the Vulkan memory model.
@@ -662,6 +677,18 @@ FN_MAX_LIMIT_LIST
         return extensions.workgroup_memory_explicit_layout &&
                features.workgroup_memory_explicit_layout.workgroupMemoryExplicitLayout16BitAccess &&
                features.features.shaderInt16;
+    }
+
+    /// Returns true if the guest's HMMA.16816.F16 can run on the host's cooperative matrices
+    /// (VK_KHR_cooperative_matrix with the same 16x8x16 shape on 16-bit floats, 32-lane subgroups).
+    bool IsCooperativeHmmaSupported() const {
+        return cooperative_hmma_16x8x16;
+    }
+
+    /// Returns true if the guest's HMMA can run through shared memory on 16x16x16 cooperative
+    /// matrices of 16-bit floats, with compute subgroups forced to the guest's 32 lanes.
+    bool IsCooperativeHmma16x16x16Supported() const {
+        return cooperative_hmma_16x16x16;
     }
 
     /// Returns true if the device supports VK_KHR_shader_quad_control.
@@ -962,6 +989,12 @@ FN_MAX_LIMIT_LIST
                features.provoking_vertex.transformFeedbackPreservesProvokingVertex;
     }
 
+    /// Returns true if storage buffers support native 32-bit float atomic adds.
+    bool IsFloat32AtomicAddSupported() const {
+        return extensions.shader_atomic_float &&
+               features.shader_atomic_float.shaderBufferFloat32AtomicAdd;
+    }
+
     /// Returns true if the device supports VK_KHR_shader_atomic_int64.
     bool IsExtShaderAtomicInt64Supported() const {
         return extensions.shader_atomic_int64;
@@ -1192,6 +1225,29 @@ FN_MAX_LIMIT_LIST
         return properties.driver.driverID == VK_DRIVER_ID_MOLTENVK;
     }
 
+    /// Returns true when the given token is listed in the comma-separated EDEN_NX2_AMD_FIX_OFF
+    /// launch environment variable (valid tokens: robust2, fatomic, hmma_defer).
+    static bool IsAmdFixDisabled(std::string_view token) noexcept {
+        static const std::string_view value = []() -> std::string_view {
+            const char* raw = std::getenv("EDEN_NX2_AMD_FIX_OFF");
+            return raw != nullptr ? std::string_view{raw} : std::string_view{};
+        }();
+        size_t start = 0;
+        while (start < value.size()) {
+            const size_t end = value.find(',', start);
+            const std::string_view item = value.substr(
+                start, end == std::string_view::npos ? std::string_view::npos : end - start);
+            if (item == token) {
+                return true;
+            }
+            if (end == std::string_view::npos) {
+                break;
+            }
+            start = end + 1;
+        }
+        return false;
+    }
+
     /// The multiple vertex input binding strides must be. Metal needs 4 bytes, which MoltenVK
     /// reports as minVertexInputBindingStrideAlignment through VK_KHR_portability_subset.
     u32 GetMinVertexInputBindingStrideAlignment() const noexcept {
@@ -1306,6 +1362,8 @@ private:
         VkPhysicalDeviceMaintenance5PropertiesKHR maintenance5{};
         VkPhysicalDeviceDepthStencilResolveProperties depth_stencil_resolve{};
         VkPhysicalDeviceCustomBorderColorPropertiesEXT custom_border_color{};
+        VkPhysicalDeviceCooperativeMatrixPropertiesKHR cooperative_matrix{};
+        VkPhysicalDeviceShaderIntegerDotProductProperties integer_dot_product{};
 
         VkPhysicalDeviceProperties properties{};
     };
@@ -1322,6 +1380,9 @@ private:
     bool is_blit_depth24_stencil8_supported{}; ///< Support for blitting from and to D24S8.
     bool is_blit_depth32_stencil8_supported{}; ///< Support for blitting from and to D32S8.
     bool is_warp_potentially_bigger{};         ///< Host warp size can be bigger than guest.
+    bool float16_math{};                       ///< Shaders may do float16 arithmetic.
+    bool cooperative_hmma_16x8x16{};           ///< HMMA runs on the guest's matrix shape.
+    bool cooperative_hmma_16x16x16{};          ///< HMMA runs on 16x16x16 matrices.
     bool is_integrated{};                      ///< Is GPU an iGPU.
     bool is_virtual{};                         ///< Is GPU a virtual GPU.
     bool is_non_gpu{};                         ///< Is SoftwareRasterizer, FPGA, non-GPU device.

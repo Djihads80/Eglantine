@@ -47,6 +47,8 @@ struct Profile {
     bool support_typeless_image_loads{};
     bool support_demote_to_helper_invocation{};
     bool support_int64_atomics{};
+    /// Native OpAtomicFAddEXT on 32-bit float storage buffer words
+    bool support_float32_atomic_add{};
     bool support_shared_int64_atomics{};
     bool support_derivative_control{};
     bool support_geometry_shader_passthrough{};
@@ -89,6 +91,8 @@ struct Profile {
     bool has_broken_signed_operations{};
     /// Float controls break when fp16 is enabled
     bool has_broken_fp16_float_controls{};
+    /// Shared memory limit for compute shaders in bytes (0 = unknown).
+    u32 max_compute_shared_memory_size{};
     /// Declaring fp32 denorm flush to zero miscompiles on some drivers
     bool has_broken_fp32_denorm_flush{};
     /// Dynamic vec4 indexing is broken on some OpenGL drivers
@@ -104,6 +108,10 @@ struct Profile {
     /// Some drivers have broken support for OpVectorExtractDynamic on subgroup mask inputs
     bool has_broken_spirv_subgroup_mask_vector_extract_dynamic{};
     bool has_broken_spirv_subgroup_shuffle{};
+    /// The guest's HMMA.16816.F16 runs on a cooperative matrix, in compute shaders
+    bool support_cooperative_hmma{};
+    /// Without the above, HMMA runs on 16x16x16 cooperative matrices through shared memory
+    bool support_cooperative_hmma_16x16x16{};
     bool has_broken_spirv_fragment_shuffle{};
     u32 max_subgroup_size{};
 

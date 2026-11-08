@@ -759,7 +759,17 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
                                VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
     }
 
+    // The float16 workarounds above keep shaders from doing float16 arithmetic. Cooperative
+    // matrices only pass 16-bit floats to the tensor cores and back, so they keep the device
+    // feature, which no other shader then uses.
+    float16_math = features.shader_float16_int8.shaderFloat16;
+    if (extensions.cooperative_matrix) {
+        features.shader_float16_int8.shaderFloat16 = VK_TRUE;
+        LOG_INFO(Render_Vulkan, "VK_KHR_cooperative_matrix enabled for guest tensor operations");
+    }
+
     logical = vk::Device::Create(physical, queue_cis, ExtensionListForVulkan(loaded_extensions), first_next, dld);
+    features.shader_float16_int8.shaderFloat16 = float16_math;
 
     graphics_queue = logical.GetQueue(graphics_family);
     present_queue = logical.GetQueue(present_family);
@@ -1334,6 +1344,16 @@ bool Device::GetSuitability(bool requires_swapchain) {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT;
         SetNext(next, properties.custom_border_color);
     }
+    if (extensions.cooperative_matrix) {
+        properties.cooperative_matrix.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR;
+        SetNext(next, properties.cooperative_matrix);
+    }
+    if (supported_extensions.contains(VK_KHR_SHADER_INTEGER_DOT_PRODUCT_EXTENSION_NAME)) {
+        properties.integer_dot_product.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_PROPERTIES;
+        SetNext(next, properties.integer_dot_product);
+    }
 
     // Perform the property fetch.
     physical.GetProperties2(properties2);
@@ -1525,9 +1545,19 @@ void Device::RemoveUnsuitableExtensions() {
                                        VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
 
     // VK_EXT_robustness2
-    features.robustness2.robustBufferAccess2 = VK_FALSE;
+    // AMD keeps robustBufferAccess2: games read storage buffers out of bounds and AMD returned
+    // garbage without it (Ocarina's Hyrule Field fog volume turned the sky white).
+    const VkDriverId robustness_driver = properties.driver.driverID;
+    const bool amd_robust2 = (robustness_driver == VK_DRIVER_ID_AMD_PROPRIETARY ||
+                              robustness_driver == VK_DRIVER_ID_AMD_OPEN_SOURCE ||
+                              robustness_driver == VK_DRIVER_ID_MESA_RADV) &&
+                             !IsAmdFixDisabled("robust2");
+    if (!amd_robust2) {
+        features.robustness2.robustBufferAccess2 = VK_FALSE;
+    }
     features.robustness2.robustImageAccess2 = VK_FALSE;
-    extensions.robustness_2 = features.robustness2.nullDescriptor;
+    extensions.robustness_2 =
+        features.robustness2.nullDescriptor || features.robustness2.robustBufferAccess2;
 
     const char* robustness2_extension_name =
         loaded_extensions.contains(VK_KHR_ROBUSTNESS_2_EXTENSION_NAME)
@@ -1536,6 +1566,26 @@ void Device::RemoveUnsuitableExtensions() {
 
     RemoveExtensionFeatureIfUnsuitable(extensions.robustness_2, features.robustness2,
                                        robustness2_extension_name);
+
+    // VK_EXT_shader_atomic_float: only 32-bit float adds on storage buffers are used, and only on
+    // AMD drivers until other vendors are validated; elsewhere a compare-exchange loop adds.
+    {
+        const VkDriverId atomic_driver = properties.driver.driverID;
+        const bool amd = (atomic_driver == VK_DRIVER_ID_AMD_PROPRIETARY ||
+                          atomic_driver == VK_DRIVER_ID_AMD_OPEN_SOURCE ||
+                          atomic_driver == VK_DRIVER_ID_MESA_RADV) &&
+                         !IsAmdFixDisabled("fatomic");
+        const VkBool32 buffer_add =
+            amd ? features.shader_atomic_float.shaderBufferFloat32AtomicAdd : VK_FALSE;
+        void* const next_feature = features.shader_atomic_float.pNext;
+        features.shader_atomic_float = {};
+        features.shader_atomic_float.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+        features.shader_atomic_float.pNext = next_feature;
+        features.shader_atomic_float.shaderBufferFloat32AtomicAdd = buffer_add;
+        RemoveExtensionFeatureIfUnsuitable(buffer_add == VK_TRUE, features.shader_atomic_float,
+                                           VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
+    }
 
     // Image robustness
     extensions.robust_image_access = features.robust_image_access.robustImageAccess;
@@ -1605,6 +1655,70 @@ void Device::RemoveUnsuitableExtensions() {
     extensions.shader_quad_control = features.shader_quad_control.shaderQuadControl;
     RemoveExtensionFeatureIfUnsuitable(extensions.shader_quad_control, features.shader_quad_control,
                                        VK_KHR_SHADER_QUAD_CONTROL_EXTENSION_NAME);
+
+    // VK_KHR_cooperative_matrix
+    // Used only for the guest's HMMA.16816.F16, as a subgroup operation of compute shaders whose
+    // subgroups are the guest's 32-lane warp. The matrices hold 16-bit floats, so the device needs
+    // shaderFloat16. Shaders with them use the Vulkan memory model and run with full subgroups.
+    // The guest's own M=16 N=8 K=16 shape is preferred; without it, a 16x16x16 shape runs HMMA
+    // through shared memory with the compute subgroups forced to 32 lanes.
+    {
+        // The instance may expose this entry point even when the selected physical device
+        // does not support VK_KHR_cooperative_matrix. Query only eligible devices.
+        std::vector<VkCooperativeMatrixPropertiesKHR> shapes;
+        if (extensions.cooperative_matrix) {
+            shapes = physical.GetCooperativeMatrixPropertiesKHR();
+        }
+        const auto has_shape = [&](u32 columns) {
+            return std::ranges::any_of(shapes, [=](const VkCooperativeMatrixPropertiesKHR& shape) {
+                return shape.MSize == 16 && shape.NSize == columns && shape.KSize == 16 &&
+                       shape.AType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                       shape.BType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                       shape.CType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                       shape.ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                       shape.saturatingAccumulation == VK_FALSE &&
+                       shape.scope == VK_SCOPE_SUBGROUP_KHR;
+            });
+        };
+        // AMD's driver also advertises the extension on GPUs without matrix cores (GCN, RDNA1,
+        // RDNA2) and crashes in amdvlk64.dll building these pipelines on RDNA2. RDNA3 brought
+        // matrix cores together with accelerated mixed-signedness dot4, which the driver reports.
+        const VkDriverId driver_id = properties.driver.driverID;
+        const bool emulated_amd_matrices =
+            (driver_id == VK_DRIVER_ID_AMD_PROPRIETARY ||
+             driver_id == VK_DRIVER_ID_AMD_OPEN_SOURCE) &&
+            !properties.integer_dot_product.integerDotProduct4x8BitPackedMixedSignednessAccelerated;
+        if (extensions.cooperative_matrix && emulated_amd_matrices) {
+            LOG_INFO(Render_Vulkan,
+                     "VK_KHR_cooperative_matrix is emulated on this AMD GPU: guest tensor "
+                     "operations stay in shader emulation");
+        }
+        const bool usable = extensions.cooperative_matrix && !emulated_amd_matrices &&
+                            features.cooperative_matrix.cooperativeMatrix &&
+                            (properties.cooperative_matrix.cooperativeMatrixSupportedStages &
+                             VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
+                            features.shader_float16_int8.shaderFloat16 &&
+                            features.vulkan_memory_model.vulkanMemoryModel &&
+                            features.vulkan_memory_model.vulkanMemoryModelDeviceScope &&
+                            extensions.subgroup_size_control &&
+                            features.subgroup_size_control.computeFullSubgroups;
+        cooperative_hmma_16x8x16 =
+            usable && has_shape(8) &&
+            (properties.subgroup_properties.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
+            properties.subgroup_properties.subgroupSize == GuestWarpSize &&
+            // Compute subgroups may vary between these sizes (always with SPIR-V 1.6), and the
+            // per-lane matrix layout needs exactly the guest's 32 lanes.
+            properties.subgroup_size_control.minSubgroupSize == GuestWarpSize &&
+            properties.subgroup_size_control.maxSubgroupSize == GuestWarpSize;
+        cooperative_hmma_16x16x16 =
+            usable && !cooperative_hmma_16x8x16 && has_shape(16) &&
+            IsGuestWarpSizeSupported(VK_SHADER_STAGE_COMPUTE_BIT);
+        extensions.cooperative_matrix = cooperative_hmma_16x8x16 || cooperative_hmma_16x16x16;
+        features.cooperative_matrix.cooperativeMatrixRobustBufferAccess = VK_FALSE;
+        RemoveExtensionFeatureIfUnsuitable(extensions.cooperative_matrix,
+                                           features.cooperative_matrix,
+                                           VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+    }
 
     // VK_KHR_workgroup_memory_explicit_layout
     extensions.workgroup_memory_explicit_layout =
