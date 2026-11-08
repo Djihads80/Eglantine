@@ -70,7 +70,6 @@ private:
     void* set_options{}; ///< slDLSSSetOptions
     VkExtent2D render_extent{};
     VkExtent2D upscale_extent{};
-    u32 frame_index{};
     vk::Image output_image;
     vk::ImageView output_view;
     vk::Sampler point_sampler;

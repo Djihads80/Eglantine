@@ -28,6 +28,10 @@
 #include "video_core/post_processing/fx_chain.h"
 #endif
 #include "video_core/renderer_vulkan/renderer_vulkan.h"
+#ifdef EGLANTINE_STREAMLINE
+#include "video_core/vulkan_common/streamline.h"
+#include "video_core/vulkan_common/streamline_api.h"
+#endif
 #include "video_core/renderer_vulkan/vk_blit_screen.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -208,6 +212,14 @@ RendererVulkan::~RendererVulkan() {
 }
 
 void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebuffers) {
+#ifdef EGLANTINE_STREAMLINE
+    // NVIDIA Reflex frame start integration (if not already started during 3D/DLSS rendering)
+    sl::FrameToken* streamline_frame = Streamline::GetOrNewFrameToken();
+    if (!Streamline::IsRenderSubmitStarted()) {
+        Streamline::NotifyRenderSubmitStart(streamline_frame);
+    }
+#endif
+
     SCOPE_EXIT {
         render_window.OnFrameDisplayed();
     };
@@ -215,11 +227,18 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     RenderAppletCaptureLayer(framebuffers);
 
     if (!render_window.IsShown()) {
+#ifdef EGLANTINE_STREAMLINE
+        Streamline::AdvanceFrameToken();
+        (void)Streamline::GetOrNewFrameToken();
+#endif
         return;
     }
 
     RenderScreenshot(framebuffers);
     Frame* frame = present_manager.GetRenderFrame();
+#ifdef EGLANTINE_STREAMLINE
+    frame->streamline_token = streamline_frame;
+#endif
 
     scheduler.RequestOutsideRenderPassOperationContext();
     blit_swapchain.DrawToFrame(device, rasterizer, frame, framebuffers,
@@ -245,7 +264,18 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
 
     scheduler.Flush(*frame->render_ready);
 
+#ifdef EGLANTINE_STREAMLINE
+    Streamline::SetReflexMarker(sl::PCLMarker::eRenderSubmitEnd, streamline_frame);
+#endif
+
     present_manager.Present(frame);
+#ifdef EGLANTINE_STREAMLINE
+    Streamline::AdvanceFrameToken();
+    // Pre-allocate the next frame's token to immediately start its latency timer (eSimulationStart).
+    // This allows OptiScaler to measure the true time taken by the emulator's CPU/GPU threads
+    // before the next frame's rendering submission (Upscale or Composite) begins.
+    (void)Streamline::GetOrNewFrameToken();
+#endif
 #ifdef HAS_LSFG
     scheduler.DispatchWork();
 #endif

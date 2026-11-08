@@ -1165,6 +1165,15 @@ bool Device::GetSuitability(bool requires_swapchain) {
         streamline_extensions = all;
         LOG_INFO(Render_Vulkan, "NVIDIA DLSS device extensions: {} ({})",
                  all ? "enabled" : "unavailable", names.empty() ? "none" : names);
+
+        if (all) {
+            for (const std::string& name : Streamline::OptionalDeviceExtensions()) {
+                if (supported_extensions.contains(name)) {
+                    loaded_extensions.insert(name);
+                    LOG_INFO(Render_Vulkan, "Streamline optional device extension enabled: {}", name);
+                }
+            }
+        }
     }
 #endif
 

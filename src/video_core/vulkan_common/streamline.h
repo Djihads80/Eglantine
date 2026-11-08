@@ -14,6 +14,11 @@
 #include "common/common_types.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
+namespace sl {
+struct FrameToken;
+enum class PCLMarker : uint32_t;
+}
+
 namespace Vulkan::Streamline {
 
 /// NVIDIA's files DLSS needs, as found on this PC. Paths are empty when missing.
@@ -48,6 +53,7 @@ bool Start();
 /// Instance and device extensions DLSS asks for (empty when Streamline isn't running).
 [[nodiscard]] std::vector<std::string> InstanceExtensions();
 [[nodiscard]] std::vector<std::string> DeviceExtensions();
+[[nodiscard]] std::vector<std::string> OptionalDeviceExtensions();
 
 /// Hands the renderer's device to Streamline and routes the swapchain calls through it, as
 /// Streamline's manual hooking needs. Stops Streamline and returns false when DLSS can't run.
@@ -59,5 +65,14 @@ bool AttachDevice(VkInstance instance, VkPhysicalDevice physical, VkDevice devic
 
 /// Shuts Streamline down; call before the device is destroyed.
 void Stop();
+
+/// OptiScaler interop functions
+[[nodiscard]] bool IsOptiScalerPresent();
+sl::FrameToken* GetOrNewFrameToken();
+void AdvanceFrameToken();
+bool IsRenderSubmitStarted();
+void NotifyRenderSubmitStart(const sl::FrameToken* frame);
+void SetReflexMarker(sl::PCLMarker marker, const sl::FrameToken* frame);
+void ReflexSleep(const sl::FrameToken* frame);
 
 } // namespace Vulkan::Streamline
