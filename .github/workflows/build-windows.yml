@@ -35,8 +35,8 @@ permissions:
 jobs:
   msvc:
     name: windows-x86_64
-    # Might also need to upgrade that one
-    runs-on: windows-2022
+    if: inputs.pgo != 'only'
+    runs-on: windows-2025
     env:
       PLATFORM: windows-x86_64
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
@@ -149,8 +149,8 @@ jobs:
 
   mingw-pgo:
     name: windows-x86_64-pgo
-    if: inputs.pgo == 'both'
-    runs-on: windows-2022
+    if: inputs.pgo == 'both' || inputs.pgo == 'only'
+    runs-on: windows-2025
     env:
       PLATFORM: windows-x86_64-pgo
       CCACHE_DIR: ${{ github.workspace }}/.ccache

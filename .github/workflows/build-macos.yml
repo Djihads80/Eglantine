@@ -29,7 +29,7 @@ on:
       runner:
         type: string
         # Might be changed to latest for more availability
-        default: macos-15
+        default: macos-26
 
 permissions:
   contents: read

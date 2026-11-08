@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   cleanup:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     if: >-
       github.event_name != 'delete' || github.event.ref_type == 'branch'
     env:
