@@ -1,9 +1,13 @@
 # STATUS (shared, local-only; update it whenever a result changes the picture)
 
-Last updated: 2026-11-08 05:17 local (Phase 0, Phase 1A/1B NVIDIA DLSS DLAA & Super Resolution, Phase 2 VRR FrameGen 2x pacing + FSR3 history fix, and Phase 3A Streamline DLSS-G probe landed and verified on `local-combined`).
+Last updated: 2026-11-08 11:21 local (Merged latest `upstream/nx2-experimental` `c8fdae0298` and `upstream/nx2` `78743f30c2` into `nx2-fast-forward` `3d49622e9e`, and fixed `arm64`/`aarch64` CI build on PR #769).
 
 ## Goal
 Play The Legend of Zelda: Ocarina of Time (`0400486024DEC000`) at a locked 60 FPS without crashes.
+
+## PR #769 UPSTREAM MERGE & ARM64 CI FIX COMPLETED 2026-11-08 ~11:21 (`3d49622e9e`)
+- Merged `upstream/nx2-experimental` (`c8fdae0298`, including `upstream/nx2` `78743f30c2`: `0.1.0-rc3`, `switchbrew-names`, `1e2c2dd4db` `BRA.U`/`HSETP2` cbuf lowering, `mushymeow/nx2` Discord RPC, CI/Linux packaging updates) into `nx2-fast-forward`, resolving all 4 conflicts (`nx2_gsv.h`, `buffer_cache.h`, `buffer_cache_base.h`, `kepler_compute.h`).
+- Fixed the `arm64`/`aarch64` (`linux-aarch64`, `linux-aarch64-pgo`, `macos-arm64`) CI failure on PR #769 by moving `#include "video_core/front_macro_memo.h"` and `#include "video_core/macro_dma_forward.h"` outside `#ifdef ARCHITECTURE_x86_64` in `src/video_core/engines/maxwell_3d.cpp` and moving `Common::GetProcessorCount()` outside `#ifdef ARCHITECTURE_x86_64` in `src/common/cpu_features.cpp`.
 
 ## DLSS (DLAA + Super Resolution) & VRR FrameGen 2x COMPLETED 2026-11-08 ~05:17 (`0ebb1f1166`..`ab3d29175b`)
 - **Plan & Results:** `.agent/plan-review/dlss-framegen-resolution-negotiation.md`.
