@@ -2017,6 +2017,7 @@ private:
     // rewrites command memory it hasn't read yet.
     u32 m_wait_timeouts{};
     u32 m_hang_reports{};
+    u32 m_unsubmitted_logs{};
     struct PresentStats {
         long long frame_us{}, fence_us{}, composite_us{}, pace_us{}, max_fence_us{};
         long long max_frame_us{}, hitches{};
@@ -2128,8 +2129,19 @@ private:
         m_next_vblank += interval;
     }
 
+    /// The value the syncpoint reaches once the GPU work submitted so far has run (nvdrv's max),
+    /// when nvdrv manages that syncpoint.
+    std::optional<u32> SubmittedMax(u32 fence_id) {
+        const auto nvdrv = system.ServiceManager().GetService<Nvidia::NVDRV>("nvdrv", true);
+        if (!nvdrv) {
+            return std::nullopt;
+        }
+        return nvdrv->GetModule()->GetContainer().GetSyncpointManager().SubmittedMax(fence_id);
+    }
+
     /// Waits until the fence is reached. With `unless_gpu_waits`, gives up after a few ms once a
     /// GPU channel was seen suspended on a semaphore (it may be one this thread releases later).
+    /// Gives up the same way while the work that reaches the fence is not submitted yet.
     /// Returns whether the fence was reached.
     bool WaitForFrame(u32 fence_id, u32 fence_value, bool unless_gpu_waits = false) {
         if (fence_id >= 192) {
@@ -2161,6 +2173,15 @@ private:
             // Title 1's channels resume and suspend again while they wait on this thread, so any
             // suspension counts, not only an unbroken one.
             bool gpu_waited = false;
+            // Mario Kart World can present before it submits the frame's last work (about one
+            // boot in five with the GPU thread split): that submit comes after the present
+            // returns, so the wait for the fence only ended at the deadline, and from then on
+            // every present took 4 s. The composite waits for the fence by itself
+            // (RequestComposite). EDEN_NX2_PRESENT_UNSUBMITTED=wait waits as before.
+            static const bool skip_unsubmitted = [] {
+                const char* value = std::getenv("EDEN_NX2_PRESENT_UNSUBMITTED");
+                return value == nullptr || std::strcmp(value, "wait") != 0;
+            }();
             while (!wake->done && system.IsPoweredOn() &&
                    std::chrono::steady_clock::now() < deadline) {
                 if (unless_gpu_waits) {
@@ -2170,17 +2191,36 @@ private:
                         return false;
                     }
                 }
-                wake->cv.wait_for(lk, std::chrono::milliseconds{unless_gpu_waits ? 1 : 50});
+                bool unsubmitted = false;
+                if (skip_unsubmitted) {
+                    const auto submitted = SubmittedMax(fence_id);
+                    unsubmitted = submitted && static_cast<s32>(*submitted - fence_value) < 0;
+                    if (unsubmitted &&
+                        std::chrono::steady_clock::now() - start > std::chrono::milliseconds{3}) {
+                        if (m_unsubmitted_logs < 16) {
+                            ++m_unsubmitted_logs;
+                            LOG_INFO(Service,
+                                     "nx2:vi2 present #{} fence ({}, {}): its work is not "
+                                     "submitted (up to {}, now {}), not waiting for it",
+                                     m_presents, fence_id, fence_value, *submitted,
+                                     syncpoints.GetGuestSyncpointValue(fence_id));
+                        }
+                        return false;
+                    }
+                }
+                wake->cv.wait_for(
+                    lk, std::chrono::milliseconds{unless_gpu_waits || unsubmitted ? 1 : 50});
             }
             // What the GPU side holds when a frame never finishes (the split's 4 s presents).
             if (!wake->done && system.IsPoweredOn() && m_hang_reports < 16 &&
                 std::chrono::steady_clock::now() >= deadline) {
                 ++m_hang_reports;
                 LOG_WARNING(Service,
-                            "nx2:vi2 present #{} fence ({}, {}) not reached in 4 s (now {}, GPU "
-                            "waits {}), hang report: {}",
+                            "nx2:vi2 present #{} fence ({}, {}) not reached in 4 s (now {}, "
+                            "submitted up to {}, GPU waits {}), hang report: {}",
                             m_presents, fence_id, fence_value,
                             syncpoints.GetGuestSyncpointValue(fence_id),
+                            SubmittedMax(fence_id).value_or(0),
                             system.GPU().HasSuspendedChannels(), system.GPU().Nx2HangReport());
             }
         }
@@ -2192,8 +2232,10 @@ private:
                         m_presents, fence_id, fence_value, syncpoints.GetGuestSyncpointValue(fence_id));
         }
         if (m_presents <= 8 || (m_presents % 600) == 0) {
-            LOG_INFO(Service, "nx2:vi2 present #{} fence ({}, {}) now {}, waited {} us",
+            LOG_INFO(Service, "nx2:vi2 present #{} fence ({}, {}) now {} (submitted up to {}), "
+                     "waited {} us",
                      m_presents, fence_id, fence_value, syncpoints.GetGuestSyncpointValue(fence_id),
+                     SubmittedMax(fence_id).value_or(0),
                      std::chrono::duration_cast<std::chrono::microseconds>(
                          std::chrono::steady_clock::now() - start)
                          .count());
