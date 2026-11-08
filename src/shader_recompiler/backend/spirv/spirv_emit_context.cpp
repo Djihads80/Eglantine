@@ -518,6 +518,7 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     DefineAttributeMemAccess(program.info);
     DefineWriteStorageCasLoopFunction(program.info);
     DefineGlobalMemoryFunctions(program);
+    DefineMeshEmulationOutput();
     DefineRescalingInput(program.info);
     DefineRenderArea(program.info);
 }
@@ -1679,7 +1680,7 @@ void EmitContext::DefineInputs(const IR::Program& program) {
     if (info.uses_is_helper_invocation) {
         is_helper_invocation = DefineInput(*this, U1, false, spv::BuiltIn::HelperInvocation);
     }
-    if (info.uses_subgroup_mask && profile.SupportsSubgroupStage(stage)) {
+    if (info.uses_subgroup_mask && SupportsSubgroups()) {
         subgroup_mask_eq = DefineInput(*this, U32[4], false, spv::BuiltIn::SubgroupEqMaskKHR);
         subgroup_mask_lt = DefineInput(*this, U32[4], false, spv::BuiltIn::SubgroupLtMaskKHR);
         subgroup_mask_le = DefineInput(*this, U32[4], false, spv::BuiltIn::SubgroupLeMaskKHR);
@@ -1696,7 +1697,7 @@ void EmitContext::DefineInputs(const IR::Program& program) {
     if ((info.uses_fswzadd || info.uses_subgroup_invocation_id || info.uses_subgroup_shuffles ||
          (profile.warp_size_potentially_larger_than_guest &&
           (info.uses_subgroup_vote || info.uses_subgroup_mask))) &&
-        profile.SupportsSubgroupStage(stage)) {
+        SupportsSubgroups()) {
         AddCapability(spv::Capability::GroupNonUniform);
         subgroup_local_invocation_id =
             DefineInput(*this, U32[1], false, spv::BuiltIn::SubgroupLocalInvocationId);
@@ -1852,16 +1853,22 @@ void EmitContext::DefineMesh(const IR::Program& program) {
     if (stage != Stage::Task && stage != Stage::Mesh) {
         return;
     }
-    AddExtension("SPV_EXT_mesh_shader");
-    AddCapability(spv::Capability::MeshShadingEXT);
+    // Mesh emulation: a compute shader with the same workgroup memory, writing a storage buffer.
+    const bool as_compute{runtime_info.mesh_as_compute};
+    if (!as_compute) {
+        AddExtension("SPV_EXT_mesh_shader");
+        AddCapability(spv::Capability::MeshShadingEXT);
+    }
     mesh_info = program.mesh;
     mesh_threads = program.workgroup_size[0];
-    // The task's output region, which its mesh workgroups read as their input region.
-    const Id payload_type{TypeArray(U32[1], Const(mesh_info.payload_words))};
-    mesh_payload = DefineVariable(*this, payload_type, std::nullopt,
-                                  spv::StorageClass::TaskPayloadWorkgroupEXT);
+    // The task's output region, which its mesh workgroups read as their input region. In the
+    // emulation it is plain workgroup memory, copied through the task payload buffer.
+    const spv::StorageClass payload_class{as_compute ? spv::StorageClass::Workgroup
+                                                     : spv::StorageClass::TaskPayloadWorkgroupEXT};
+    const Id payload_type{TypeArray(U32[1], Const((std::max)(mesh_info.payload_words, 1U)))};
+    mesh_payload = DefineVariable(*this, payload_type, std::nullopt, payload_class);
     Name(mesh_payload, "task_payload");
-    mesh_payload_u32 = TypePointer(spv::StorageClass::TaskPayloadWorkgroupEXT, U32[1]);
+    mesh_payload_u32 = TypePointer(payload_class, U32[1]);
     if (stage == Stage::Task) {
         return;
     }
@@ -1884,6 +1891,10 @@ void EmitContext::DefineMesh(const IR::Program& program) {
     mesh_primitive_count =
         DefineVariable(*this, U32[1], std::nullopt, spv::StorageClass::Workgroup);
     Name(mesh_primitive_count, "isbe_primitive_count");
+
+    if (as_compute) {
+        return; // the output buffer: DefineMeshEmulationOutput, after the storage buffers
+    }
 
     const Id vertex_count{Const(mesh_info.max_vertices)};
     const Id primitive_count{Const(mesh_info.max_primitives)};
@@ -1963,6 +1974,58 @@ void EmitContext::DefineMesh(const IR::Program& program) {
     }
     for (const u32 line : mesh_info.primitive_lines) {
         mesh_primitive_targets.push_back(target(line, true));
+    }
+}
+
+void EmitContext::DefineMeshEmulationOutput() {
+    if ((stage != Stage::Mesh && stage != Stage::Task) || !runtime_info.mesh_as_compute) {
+        return;
+    }
+    // u32 arrays: the output MeshEpilogue writes each workgroup's block to
+    // (EmitMeshEmulationVertex) and the task payload, offset and argument buffers (RuntimeInfo).
+    // Sirit shares identical types, so reuse the u32 storage buffer type when the program's own
+    // storage buffers declared it: decorating it again would be invalid SPIR-V.
+    AddExtension("SPV_KHR_storage_buffer_storage_class");
+    Id struct_pointer{storage_types.U32.array};
+    if (!Sirit::ValidId(struct_pointer)) {
+        const Id array_type{TypeRuntimeArray(U32[1])};
+        Decorate(array_type, spv::Decoration::ArrayStride, 4U);
+        const Id struct_type{TypeStruct(array_type)};
+        Decorate(struct_type, spv::Decoration::Block);
+        MemberDecorate(struct_type, 0, spv::Decoration::Offset, 0U);
+        struct_pointer = TypePointer(spv::StorageClass::StorageBuffer, struct_type);
+    }
+    const auto define = [&](u32 binding, std::string_view name) {
+        const Id buffer{AddGlobalVariable(struct_pointer, spv::StorageClass::StorageBuffer)};
+        Decorate(buffer, spv::Decoration::Binding, binding);
+        Decorate(buffer, spv::Decoration::DescriptorSet, 0U);
+        Name(buffer, name);
+        if (profile.supported_spirv >= 0x00010400) {
+            interfaces.push_back(buffer);
+        }
+        return buffer;
+    };
+    mesh_output_u32 = TypePointer(spv::StorageClass::StorageBuffer, U32[1]);
+    const bool has_task{runtime_info.mesh_task_payload_binding != ~0U};
+    if (has_task) {
+        mesh_task_payload_buffer =
+            define(runtime_info.mesh_task_payload_binding, "mesh_emulation_task_payload");
+    }
+    if (stage == Stage::Task) {
+        return;
+    }
+    mesh_output_buffer = define(runtime_info.mesh_output_binding, "mesh_emulation_output");
+    if (has_task) {
+        mesh_task_offsets_buffer =
+            define(runtime_info.mesh_task_offsets_binding, "mesh_emulation_task_offsets");
+        mesh_task_args_buffer =
+            define(runtime_info.mesh_task_args_binding, "mesh_emulation_task_args");
+        mesh_group_index = AddGlobalVariable(TypePointer(spv::StorageClass::Private, U32[1]),
+                                             spv::StorageClass::Private);
+        Name(mesh_group_index, "mesh_group_index");
+        if (profile.supported_spirv >= 0x00010400) {
+            interfaces.push_back(mesh_group_index);
+        }
     }
 }
 

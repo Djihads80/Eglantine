@@ -5,6 +5,16 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 add_executable(tests
+    video_core/frame_dump_schedule.cpp
+    core/nx2_debug_server.cpp
+    core/system_test_context.h
+    video_core/ampere_logged_numeric.cpp
+    video_core/pipeline_optimization.cpp
+    video_core/spirv_atomic_retry.cpp
+    video_core/spirv_storage_alignment.cpp
+    video_core/spirv_fragment_shuffle.cpp
+    video_core/mesh_fallback.cpp
+    video_core/spirv_software_matrix.cpp
     common/bit_field.cpp
     common/cityhash.cpp
     common/container_hash.cpp

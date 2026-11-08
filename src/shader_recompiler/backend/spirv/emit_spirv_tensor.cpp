@@ -27,7 +27,7 @@ void DefineSoftwareMatrixFunctions(EmitContext& ctx, const IR::Program& program)
         }
         ctx.AddCapability(spv::Capability::GroupNonUniform);
         ctx.AddCapability(spv::Capability::GroupNonUniformShuffle);
-        if (!ctx.profile.SupportsSubgroupStage(program.stage) ||
+        if (!ctx.SupportsSubgroups() ||
             ctx.profile.has_broken_spirv_subgroup_shuffle)
             throw NotImplementedException("Software HMMA requires subgroup shuffle support");
         const Id u32ty = ctx.U32[1], f32ty = ctx.F32[1];

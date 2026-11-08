@@ -285,11 +285,20 @@ void DefineEntryPoint(const IR::Program& program, EmitContext& ctx, Id main) {
         execution_model = spv::ExecutionModel::Vertex;
         break;
     case Stage::Task:
-        execution_model = spv::ExecutionModel::TaskEXT;
+        // Mesh emulation runs task programs as compute shaders too.
+        execution_model = ctx.runtime_info.mesh_as_compute ? spv::ExecutionModel::GLCompute
+                                                           : spv::ExecutionModel::TaskEXT;
         ctx.AddExecutionMode(main, spv::ExecutionMode::LocalSize, program.workgroup_size[0], 1U,
                              1U);
         break;
     case Stage::Mesh:
+        if (ctx.runtime_info.mesh_as_compute) {
+            // Mesh emulation: one compute workgroup per mesh workgroup.
+            execution_model = spv::ExecutionModel::GLCompute;
+            ctx.AddExecutionMode(main, spv::ExecutionMode::LocalSize, program.workgroup_size[0],
+                                 1U, 1U);
+            break;
+        }
         execution_model = spv::ExecutionModel::MeshEXT;
         ctx.AddExecutionMode(main, spv::ExecutionMode::LocalSize, program.workgroup_size[0], 1U,
                              1U);
@@ -493,7 +502,7 @@ void SetupCapabilities(const Profile& profile, const Info& info, EmitContext& ct
     }
     if ((info.uses_subgroup_vote || info.uses_subgroup_invocation_id ||
          info.uses_subgroup_shuffles || info.uses_subgroup_mask) &&
-        profile.support_vote && profile.SupportsSubgroupStage(ctx.stage)) {
+        profile.support_vote && ctx.SupportsSubgroups()) {
         ctx.AddCapability(spv::Capability::GroupNonUniformBallot);
         ctx.AddCapability(spv::Capability::GroupNonUniformShuffle);
         if (info.uses_subgroup_shuffles && profile.support_shuffle_relative) {

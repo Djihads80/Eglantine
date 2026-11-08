@@ -248,7 +248,12 @@ public:
         const u32 size_offset = is_compute ? sizeof(RescalingLayout::down_factor) : 0u;
         const VkPushConstantRange range{
             .stageFlags = static_cast<VkShaderStageFlags>(
-                is_compute ? VK_SHADER_STAGE_COMPUTE_BIT : VK_SHADER_STAGE_ALL_GRAPHICS),
+                is_compute ? VK_SHADER_STAGE_COMPUTE_BIT
+                : mesh_emulation
+                    ? VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT
+                    : (uses_mesh ? VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_TASK_BIT_EXT |
+                                       VK_SHADER_STAGE_MESH_BIT_EXT
+                                 : VK_SHADER_STAGE_ALL_GRAPHICS)),
             .offset = 0,
             .size = static_cast<u32>(sizeof(RescalingLayout)) - size_offset +
                     static_cast<u32>(sizeof(RenderAreaLayout)),
@@ -264,8 +269,38 @@ public:
         });
     }
 
+    /// Mesh emulation: a graphics pipeline layout whose mesh program runs as a compute shader
+    /// (its bindings carry VK_SHADER_STAGE_COMPUTE_BIT and so does the push constant range).
+    void EnableMeshEmulation() noexcept {
+        mesh_emulation = true;
+    }
+
+    /// Mesh emulation: the output storage buffer the compute shader writes and the vertex
+    /// shader reads, at an explicit binding (after every program's bindings).
+    void AddMeshEmulationOutput(u32 output_binding) {
+        bindings.push_back({
+            .binding = output_binding,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
+            .pImmutableSamplers = nullptr,
+        });
+        entries.push_back({
+            .dstBinding = output_binding,
+            .dstArrayElement = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .offset = offset,
+            .stride = sizeof(DescriptorUpdateEntry),
+        });
+        binding = (std::max)(binding, output_binding + 1);
+        ++num_descriptors;
+        offset += sizeof(DescriptorUpdateEntry);
+    }
+
     void Add(const Shader::Info& info, VkShaderStageFlags stage) {
-        is_compute |= (stage & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+        is_compute |= (stage & VK_SHADER_STAGE_COMPUTE_BIT) != 0 && !mesh_emulation;
+        uses_mesh |= (stage & (VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)) != 0;
 
         Add(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, stage, info.constant_buffer_descriptors);
         Add(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stage, info.storage_buffers_descriptors);
@@ -303,6 +338,8 @@ private:
 
     const Device* device{};
     bool is_compute{};
+    bool uses_mesh{};
+    bool mesh_emulation{};
     boost::container::small_vector<VkDescriptorSetLayoutBinding, 32> bindings;
     boost::container::small_vector<VkDescriptorUpdateTemplateEntry, 32> entries;
     u32 binding{};

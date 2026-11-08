@@ -262,6 +262,78 @@ private:
 
     u32 draw_counter = 0;
     bool mesh_draw{}; ///< the draw being prepared uses a task/mesh pipeline
+    /// Fragment output components the dynamic color write mask was last recorded with
+    u32 last_color_output_mask{};
+    u32 mesh_emulation_groups{};             ///< mesh workgroups of the emulated draw
+    u32 mesh_emulation_vertices_per_group{}; ///< 0 unless the draw is an emulated mesh draw
+    /// Mesh emulation diagnostics with a task program: one draw's distribution arguments.
+    struct {
+        std::span<const u8> args;
+        u64 tick{};
+        u32 tasks{};
+        u32 capacity{};
+        bool pending{};
+    } mesh_task_probe;
+    /// With a task program: the vkCmdDrawIndirect arguments the distribution pass writes.
+    struct {
+        VkBuffer buffer{};
+        VkDeviceSize offset{};
+    } mesh_emulation_indirect;
+    /// Mesh emulation diagnostics: one draw's output, read back once the GPU has written it.
+    struct MeshEmulationProbe {
+        std::span<const u8> data;
+        u64 tick{};
+        u64 frame{};
+        u32 groups{};
+        u32 block_words{};
+        u32 vertex_lines{};
+        u32 max_vertices{};
+        u32 max_primitives{};
+        std::array<u32, 4> position_lines{};
+        bool pending{};
+    } mesh_probe;
+    void ReadMeshEmulationProbe();
+    /// Mesh emulation with a task program: the output arena every task draw of a submission
+    /// allocates its mesh workgroups from, and its host-visible counter of allocated words.
+    struct MeshArena {
+        vk::Buffer buffer;
+        vk::Buffer counter;
+        u64 size{};
+        u64 tick{};
+        bool counted{}; ///< the counter of its last submission was read
+    };
+    std::vector<MeshArena> mesh_arenas;
+    size_t mesh_arena_current{~size_t{}};
+    u64 mesh_arena_size{64ULL << 20};
+    /// The current submission's arena, after its counter is reset.
+    const MeshArena& AcquireMeshArena();
+
+    struct IndirectTrace {
+        vk::Buffer readback;
+        u64 tick{};
+        u64 frame{};
+        GPUVAddr address{};
+        GPUVAddr count_address{};
+        u32 max_draws{};
+        u32 sampled_commands{};
+        bool pending{};
+        bool include_count{};
+        bool byte_count{};
+    };
+    std::array<IndirectTrace, 8> indirect_traces;
+    u64 trace_cpu_frame{};
+    bool trace_sample_frame{true};
+    u64 trace_frame{};
+    u64 trace_window_frames{};
+    u64 trace_draws{};
+    u64 trace_skipped{};
+    u64 trace_indirect{};
+    u64 trace_zero_direct{};
+    /// Vertex and fragment hashes of the draw being recorded, for GPU timing.
+    std::pair<u64, u64> trace_draw_hashes{};
+    u32 trace_captures{};
+    u32 trace_capture_dropped{};
+    u32 trace_failure_details{};
 };
 
 } // namespace Vulkan

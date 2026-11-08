@@ -1598,6 +1598,12 @@ void Device::RemoveUnsuitableExtensions() {
     features.mesh_shader.primitiveFragmentShadingRateMeshShader = VK_FALSE;
     features.mesh_shader.meshShaderQueries = VK_FALSE;
     extensions.mesh_shader = features.mesh_shader.taskShader && features.mesh_shader.meshShader;
+    // EDEN_NX2_FORCE_MESH_FALLBACK=1: leave VK_EXT_mesh_shader disabled, so task/mesh draws take
+    // the compute fallback a device without it uses.
+    if (extensions.mesh_shader && std::getenv("EDEN_NX2_FORCE_MESH_FALLBACK") != nullptr) {
+        LOG_WARNING(Render_Vulkan, "EDEN_NX2_FORCE_MESH_FALLBACK: VK_EXT_mesh_shader disabled");
+        extensions.mesh_shader = false;
+    }
     RemoveExtensionFeatureIfUnsuitable(extensions.mesh_shader, features.mesh_shader,
                                        VK_EXT_MESH_SHADER_EXTENSION_NAME);
 

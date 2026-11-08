@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <memory>
 #include <limits>
@@ -254,6 +255,133 @@ namespace {
 // EDEN_NX2_DIAG_SAMPLES: the occlusion query pool of the draw probe (created on first use).
 vk::QueryPool* g_diag_pool{};
 } // Anonymous namespace
+void RasterizerVulkan::ReadMeshEmulationProbe() {
+    const MeshEmulationProbe probe{mesh_probe};
+    mesh_probe.pending = false;
+    const size_t num_words{probe.data.size() / sizeof(u32)};
+    const auto word = [&](u64 index) -> u32 {
+        if (index >= num_words) {
+            return 0;
+        }
+        u32 value;
+        std::memcpy(&value, probe.data.data() + index * sizeof(u32), sizeof(value));
+        return value;
+    };
+    const auto position = [&](u64 base, u32 vertex) {
+        std::array<f32, 4> result{};
+        for (u32 element = 0; element < 4; ++element) {
+            const u32 line{probe.position_lines[element]};
+            if (line != ~0U) {
+                result[element] = std::bit_cast<f32>(word(base + u64{vertex} * probe.vertex_lines +
+                                                          line));
+            }
+        }
+        return result;
+    };
+    u64 triangles{}, degenerate{}, outside{}, bad_index{};
+    std::string sample;
+    for (u32 group = 0; group < probe.groups; ++group) {
+        const u64 base{u64{group} * probe.block_words};
+        const u64 index_base{base + u64{probe.max_vertices} * probe.vertex_lines};
+        for (u32 primitive = 0; primitive < probe.max_primitives; ++primitive) {
+            const std::array<u32, 3> indices{word(index_base + primitive * 3),
+                                             word(index_base + primitive * 3 + 1),
+                                             word(index_base + primitive * 3 + 2)};
+            if (indices[0] == indices[1] && indices[1] == indices[2]) {
+                ++degenerate;
+                continue;
+            }
+            ++triangles;
+            bool any_bad{};
+            bool any_inside{};
+            for (const u32 vertex : indices) {
+                if (vertex >= probe.max_vertices) {
+                    any_bad = true;
+                    continue;
+                }
+                const auto p{position(base, vertex)};
+                const f32 w{std::abs(p[3])};
+                any_inside |= w > 0.0f && std::abs(p[0]) <= w && std::abs(p[1]) <= w;
+            }
+            bad_index += any_bad;
+            outside += !any_inside;
+            if (sample.size() < 400 && triangles <= 2) {
+                for (const u32 vertex : indices) {
+                    const auto p{position(base, std::min(vertex, probe.max_vertices - 1))};
+                    sample += fmt::format(" g{} v{} ({:.3g} {:.3g} {:.3g} {:.3g})", group, vertex,
+                                          p[0], p[1], p[2], p[3]);
+                }
+            }
+        }
+    }
+    LOG_INFO(Render_Vulkan,
+             "Mesh emulation probe frame {}: {} groups, {} triangles ({} degenerate slots), {} "
+             "with every vertex off screen, {} with a bad index; first triangles:{}",
+             probe.frame, probe.groups, triangles, degenerate, outside, bad_index, sample);
+}
+
+const RasterizerVulkan::MeshArena& RasterizerVulkan::AcquireMeshArena() {
+    const u64 tick{scheduler.CurrentTick()};
+    if (mesh_arena_current < mesh_arenas.size() && mesh_arenas[mesh_arena_current].tick == tick) {
+        return mesh_arenas[mesh_arena_current];
+    }
+    // A finished submission's counter holds the words its draws asked for, including those
+    // that did not fit: grow later arenas to hold them.
+    const u64 max_size{(std::min)(u64{1} << 30, u64{device.GetMaxStorageBufferRange()})};
+    for (MeshArena& arena : mesh_arenas) {
+        if (arena.counted || !scheduler.IsFree(arena.tick)) {
+            continue;
+        }
+        arena.counted = true;
+        arena.counter.Invalidate();
+        u32 words;
+        std::memcpy(&words, arena.counter.Mapped().data(), sizeof(words));
+        const u64 needed{u64{words} * 4};
+        if (needed > arena.size && mesh_arena_size < max_size) {
+            mesh_arena_size = (std::min)(std::bit_ceil(needed + needed / 4), max_size);
+            LOG_INFO(Render_Vulkan, "Mesh emulation: a submission needed {} MiB of output, arenas "
+                                    "grow to {} MiB",
+                     needed >> 20, mesh_arena_size >> 20);
+        }
+    }
+    std::erase_if(mesh_arenas, [&](const MeshArena& arena) {
+        return arena.counted && arena.size < mesh_arena_size;
+    });
+    auto it{std::ranges::find_if(mesh_arenas, [](const MeshArena& arena) { return arena.counted; })};
+    if (it == mesh_arenas.end()) {
+        const auto make_buffer = [&](u64 size, VkBufferUsageFlags usage, MemoryUsage memory) {
+            return memory_allocator.CreateBuffer(
+                VkBufferCreateInfo{
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                    .pNext = nullptr,
+                    .flags = 0,
+                    .size = size,
+                    .usage = usage,
+                    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                    .queueFamilyIndexCount = 0,
+                    .pQueueFamilyIndices = nullptr,
+                },
+                memory);
+        };
+        it = mesh_arenas.insert(
+            mesh_arenas.end(),
+            MeshArena{
+                .buffer = make_buffer(mesh_arena_size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                      MemoryUsage::DeviceLocal),
+                .counter = make_buffer(sizeof(u32), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                       MemoryUsage::Download),
+                .size = mesh_arena_size,
+            });
+    }
+    // The GPU is done with this arena, and this submission's commands have not been sent yet.
+    const u32 zero{};
+    std::memcpy(it->counter.Mapped().data(), &zero, sizeof(zero));
+    it->counter.Flush();
+    it->tick = tick;
+    it->counted = false;
+    mesh_arena_current = static_cast<size_t>(std::distance(mesh_arenas.begin(), it));
+    return *it;
+}
 
 RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra::GPU& gpu_,
                                    Tegra::MaxwellDeviceMemoryManager& device_memory_,
@@ -524,9 +652,143 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     if (no_mesh_file && (no_mesh_check++ % 1024) == 0) {
         no_mesh = std::filesystem::exists(no_mesh_file);
     }
-    if (mesh_draw && (no_mesh || !device.IsExtMeshShaderSupported())) {
+    const bool emulated_mesh{mesh_draw && pipeline->IsEmulatedMesh()};
+    // Diagnostics: a frame stamp for the emulation's statistics and probes.
+    static u64 render_trace_frame{};
+    ++render_trace_frame;
+    if (mesh_draw && (no_mesh || (!device.IsExtMeshShaderSupported() && !emulated_mesh))) {
         report_failure(no_mesh ? "EDEN_NX2_NO_MESH" : "no VK_EXT_mesh_shader");
         return;
+    }
+    // Mesh emulation: one output block per mesh workgroup, written by the pipeline's compute
+    // dispatch and drawn as groups * vertices-per-group triangle list vertices.
+    mesh_emulation_groups = 0;
+    mesh_emulation_vertices_per_group = 0;
+    if (emulated_mesh) {
+        // The same group count the native path hands vkCmdDrawMeshTasksEXT (MakeDrawParams:
+        // the index count for indexed draws), within the device's dispatch limit.
+        const auto& draw_state{maxwell3d->draw_manager.draw_state};
+        const u32 groups{(std::min)(MakeDrawParams(draw_state, 1, is_indexed).num_vertices,
+                                    device.GetMaxComputeWorkGroupCount()[0])};
+        // Mesh emulation statistics: draws with and without groups, and the frames with any
+        // groups (the game culls on the GPU and sets the counts itself).
+        {
+            static u64 draws{}, empty{}, total_groups{}, frames{}, frames_drawn{};
+            static u64 last_frame{~0ULL};
+            static bool frame_drawn{};
+            if (render_trace_frame != last_frame) {
+                if (last_frame != ~0ULL) {
+                    ++frames;
+                    frames_drawn += frame_drawn;
+                }
+                last_frame = render_trace_frame;
+                frame_drawn = false;
+            }
+            ++draws;
+            empty += groups == 0;
+            total_groups += groups;
+            frame_drawn |= groups != 0;
+            if (draws % 2000 == 0) {
+                LOG_INFO(Render_Vulkan,
+                         "Mesh emulation draws: {} ({} with no groups), {} groups; frames with "
+                         "emulated draws: {} of {}",
+                         draws, empty, total_groups, frames_drawn, frames);
+            }
+        }
+        // Read the pending probe before Request can hand its buffer out again.
+        if (mesh_probe.pending && scheduler.IsFree(mesh_probe.tick)) {
+            ReadMeshEmulationProbe();
+        }
+        // EDEN_NX2_MESH_EMULATION_PROBE=1: every 60 frames, read one draw's output back (from a
+        // host-visible download buffer, as device-local ones are not mapped on every GPU).
+        static const bool probe{std::getenv("EDEN_NX2_MESH_EMULATION_PROBE") != nullptr};
+        const bool has_task{pipeline->MeshEmulationHasTask()};
+        const bool probe_draw{probe && !has_task && !mesh_probe.pending && groups != 0 &&
+                              render_trace_frame % 60 == 0};
+        // With a task program the draw's groups are task workgroups. The mesh workgroups they ask
+        // for are only known on the GPU, so their output goes to the submission's arena.
+        const u64 block_bytes{pipeline->MeshEmulationBlockBytes()};
+        StagingBufferRef output{};
+        u64 bytes{};
+        if (has_task) {
+            const MeshArena& arena{AcquireMeshArena()};
+            bytes = arena.size;
+            pipeline->SetMeshEmulationOutput(*arena.buffer, 0, bytes, groups);
+        } else {
+            bytes = (std::max)(u64{groups} * block_bytes, u64{4});
+            output = staging_pool.Request(bytes, probe_draw ? MemoryUsage::Download
+                                                            : MemoryUsage::DeviceLocal);
+            pipeline->SetMeshEmulationOutput(output.buffer, output.offset, bytes, groups);
+        }
+        mesh_emulation_indirect = {};
+        if (mesh_task_probe.pending && scheduler.IsFree(mesh_task_probe.tick)) {
+            mesh_task_probe.pending = false;
+            std::array<u32, Shader::Backend::SPIRV::MESH_EMULATION_ARGS_WORDS> words{};
+            std::memcpy(words.data(), mesh_task_probe.args.data(), sizeof(words));
+            LOG_INFO(Render_Vulkan,
+                     "Mesh emulation task probe: {} tasks asked for {} mesh workgroups, {} "
+                     "dispatched at arena word {} (arena {} words)",
+                     mesh_task_probe.tasks,
+                     words[Shader::Backend::SPIRV::MESH_EMULATION_ARGS_REQUESTED], words[0],
+                     words[Shader::Backend::SPIRV::MESH_EMULATION_ARGS_BASE],
+                     mesh_task_probe.capacity);
+        }
+        if (has_task && groups != 0) {
+            const bool task_probe{probe && !mesh_task_probe.pending &&
+                                  render_trace_frame % 60 == 0};
+            const auto request = [&](u64 size, MemoryUsage usage = MemoryUsage::DeviceLocal) {
+                size = (std::max)(size, u64{16});
+                const StagingBufferRef ref{staging_pool.Request(size, usage)};
+                return std::make_pair(GraphicsPipeline::MeshEmulationBuffer{ref.buffer, ref.offset,
+                                                                            size},
+                                      ref.mapped_span.subspan(
+                                          (std::min)(ref.offset, u64{ref.mapped_span.size()})));
+            };
+            const auto payload{
+                request(u64{groups} * pipeline->MeshEmulationPayloadStride() * 4).first};
+            const auto offsets{request(u64{groups} * 4).first};
+            constexpr u64 args_bytes{Shader::Backend::SPIRV::MESH_EMULATION_ARGS_WORDS * 4};
+            const auto [args, args_span] =
+                request(args_bytes, task_probe ? MemoryUsage::Download : MemoryUsage::DeviceLocal);
+            const u32 capacity_words{static_cast<u32>(
+                (std::min)(bytes / 4, u64{(std::numeric_limits<u32>::max)()}))};
+            if (task_probe && args_span.size() >= args_bytes) {
+                mesh_task_probe = {
+                    .args = args_span,
+                    .tick = scheduler.CurrentTick(),
+                    .tasks = groups,
+                    .capacity = capacity_words,
+                    .pending = true,
+                };
+            }
+            const MeshArena& arena{mesh_arenas[mesh_arena_current]};
+            pipeline->SetMeshEmulationTaskBuffers(
+                payload, offsets, args, {*arena.counter, 0, sizeof(u32)}, capacity_words);
+            mesh_emulation_indirect = {args.buffer, args.offset};
+        }
+        if (probe_draw && output.mapped_span.size() >= output.offset + bytes) {
+            const MeshEmulationSetup& setup{*pipeline->MeshEmulation()};
+            mesh_probe = {
+                .data = output.mapped_span.subspan(output.offset, bytes),
+                .tick = scheduler.CurrentTick(),
+                .frame = render_trace_frame,
+                .groups = groups,
+                .block_words = setup.block_words,
+                .vertex_lines = setup.vertex_lines,
+                .max_vertices = setup.max_vertices,
+                .max_primitives = setup.max_primitives,
+                .position_lines = setup.position_lines,
+                .pending = true,
+            };
+        } else if (probe_draw && output.mapped_span.empty()) {
+            static bool warned{};
+            if (!warned) {
+                warned = true;
+                LOG_WARNING(Render_Vulkan, "Mesh emulation probe: output buffer is not mapped");
+            }
+        }
+        mesh_emulation_groups = groups;
+        mesh_emulation_vertices_per_group = pipeline->MeshEmulationVerticesPerGroup();
     }
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     // update engine as channel may be different.
@@ -869,6 +1131,32 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const u32 num_instances{instance_count};
         const DrawParams draw_params{MakeDrawParams(draw_state, num_instances, is_indexed)};
 
+        if (mesh_draw && mesh_emulation_vertices_per_group != 0) {
+            const u32 vertices{mesh_emulation_groups * mesh_emulation_vertices_per_group};
+            if (vertices == 0) {
+                return;
+            }
+            if (mesh_emulation_indirect.buffer) {
+                // With a task program the distribution pass wrote the vertex count.
+                scheduler.Record([this, indirect = mesh_emulation_indirect](vk::CommandBuffer cmdbuf) {
+                    if (scheduler.GraphicsPipelineMissing()) {
+                        return;
+                    }
+                    cmdbuf.DrawIndirect(indirect.buffer,
+                                        indirect.offset +
+                                            Shader::Backend::SPIRV::MESH_EMULATION_DRAW_ARGS_OFFSET,
+                                        1, 0);
+                });
+                return;
+            }
+            scheduler.Record([this, vertices](vk::CommandBuffer cmdbuf) {
+                if (scheduler.GraphicsPipelineMissing()) {
+                    return;
+                }
+                cmdbuf.Draw(vertices, 1, 0, 0);
+            });
+            return;
+        }
         if (mesh_draw) {
             scheduler.Record([this, groups = draw_params.num_vertices](vk::CommandBuffer cmdbuf) {
                 if (scheduler.GraphicsPipelineMissing()) {
@@ -2091,8 +2379,15 @@ bool AccelerateDMA::BufferToImage(const Tegra::DMA::ImageCopy& copy_info,
 void RasterizerVulkan::UpdateDynamicStates() {
     auto& regs = maxwell3d->regs;
     auto& flags = maxwell3d->dirty.flags;
+    // A mesh emulation pipeline has static input assembly and vertex input. Binding it replaces
+    // that dynamic state, so leave it to the next regular draw to set again.
+    const GraphicsPipeline* const current{pipeline_cache.CurrentGraphicsPipeline()};
+    const bool emulated_mesh{current != nullptr && current->IsEmulatedMesh()};
+    if (emulated_mesh) {
+        state_tracker.InvalidateInputState();
+    }
     const auto topology = maxwell3d->draw_manager.draw_state.topology;
-    const bool topology_changed = state_tracker.ChangePrimitiveTopology(topology);
+    const bool topology_changed = !emulated_mesh && state_tracker.ChangePrimitiveTopology(topology);
     if (topology_changed) {
         flags[Dirty::DepthBiasEnable] = true;
         flags[Dirty::PrimitiveRestartEnable] = true;
@@ -2126,7 +2421,9 @@ void RasterizerVulkan::UpdateDynamicStates() {
     }
 
     if (device.IsExtExtendedDynamicState2Supported()) {
-        UpdatePrimitiveRestartEnable(regs);
+        if (!emulated_mesh) {
+            UpdatePrimitiveRestartEnable(regs);
+        }
         UpdateRasterizerDiscardEnable(regs);
         UpdateDepthBiasEnable(regs);
     }
@@ -2165,8 +2462,10 @@ void RasterizerVulkan::UpdateDynamicStates() {
         UpdateColorWriteEnable(regs);
     }
 
-    if (device.IsExtVertexInputDynamicStateSupported()) {
-        if (auto* gp = pipeline_cache.CurrentGraphicsPipeline(); gp && gp->HasDynamicVertexInput()) {
+    if (device.IsExtVertexInputDynamicStateSupported() && !emulated_mesh) {
+        // A draw passes the pipeline it looked up: a second lookup was ~2.5% of the back thread.
+        const GraphicsPipeline* const gp{pipeline_cache.CurrentGraphicsPipeline()};
+        if (gp && gp->HasDynamicVertexInput()) {
             UpdateVertexInput(regs);
         }
     }
