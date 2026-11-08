@@ -297,6 +297,11 @@
         "repo": "KhronosGroup/SPIRV-Headers",
         "version": "vulkan-sdk-1.4.341.0"
     },
+    "streamline": {
+        "hash": "3dbe29efea68e69dea29ac73dd76ebe397a009baac8873f4ae43e126554c1d2836926ad76295bda44588b6fd498883f665154fd63d96f5bea13d95170e41664a",
+        "repo": "NVIDIA-RTX/Streamline",
+        "version": "v2.14.16"
+    },
     "tzdb": {
         "artifact": "%VERSION%.tar.gz",
         "git_host": "git.eden-emu.dev",

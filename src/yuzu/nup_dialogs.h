@@ -4,6 +4,9 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <QByteArray>
 #include <QDialog>
@@ -14,12 +17,14 @@
 #include "common/common_types.h"
 #include "core/file_sys/nup_writer.h"
 
+class IconSearch;
 class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QProgressBar;
 class QPushButton;
 class QRadioButton;
+class QToolButton;
 
 // Square preview that accepts an image dropped on it or chosen with a click.
 class IconDropZone : public QWidget {
@@ -78,10 +83,48 @@ private:
     QLabel* icon_hint;
     QPushButton* reset_icon;
     QLineEdit* name_edit;
+    QLineEdit* publisher_edit;
     QRadioButton* version_auto;
     QRadioButton* version_manual;
     QLineEdit* version_edit;
     QCheckBox* low_storage;
+};
+
+// Edits the default-language metadata of an existing NUP in place.
+class NupEditDialog : public QDialog {
+    Q_OBJECT
+public:
+    explicit NupEditDialog(const std::filesystem::path& archive, QWidget* parent = nullptr);
+    ~NupEditDialog() override;
+
+    FileSys::Nup::MetadataEdit Edit() const;
+    QString DisplayName() const;
+    QPixmap CurrentIcon() const;
+
+private:
+    void ChooseIcon();
+    void SetIconFromFile(const QString& path);
+    void FindIcon();
+    void OnIconFound(const QByteArray& png, const QString& resolved_title);
+    void ClearIcon();
+    void UpdateIconPreview();
+
+    FileSys::Nup::Metadata current;
+    QByteArray custom_icon;
+    bool remove_icon = false;
+    QPixmap current_icon;
+
+    IconDropZone* icon_preview;
+    QLabel* icon_hint;
+    QPushButton* find_icon;
+    QPushButton* clear_icon;
+    IconSearch* icon_search;
+    QLineEdit* name_edit;
+    QLineEdit* publisher_edit;
+    QLineEdit* version_edit;
+    QToolButton* localized_toggle;
+    QWidget* localized_panel;
+    std::vector<std::pair<std::string, QLineEdit*>> localized_edits;
 };
 
 // Shown while a conversion runs. The bar spans the dialog; the labels show what is being
@@ -89,7 +132,8 @@ private:
 class NupProgressDialog : public QDialog {
     Q_OBJECT
 public:
-    NupProgressDialog(const QString& title, const QPixmap& icon, QWidget* parent = nullptr);
+    NupProgressDialog(const QString& operation, const QString& title, const QPixmap& icon,
+                      QWidget* parent = nullptr);
 
     void SetProgress(const FileSys::Nup::PackProgress& progress);
     void SetCancelling();

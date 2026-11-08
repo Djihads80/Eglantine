@@ -8,7 +8,8 @@
 
 // yuzu data directories
 
-#define EDEN_DIR "eden"
+#define EDEN_DIR "eglantine"
+#define EDEN_LEGACY_DIR "eden"
 #define PORTABLE_DIR "user"
 
 // Sub-directories contained within a yuzu data directory
@@ -28,6 +29,7 @@
 #define SCREENSHOTS_DIR "screenshots"
 #define SDMC_DIR "sdmc"
 #define SHADER_DIR "shader"
+#define STREAMLINE_DIR "streamline"
 #define TAS_DIR "tas"
 #define ICONS_DIR "icons"
 

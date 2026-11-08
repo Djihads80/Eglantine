@@ -18,6 +18,7 @@
 #include <QSettings>
 
 #include "common/fs/fs.h"
+#include "common/fs/fs_util.h"
 #include "common/fs/path_util.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -270,6 +271,19 @@ QList<QStandardItem*> MakeGameListEntry(const std::string& path, const std::stri
         fmt::format("{:016X}", patch.GetTitleID()), "pv.txt", [&patch, &loader] {
             return FormatPatchNameVersions(patch, loader, loader.IsRomFSUpdatable());
         });
+
+    FileSys::NACP nacp{};
+    if (file_type == Loader::FileType::NUP &&
+        loader.ReadControlData(nacp) == Loader::ResultStatus::Success) {
+        const std::string version_string = nacp.GetVersionString();
+        if (!version_string.empty()) {
+            if (!patch_versions.isEmpty()) {
+                patch_versions += QLatin1Char('\n');
+            }
+            patch_versions += QStringLiteral("Update (%1)").arg(
+                QString::fromStdString(version_string));
+        }
+    }
 
     u64 play_time = play_time_manager.GetPlayTime(program_id);
     return QList<QStandardItem*>{
@@ -552,7 +566,7 @@ void GameListWorker::run() {
         DirEntryReady(game_list_dir);
         if (scan) {
             const auto discovery = GameListDiscovery::Discover(
-                std::filesystem::u8path(game_dir.path), game_dir.deep_scan,
+                std::filesystem::path(Common::FS::ToU8String(game_dir.path)), game_dir.deep_scan,
                 [](const auto& path) {
                     const auto name = Common::FS::PathToUTF8String(path);
                     return HasSupportedFileExtension(name) || IsExtractedNCAMain(name);

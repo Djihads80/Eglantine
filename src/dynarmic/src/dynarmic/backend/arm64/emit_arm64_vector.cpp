@@ -1540,6 +1540,26 @@ void EmitIR<IR::Opcode::VectorSignedSaturatedNeg64>(oaknut::CodeGenerator& code,
 }
 
 template<>
+void EmitIR<IR::Opcode::VectorSignedSaturatedRoundingShiftLeft8>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    EmitThreeOpArrangedSaturated<8>(code, ctx, inst, [&](auto Vresult, auto Va, auto Vb) { code.SQRSHL(Vresult, Va, Vb); });
+}
+
+template<>
+void EmitIR<IR::Opcode::VectorSignedSaturatedRoundingShiftLeft16>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    EmitThreeOpArrangedSaturated<16>(code, ctx, inst, [&](auto Vresult, auto Va, auto Vb) { code.SQRSHL(Vresult, Va, Vb); });
+}
+
+template<>
+void EmitIR<IR::Opcode::VectorSignedSaturatedRoundingShiftLeft32>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    EmitThreeOpArrangedSaturated<32>(code, ctx, inst, [&](auto Vresult, auto Va, auto Vb) { code.SQRSHL(Vresult, Va, Vb); });
+}
+
+template<>
+void EmitIR<IR::Opcode::VectorSignedSaturatedRoundingShiftLeft64>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    EmitThreeOpArrangedSaturated<64>(code, ctx, inst, [&](auto Vresult, auto Va, auto Vb) { code.SQRSHL(Vresult, Va, Vb); });
+}
+
+template<>
 void EmitIR<IR::Opcode::VectorSignedSaturatedShiftLeft8>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
     EmitThreeOpArrangedSaturated<8>(code, ctx, inst, [&](auto Vresult, auto Va, auto Vb) { code.SQSHL(Vresult, Va, Vb); });
 }
@@ -1834,6 +1854,26 @@ void EmitIR<IR::Opcode::VectorUnsignedSaturatedNarrow32>(oaknut::CodeGenerator& 
 template<>
 void EmitIR<IR::Opcode::VectorUnsignedSaturatedNarrow64>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
     EmitTwoOpArrangedSaturatedNarrow<64>(code, ctx, inst, [&](auto Vresult, auto Voperand) { code.UQXTN(Vresult, Voperand); });
+}
+
+template<>
+void EmitIR<IR::Opcode::VectorUnsignedSaturatedRoundingShiftLeft8>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    EmitThreeOpArrangedSaturated<8>(code, ctx, inst, [&](auto Vresult, auto Va, auto Vb) { code.UQRSHL(Vresult, Va, Vb); });
+}
+
+template<>
+void EmitIR<IR::Opcode::VectorUnsignedSaturatedRoundingShiftLeft16>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    EmitThreeOpArrangedSaturated<16>(code, ctx, inst, [&](auto Vresult, auto Va, auto Vb) { code.UQRSHL(Vresult, Va, Vb); });
+}
+
+template<>
+void EmitIR<IR::Opcode::VectorUnsignedSaturatedRoundingShiftLeft32>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    EmitThreeOpArrangedSaturated<32>(code, ctx, inst, [&](auto Vresult, auto Va, auto Vb) { code.UQRSHL(Vresult, Va, Vb); });
+}
+
+template<>
+void EmitIR<IR::Opcode::VectorUnsignedSaturatedRoundingShiftLeft64>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    EmitThreeOpArrangedSaturated<64>(code, ctx, inst, [&](auto Vresult, auto Va, auto Vb) { code.UQRSHL(Vresult, Va, Vb); });
 }
 
 template<>

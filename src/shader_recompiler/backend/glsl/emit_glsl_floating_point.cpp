@@ -143,6 +143,12 @@ void EmitFPExp2(EmitContext& ctx, IR::Inst& inst, std::string_view value) {
     ctx.AddF32("{}=exp2({});", inst, value);
 }
 
+void EmitFPTanh(EmitContext& ctx, IR::Inst& inst, std::string_view value) {
+    // GLSL's tanh may be computed from e^x and e^-x, which overflow to inf/inf = NaN for large
+    // inputs. MUFU.TANH (and the SPIR-V and GLASM versions) reach +-1 instead; NaN stays NaN.
+    ctx.AddF32("{}=abs({})>15.0?sign({}):tanh({});", inst, value, value, value);
+}
+
 void EmitFPLog2(EmitContext& ctx, IR::Inst& inst, std::string_view value) {
     ctx.AddF32("{}=log2({});", inst, value);
 }

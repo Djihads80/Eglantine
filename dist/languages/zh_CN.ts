@@ -10072,7 +10072,7 @@ Most mods are RomFS mods, but patches (.pchtxt) are typically ExeFS mods.</sourc
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="96"/>
-        <source>Firmware installation cancelled, firmware may be in a bad state or corrupted. Restart Eden or re-install firmware.</source>
+        <source>Firmware installation cancelled, firmware may be in a bad state or corrupted. Restart Eglantine or re-install firmware.</source>
         <translation>固件安装失败。固件可能处于异常状态或已损坏。请重新启动 Eden 或重新安装固件。</translation>
     </message>
     <message>
@@ -10087,12 +10087,12 @@ Most mods are RomFS mods, but patches (.pchtxt) are typically ExeFS mods.</sourc
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="110"/>
-        <source>Eden has detected user data for the following emulators:</source>
+        <source>Eglantine has detected user data for the following emulators:</source>
         <translation>Eden 已检测到下列模拟器的用户数据:</translation>
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="112"/>
-        <source>Would you like to migrate your data for use in Eden?
+        <source>Would you like to migrate your data for use in Eglantine?
 Select the corresponding button to migrate data from that emulator.
 This may take a while.</source>
         <translation>您想将数据迁移到 Eden 中使用吗？
@@ -10122,7 +10122,7 @@ This is recommended on devices with space constraints.</source>
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="124"/>
-        <source>Creates a filesystem link between the old directory and Eden directory.
+        <source>Creates a filesystem link between the old directory and Eglantine directory.
 This is recommended if you want to share data between emulators.</source>
         <translation>在旧目录和 Eden 目录之间创建文件系统链接。
 如果您想在模拟器之间共享数据,建议这样做。</translation>

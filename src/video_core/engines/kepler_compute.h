@@ -12,12 +12,14 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <unordered_set>
 #include <vector>
 #include "common/bit_field.h"
 #include "common/common_funcs.h"
 #include "common/common_types.h"
 #include "video_core/engines/engine_interface.h"
 #include "video_core/engines/engine_upload.h"
+#include "video_core/game_dlss_status.h"
 #include "video_core/macro.h"
 #include "video_core/native_qmd.h"
 #include "video_core/textures/texture.h"
@@ -242,6 +244,12 @@ public:
     }
 
     bool IsNativeMode() const { return native_mode; }
+    /// Whether the dispatch being run is a pass of a game DLSS evaluation (Fortune's Weave).
+    bool IsDlssDispatch() const { return native_mode && dlss_chain.active; }
+    /// Whether the matrix multiplies (tensor-core instructions) of the program being dispatched
+    /// are emulated: in a game DLSS evaluation when the game's own network may draw, and always
+    /// for Donkey Kong Bananza.
+    [[nodiscard]] bool EmulatesNativeTensorPrograms() const;
 
     /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by
     /// the front instead of CallMethod for native compute engines: runs their macros and macro
@@ -266,13 +274,45 @@ private:
     bool DispatchNativeCompute(const NativeQmdScheduler::Descriptor& descriptor);
     void ProcessNativeReportSemaphore(u32 argument);
     void DescribeNativeResources(const NativeQmdScheduler::Descriptor& qmd);
-    void RememberDlssMotionVectors();
+    bool RememberDlssMotionVectors();
+    bool IsDlssOutputPass();
+    bool FinishDlssEvaluation();
+    void CheckDlssNetwork();
+    [[nodiscard]] VideoCore::GameDlssReason GameDlssBlocker() const;
+    void UpdateGameDlssStatus(bool complete, VideoCore::GameDlssReason blocker);
     bool UpscaleInsteadOfNativeProgram();
 
-    /// Motion vectors of Fire Emblem: Fortune's Weave's DLSS evaluation, from its first pass (run
-    /// earlier in the frame than the network pass the stand-in replaces), with the input colour
-    /// image and camera jitter they go with.
+    /// This frame's DLSS evaluation (Fortune's Weave): whether its passes all ran, and whether
+    /// the game's own network output is shown instead of the replacement upscale.
+    struct DlssChain {
+        bool active{};
+        u32 rejected{};
+        u32 clean_evaluations{};
+        bool native{};
+        /// Health checks of the network's output against its input (CheckDlssNetwork): whether
+        /// this backend has them, good and bad results in a row, and why the network failed them
+        /// (None while it hasn't; then the replacement upscale draws the output for the session).
+        bool checked{};
+        u32 good_checks{};
+        u32 bad_checks{};
+        VideoCore::GameDlssReason failure{};
+        /// Programs of evaluations that reached their output pass; they no longer run while the
+        /// network can't be shown.
+        std::unordered_set<GPUVAddr> programs;
+        /// This evaluation's programs and dispatches so far. Its programs join `programs` only
+        /// at its output pass, so compute work after a look-alike first pass keeps running.
+        std::unordered_set<GPUVAddr> pending;
+        u32 dispatches{};
+        u32 evaluations{};
+        /// What the Graphics tab was last told.
+        VideoCore::GameDlssStatus status{};
+    } dlss_chain;
+
+    /// Motion vectors and depth of Fire Emblem: Fortune's Weave's DLSS evaluation, from its first
+    /// pass (run earlier in the frame than the network pass the stand-in replaces), with the input
+    /// colour image and camera jitter they go with.
     std::optional<Texture::TICEntry> dlss_motion_vectors;
+    std::optional<Texture::TICEntry> dlss_depth;
     GPUVAddr dlss_motion_color{};
     std::array<f32, 2> dlss_jitter{};
     bool ProcessNativeMethod(Core::System& system, u32 method, u32 argument, bool is_last_call);

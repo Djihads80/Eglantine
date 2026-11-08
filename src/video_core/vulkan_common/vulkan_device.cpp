@@ -32,6 +32,9 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/gpu_logging/gpu_logging.h"
+#ifdef EGLANTINE_STREAMLINE
+#include "video_core/vulkan_common/streamline.h"
+#endif
 
 #if defined(__ANDROID__) && defined(ARCHITECTURE_arm64)
 #include <adrenotools/bcenabler.h>
@@ -475,7 +478,6 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     const bool is_amd = is_amd_driver || is_radv;
 
     const bool is_intel_windows = driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS;
-    const bool is_intel_anv = driver_id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA;
 
     const bool is_nvidia = driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
     const bool is_mvk = driver_id == VK_DRIVER_ID_MOLTENVK;
@@ -526,7 +528,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
         IsFormatSupported(VK_FORMAT_D24_UNORM_S8_UINT,
                           VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT, FormatType::Optimal);
 
-    supports_conditional_barriers = !(is_intel_anv || is_intel_windows);
+    supports_conditional_barriers = !is_intel_windows;
 
     CollectPhysicalMemoryInfo();
     CollectToolingInfo();
@@ -743,6 +745,15 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
         RemoveExtensionFeature(extensions.descriptor_buffer, features.descriptor_buffer,
                                VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
     }
+#ifdef EGLANTINE_STREAMLINE
+    // NVIDIA's DLSS needs buffer device addresses: keep the feature enabled for
+    // it, but leave Eglantine's own buffers as they are without descriptor buffers.
+    const bool dlss_wants_device_address =
+        streamline_extensions && features.buffer_device_address.bufferDeviceAddress;
+    if (!extensions.descriptor_buffer && dlss_wants_device_address) {
+        extensions.buffer_device_address = false;
+    } else
+#endif
     if (!extensions.descriptor_buffer) {
         RemoveExtensionFeature(extensions.buffer_device_address, features.buffer_device_address,
                                VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
@@ -752,6 +763,15 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
 
     graphics_queue = logical.GetQueue(graphics_family);
     present_queue = logical.GetQueue(present_family);
+
+#ifdef EGLANTINE_STREAMLINE
+    if (streamline_extensions) {
+        streamline_attached =
+            Streamline::AttachDevice(instance, physical, *logical, graphics_family, dld);
+    } else if (Streamline::WantsDevice()) {
+        Streamline::Stop();
+    }
+#endif
 
     VmaVulkanFunctions functions{};
     functions.vkGetInstanceProcAddr = dld.vkGetInstanceProcAddr;
@@ -806,6 +826,11 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
 }
 
 Device::~Device() {
+#ifdef EGLANTINE_STREAMLINE
+    if (streamline_attached) {
+        Streamline::Stop();
+    }
+#endif
     SaveStaticPipelineCache();
     ShutdownGPULogging();
     for (auto& pools : separate_pools) {
@@ -1122,6 +1147,26 @@ bool Device::GetSuitability(bool requires_swapchain) {
     } else {
         extensions.robustness_2 = false;
     }
+
+#ifdef EGLANTINE_STREAMLINE
+    // The extensions NVIDIA's DLSS asks for, where the device has them all.
+    if (Streamline::WantsDevice()) {
+        const std::vector<std::string> wanted = Streamline::DeviceExtensions();
+        // Streamline may ask for no extensions at all.
+        const bool all = std::ranges::all_of(
+            wanted, [&](const std::string& name) { return supported_extensions.contains(name); });
+        std::string names;
+        for (const std::string& name : wanted) {
+            if (all) {
+                loaded_extensions.insert(name);
+            }
+            names += (names.empty() ? "" : ", ") + name;
+        }
+        streamline_extensions = all;
+        LOG_INFO(Render_Vulkan, "NVIDIA DLSS device extensions: {} ({})",
+                 all ? "enabled" : "unavailable", names.empty() ? "none" : names);
+    }
+#endif
 
 #undef FEATURE_EXTENSION
 #undef EXTENSION

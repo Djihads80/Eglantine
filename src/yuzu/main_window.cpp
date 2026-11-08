@@ -10,6 +10,7 @@
 
 #include <boost/algorithm/string/split.hpp>
 #include "common/fs/path_util.h"
+#include "common/game_presets.h"
 #include "common/settings.h"
 #include "common/settings_enums.h"
 #include "frontend_common/settings_generator.h"
@@ -320,6 +321,7 @@ __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 
 constexpr int default_mouse_hide_timeout = 2500;
 constexpr int default_input_update_timeout = 1;
+constexpr int EmuThreadStopTimeoutMs = 10'000;
 
 constexpr size_t CopyBufferSize = 1_MiB;
 
@@ -1468,6 +1470,9 @@ void MainWindow::ConnectWidgetEvents() {
             &MainWindow::OnGameListVerifyIntegrity);
     connect(game_list, &GameList::ConvertToNupRequested, this,
             &MainWindow::OnGameListConvertToNup);
+    connect(game_list, &GameList::ExtractNupRequested, this, &MainWindow::OnGameListExtractNup);
+    connect(game_list, &GameList::EditNupMetadataRequested, this,
+            &MainWindow::OnGameListEditNupMetadata);
     connect(game_list, &GameList::CopyTIDRequested, this, &MainWindow::OnGameListCopyTID);
     connect(game_list, &GameList::CreateShortcut, this, &MainWindow::OnGameListCreateShortcut);
     connect(game_list, &GameList::AddDirectory, this, &MainWindow::OnGameListAddDirectory);
@@ -1964,6 +1969,26 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         QtCommon::system->ApplySettings();
     }
 
+    if (title_id == Settings::MarioKartWorldProgramId && !asked_recommended_mkw_settings) {
+        asked_recommended_mkw_settings = true;
+        use_recommended_mkw_settings =
+            QMessageBox::question(
+                this, tr("Recommended Mario Kart World settings"),
+                tr("Use the recommended settings for Mario Kart World?\n\n"
+                   "Vulkan, 1x resolution, GPU Fast, asynchronous shaders, BC3, conservative VRAM, "
+                   "reactive flushing off, FIFO Relaxed VSync, handheld mode, ScaleForce, and "
+                   "FXAA.\n\n"
+                   "They apply to Mario Kart World until Eglantine is closed. Your saved settings "
+                   "are not changed."),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+        LOG_INFO(Config, "MKW recommended settings accepted: {}", use_recommended_mkw_settings);
+    }
+    if (Settings::ApplyMarioKartWorldPreset(Settings::values, title_id,
+                                          use_recommended_mkw_settings)) {
+        QtCommon::system->ApplySettings();
+        Settings::UpdateGPUAccuracy();
+        LOG_INFO(Config, "Applied recommended MKW settings after per-game configuration");
+    }
     Settings::LogSettings();
 
     if (UISettings::values.select_user_on_boot && !user_flag_cmd_line) {
@@ -2209,6 +2234,23 @@ void MainWindow::OnShutdownBeginDialog() {
 void MainWindow::OnEmulationStopTimeExpired() {
     if (QtCommon::emu_thread) {
         QtCommon::emu_thread->ForceStop();
+        emu_terminate_timer.setSingleShot(true);
+        emu_terminate_timer.start(EmuThreadStopTimeoutMs);
+        connect(&emu_terminate_timer, &QTimer::timeout, this, &MainWindow::OnEmulationStopTimeout,
+                Qt::UniqueConnection);
+    }
+}
+
+void MainWindow::OnEmulationStopTimeout() {
+    TerminateEmulationThread();
+    OnEmulationStopped();
+}
+
+void MainWindow::TerminateEmulationThread() {
+    if (QtCommon::emu_thread && QtCommon::emu_thread->isRunning()) {
+        LOG_ERROR(Frontend, "Emulation thread failed to stop, terminating it");
+        QtCommon::emu_thread->terminate();
+        QtCommon::emu_thread->wait();
     }
 }
 
@@ -2220,6 +2262,7 @@ void MainWindow::OnEmulationStopped() {
         return;
     }
     shutdown_timer.stop();
+    emu_terminate_timer.stop();
     if (QtCommon::emu_thread) {
         QtCommon::emu_thread->disconnect();
         QtCommon::emu_thread->wait();
@@ -2309,13 +2352,17 @@ void MainWindow::ShutdownGame() {
     play_time_manager->Stop();
     OnShutdownBegin();
     OnEmulationStopTimeExpired();
-    if (QtCommon::emu_thread) {
+    emu_terminate_timer.stop();
+    if (QtCommon::emu_thread && QtCommon::emu_thread->isRunning()) {
         QEventLoop loop;
+        QTimer timeout;
+        timeout.setSingleShot(true);
         connect(QtCommon::emu_thread.get(), &QThread::finished, &loop, &QEventLoop::quit);
-        if (QtCommon::emu_thread->isRunning()) {
-            loop.exec(QEventLoop::ExcludeUserInputEvents);
-        }
+        connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+        timeout.start(EmuThreadStopTimeoutMs);
+        loop.exec(QEventLoop::ExcludeUserInputEvents);
     }
+    TerminateEmulationThread();
     OnEmulationStopped();
 }
 
@@ -2380,10 +2427,9 @@ void MainWindow::OnGameListOpenFolder(u64 program_id, GameListOpenTarget target,
         }
     }();
 
-    const bool has_user_save{user_save_size > 0};
-    const bool has_device_save{device_save_size > 0};
-
-    ASSERT_MSG(has_user_save != has_device_save, "Game uses both user and device savedata?");
+    // Some titles (e.g. NX2 games) report no sizes in their NACP yet still create account saves
+    // at runtime, so only use the device layout when it is explicitly declared.
+    const bool use_device_save{device_save_size > 0 && user_save_size == 0};
 
     switch (target) {
     case GameListOpenTarget::SaveData: {
@@ -2392,26 +2438,23 @@ void MainWindow::OnGameListOpenFolder(u64 program_id, GameListOpenTarget target,
         auto vfs_save_dir = QtCommon::vfs->OpenDirectory(Common::FS::PathToUTF8String(save_dir),
                                                          FileSys::OpenMode::Read);
 
-        if (has_user_save) {
-            // User save data
+        u128 save_user_id{};
+        if (!use_device_save) {
             const auto user_id = GetProfileID();
-            assert(user_id);
-
-            const auto user_save_data_path = FileSys::SaveDataFactory::GetFullPath(
-                {}, vfs_save_dir, FileSys::SaveDataSpaceId::User, FileSys::SaveDataType::Account,
-                program_id, user_id->AsU128(), 0);
-
-            path = Common::FS::ConcatPathSafe(save_dir, user_save_data_path);
-        } else {
-            // Device save data
-            const auto device_save_data_path = FileSys::SaveDataFactory::GetFullPath(
-                {}, vfs_save_dir, FileSys::SaveDataSpaceId::User, FileSys::SaveDataType::Account,
-                program_id, {}, 0);
-
-            path = Common::FS::ConcatPathSafe(save_dir, device_save_data_path);
+            if (user_id) {
+                save_user_id = user_id->AsU128();
+            }
         }
 
-        if (!Common::FS::CreateDirs(path)) {
+        const auto save_data_path = FileSys::SaveDataFactory::GetFullPath(
+            {}, vfs_save_dir, FileSys::SaveDataSpaceId::User, FileSys::SaveDataType::Account,
+            program_id, save_user_id, 0);
+
+        path = Common::FS::ConcatPathSafe(save_dir, save_data_path);
+
+        // Only create the folder for games that are known to need it; otherwise an empty
+        // directory would be left behind in the wrong place.
+        if ((user_save_size > 0 || device_save_size > 0) && !Common::FS::CreateDirs(path)) {
             LOG_ERROR(Frontend, "Unable to create the directories for save data");
         }
 
@@ -4095,7 +4138,7 @@ void MainWindow::OnGameListConvertToNup(const std::string& game_path) {
     nup_source_path = game_path;
     game_list->SetNupConversionRunning(true);
     nup_cancel = std::make_shared<std::atomic_bool>(false);
-    nup_progress = new NupProgressDialog(progress_title, progress_icon, this);
+    nup_progress = new NupProgressDialog(tr("Converting to NUP"), progress_title, progress_icon, this);
     connect(nup_progress, &NupProgressDialog::CancelRequested, this,
             [this, cancel = nup_cancel] {
                 cancel->store(true);
@@ -4164,6 +4207,205 @@ void MainWindow::OnGameListConvertToNup(const std::string& game_path) {
             },
             Qt::QueuedConnection);
         return result;
+    }));
+}
+
+void MainWindow::OnGameListExtractNup(const std::string& game_path) {
+    if (nup_running) {
+        return;
+    }
+    const auto to_path = [](const std::string& utf8) {
+        return std::filesystem::path{std::u8string{utf8.begin(), utf8.end()}};
+    };
+    const auto archive = to_path(game_path);
+    const auto out_dir = QFileDialog::getSaveFileName(
+        this, tr("Extract NUP"),
+        QString::fromStdString(Common::FS::PathToUTF8String(
+            FileSys::Nup::DefaultExtractPath(archive))));
+    if (out_dir.isEmpty()) {
+        return;
+    }
+    const auto out_path = to_path(out_dir.toStdString());
+    if (std::filesystem::exists(out_path)) {
+        QMessageBox::information(this, tr("Extract NUP"),
+                                 tr("The target directory already exists:\n%1").arg(out_dir));
+        return;
+    }
+    const auto probed = FileSys::Nup::ProbeNupMetadata(archive);
+    const QString progress_title =
+        QString::fromStdString(probed.title_name).trimmed().isEmpty()
+            ? tr("Extracting NUP")
+            : QString::fromStdString(probed.title_name);
+    QPixmap progress_icon;
+    if (!probed.icon.empty()) {
+        progress_icon.loadFromData(probed.icon.data(),
+                                   static_cast<uint>(probed.icon.size()));
+    }
+
+    nup_running = true;
+    nup_source_path = game_path;
+    game_list->SetNupConversionRunning(true);
+    nup_cancel = std::make_shared<std::atomic_bool>(false);
+    nup_progress = new NupProgressDialog(tr("Extracting NUP"), progress_title, progress_icon, this);
+    connect(nup_progress, &NupProgressDialog::CancelRequested, this,
+            [this, cancel = nup_cancel] {
+                cancel->store(true);
+                if (nup_progress) {
+                    nup_progress->SetCancelling();
+                }
+            });
+    nup_progress->show();
+
+    const auto cancel = nup_cancel;
+    auto last_update = std::make_shared<std::chrono::steady_clock::time_point>();
+    nup_watcher.setFuture(QtConcurrent::run([this, archive, out_path, cancel, last_update] {
+        std::string error;
+        const auto on_progress = [this,
+                                  last_update](const FileSys::Nup::PackProgress& progress) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - *last_update < std::chrono::milliseconds(200)) {
+                return;
+            }
+            *last_update = now;
+            QMetaObject::invokeMethod(
+                this,
+                [this, progress] {
+                    if (!nup_progress) {
+                        return;
+                    }
+                    nup_progress->SetProgress(progress);
+                },
+                Qt::QueuedConnection);
+        };
+        const auto result =
+            FileSys::Nup::ExtractNup(archive, out_path, on_progress, cancel.get(), &error);
+        QMetaObject::invokeMethod(
+            this,
+            [this, result, error, out_path] {
+                nup_running = false;
+                nup_source_path.clear();
+                game_list->SetNupConversionRunning(false);
+                if (nup_progress) {
+                    nup_progress->Finish();
+                    nup_progress->deleteLater();
+                    nup_progress = nullptr;
+                }
+                nup_cancel.reset();
+                switch (result) {
+                case FileSys::Nup::ExtractResult::Success:
+                    QMessageBox::information(
+                        this, tr("Extraction Complete"),
+                        tr("The NUP was extracted. You can delete the NUP file if you no longer "
+                           "need it."));
+                    // Only a new loose dump can appear, so one rescan is enough. The full refresh
+                    // also rescans external content and the firmware on the UI thread.
+                    game_list->RefreshGameDirectory();
+                    break;
+                case FileSys::Nup::ExtractResult::Cancelled:
+                    break;
+                case FileSys::Nup::ExtractResult::InvalidSource:
+                case FileSys::Nup::ExtractResult::IoError:
+                    QMessageBox::critical(this, tr("Extraction Failed"),
+                                          QString::fromStdString(error));
+                    break;
+                }
+            },
+            Qt::QueuedConnection);
+        return FileSys::Nup::PackResult::Success;
+    }));
+}
+
+void MainWindow::OnGameListEditNupMetadata(const std::string& game_path) {
+    if (nup_running) {
+        return;
+    }
+    const auto to_path = [](const std::string& utf8) {
+        return std::filesystem::path{std::u8string{utf8.begin(), utf8.end()}};
+    };
+    const auto archive = to_path(game_path);
+    NupEditDialog dialog(archive, this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    const auto edit = dialog.Edit();
+    if (!edit.title_name && !edit.icon && !edit.display_version && !edit.publisher &&
+        !edit.localized_titles) {
+        return;
+    }
+    const QString progress_title = dialog.DisplayName();
+    const QPixmap progress_icon = dialog.CurrentIcon();
+
+    nup_running = true;
+    nup_source_path = game_path;
+    game_list->SetNupConversionRunning(true);
+    nup_cancel = std::make_shared<std::atomic_bool>(false);
+    nup_progress = new NupProgressDialog(tr("Editing NUP Metadata"), progress_title, progress_icon,
+                                         this);
+    connect(nup_progress, &NupProgressDialog::CancelRequested, this,
+            [this, cancel = nup_cancel] {
+                cancel->store(true);
+                if (nup_progress) {
+                    nup_progress->SetCancelling();
+                }
+            });
+    nup_progress->show();
+
+    const auto cancel = nup_cancel;
+    auto last_update = std::make_shared<std::chrono::steady_clock::time_point>();
+    nup_watcher.setFuture(QtConcurrent::run([this, archive, edit, cancel, last_update] {
+        std::string error;
+        const auto on_progress = [this,
+                                  last_update](const FileSys::Nup::PackProgress& progress) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - *last_update < std::chrono::milliseconds(200)) {
+                return;
+            }
+            *last_update = now;
+            QMetaObject::invokeMethod(
+                this,
+                [this, progress] {
+                    if (!nup_progress) {
+                        return;
+                    }
+                    nup_progress->SetProgress(progress);
+                },
+                Qt::QueuedConnection);
+        };
+        const auto result =
+            FileSys::Nup::EditNupMetadata(archive, edit, &error, cancel.get(), on_progress);
+        QMetaObject::invokeMethod(
+            this,
+            [this, result, error] {
+                nup_running = false;
+                nup_source_path.clear();
+                game_list->SetNupConversionRunning(false);
+                if (nup_progress) {
+                    nup_progress->Finish();
+                    nup_progress->deleteLater();
+                    nup_progress = nullptr;
+                }
+                nup_cancel.reset();
+                switch (result) {
+                case FileSys::Nup::EditResult::Success:
+                    QMessageBox::information(this, tr("Edit Complete"),
+                                             tr("The NUP metadata was updated."));
+                    // The cached name and icon are keyed by title, so they must go; the rest is
+                    // one rescan instead of the full refresh.
+                    QtCommon::Game::ResetMetadata(false);
+                    game_list->RefreshGameDirectory();
+                    break;
+                case FileSys::Nup::EditResult::NoChange:
+                case FileSys::Nup::EditResult::Cancelled:
+                    break;
+                case FileSys::Nup::EditResult::InvalidSource:
+                case FileSys::Nup::EditResult::IoError:
+                    QMessageBox::critical(this, tr("Edit Failed"),
+                                          QString::fromStdString(error));
+                    break;
+                }
+            },
+            Qt::QueuedConnection);
+        return FileSys::Nup::PackResult::Success;
     }));
 }
 

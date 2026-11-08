@@ -86,6 +86,11 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             .pNext = nullptr,
             .requiredSubgroupSize = GuestWarpSize,
         };
+        // Only warp-level ops observe the subgroup size. Forcing 32 on other shaders makes Intel
+        // compile SIMD32, which can spill a register-heavy kernel for minutes (Mario Kart World).
+        const bool uses_warp_ops = info.uses_subgroup_vote || info.uses_subgroup_invocation_id ||
+                                   info.uses_subgroup_shuffles || info.uses_subgroup_mask ||
+                                   info.uses_quad_shuffles || info.uses_fswzadd;
         VkPipelineCreateFlags flags{};
         if (device.IsKhrPipelineExecutablePropertiesEnabled() && Settings::values.renderer_debug.GetValue()) {
             flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
@@ -99,8 +104,10 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             .flags = flags,
             .stage{
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .pNext =
-                    device.IsExtSubgroupSizeControlSupported() ? &subgroup_size_ci : nullptr,
+                .pNext = device.IsExtSubgroupSizeControlSupported() && uses_warp_ops &&
+                                 device.IsGuestWarpSizeSupported(VK_SHADER_STAGE_COMPUTE_BIT)
+                             ? &subgroup_size_ci
+                             : nullptr,
                 .flags = 0,
                 .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                 .module = *spv_module,
@@ -176,19 +183,18 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     const auto& cbufs{qmd.const_buffer_config};
     const bool via_header_index{qmd.linked_tsc != 0};
     const auto read_handle{[&](const auto& desc, u32 index) {
-        if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&>) {
-            if (desc.handle_program != ~0U) {
-                // Read by the shader from a storage buffer: computed for this dispatch.
-                return TexturePair(VideoCommon::EvaluateTextureHandle(
-                                       info, desc.handle_program, gpu_memory,
-                                       [&](u32 cbuf) -> GPUVAddr {
-                                           return cbuf < cbufs.size() &&
-                                                          ((qmd.const_buffer_enable_mask >> cbuf) & 1) != 0
-                                                      ? cbufs[cbuf].Address()
-                                                      : GPUVAddr{};
-                                       }),
-                                   via_header_index);
-            }
+        if (desc.handle_program != ~0U) {
+            // Read by the shader from a storage buffer: computed for this dispatch.
+            return TexturePair(VideoCommon::EvaluateTextureHandle(
+                                   info, desc.handle_program, gpu_memory,
+                                   [&](u32 cbuf) -> GPUVAddr {
+                                       return cbuf < cbufs.size() &&
+                                                      ((qmd.const_buffer_enable_mask >> cbuf) &
+                                                       1) != 0
+                                                  ? cbufs[cbuf].Address()
+                                                  : GPUVAddr{};
+                                   }),
+                               via_header_index);
         }
         ASSERT(((qmd.const_buffer_enable_mask >> desc.cbuf_index) & 1) != 0);
         const u32 index_offset{index << desc.size_shift};

@@ -3064,11 +3064,14 @@ public:
             Maxwell3D::Regs::PrimitiveTopology topology{};
             DrawMode draw_mode{};
             bool draw_indexed{};
+            u32 draw_element_count{}; // Zero for indirect draws whose count is not known yet.
             u32 base_index{};
             Maxwell3D::Regs::VertexBuffer vertex_buffer;
             Maxwell3D::Regs::IndexBuffer index_buffer;
             u32 base_instance{};
             u32 instance_count{};
+            /// Deferred instances already drawn by flushes in the middle of the current loop.
+            u32 drawn_instances{};
             std::vector<u8> inline_index_draw_indexes;
         };
         struct DrawTextureState {
@@ -3095,7 +3098,8 @@ public:
         };
         void ProcessMethodCall(Maxwell3D& maxwell3d, u32 method, u32 argument);
         void Clear(Maxwell3D& maxwell3d, u32 layer_count);
-        void DrawDeferred(Maxwell3D& maxwell3d);
+        /// Draws the waiting instances. loop_continues is set when the loop goes on afterwards.
+        void DrawDeferred(Maxwell3D& maxwell3d, bool loop_continues = false);
         /// Instances after the first wait to be drawn together (DrawDeferred).
         [[nodiscard]] bool HasDeferredDraw() const noexcept {
             return draw_state.draw_mode == DrawMode::Instance && draw_state.instance_count != 0;
@@ -3349,7 +3353,17 @@ private:
     };
     std::array<RecentWrite, 48> recent_writes{};
     size_t recent_write_index = 0;
+    const bool record_write_history{
+#ifdef NDEBUG
+        std::getenv("EDEN_NX2_3D_HISTORY") != nullptr
+#else
+        true
+#endif
+    };
     void RecordWrite(u32 method, u32 argument, u32 amount, u32 pending) {
+        if (!record_write_history) {
+            return;
+        }
         recent_writes[recent_write_index++ % recent_writes.size()] = {method, argument, amount, pending};
     }
     void DumpRecentWrites(u32 method);

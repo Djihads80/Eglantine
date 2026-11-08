@@ -269,7 +269,7 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
     if (xfb_enabled) {
         RefreshXfbState(xfb_state, regs);
     }
-    if (!dynamic_vertex_input && ExperimentalStaticVertexRepackEnabled()) {
+    if (!dynamic_vertex_input && features.has_static_vertex_repack) {
         const u32 repack_mask = VertexRepackMask(regs);
         // Refresh from guest values even when only the stride changed: offsets must not accumulate.
         for (size_t index = 0; index < attributes.size(); ++index) {

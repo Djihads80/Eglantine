@@ -1,0 +1,71 @@
+name: cleanup-branch
+
+# Branch builds publish a rolling pre-release per branch (branch-<slug>). This removes it when the
+# PR closes or the branch is deleted, and a weekly sweep removes any left behind.
+on:
+  pull_request:
+    types: [closed]
+  delete:
+  schedule:
+    - cron: "30 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    if: >-
+      github.event_name != 'delete' || github.event.ref_type == 'branch'
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Remove the branch release
+        if: github.event_name == 'pull_request' || github.event_name == 'delete'
+        shell: bash
+        env:
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          DELETED_REF: ${{ github.event.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            # Fork PRs never published a release here.
+            [ "$PR_HEAD_REPO" = "$GITHUB_REPOSITORY" ] || exit 0
+            ref="$PR_HEAD_REF"
+          else
+            ref="$DELETED_REF"
+          fi
+          tag="branch-$(bash tools/ci/slugify.sh "$ref")"
+          echo "Deleting $tag"
+          gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+
+      # Branch releases whose branch no longer exists.
+      - name: Sweep orphaned branch releases
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Capture and check the complete branch list first. If gh api fails, 
+          # set -e ensures the script exits before any deletions can occur.
+          branches=$(gh api --paginate "repos/$GITHUB_REPOSITORY/branches" --jq '.[].name')
+
+          slugs=" "
+          while read -r name; do
+            [ -n "$name" ] || continue
+            slugs+="$(bash tools/ci/slugify.sh "$name") "
+          done <<< "$branches"
+
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName --jq '.[].tagName' |
+            { grep '^branch-' || true; } |
+            while read -r tag; do
+              if [[ "$slugs" != *" ${tag#branch-} "* ]]; then
+                echo "Deleting orphaned $tag"
+                gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+              fi
+            done

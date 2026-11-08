@@ -32,6 +32,7 @@ namespace VideoCommon {
 /// A native (Switch 2) program after capture and lowering to Maxwell code. The shader cache keeps
 /// it so the environments built for the program's pipelines don't capture and lower it again.
 struct LoweredNativeCode {
+    u64 diagnostic_key{};
     /// Shader header, lowered instructions with Maxwell scheduling words, then the native
     /// address map (what the environment's `code` used to be filled with).
     std::vector<u64> code;
@@ -61,6 +62,10 @@ public:
     [[nodiscard]] u64 ReadInstruction(u32 address) final;
 
     [[nodiscard]] u32 TranslateProgramAddress(u32 address) const override;
+
+    [[nodiscard]] bool IsNativeProgram() const override;
+
+    [[nodiscard]] bool IsCbufStorageBufferPointer(u32 index, u32 offset) override;
 
     [[nodiscard]] std::optional<u64> Analyze();
 
@@ -97,9 +102,12 @@ protected:
 
     /// Adopts an already lowered native program, or captures and lowers it when there is none.
     void InitializeNativeCode(std::shared_ptr<const LoweredNativeCode> lowered,
-                              u32 source_header_size = 128);
-    std::shared_ptr<const LoweredNativeCode> LowerNativeCode(u32 source_header_size);
+                              u32 source_header_size = 128, bool geometry = false);
+    std::shared_ptr<const LoweredNativeCode> LowerNativeCode(u32 source_header_size,
+                                                              bool geometry = false);
     size_t native_source_size{};
+    /// Lower matrix multiplies too (KeplerCompute::EmulatesNativeTensorPrograms).
+    bool native_tensor{};
     std::shared_ptr<const LoweredNativeCode> lowered_native;
 
     Tegra::Texture::TICEntry ReadTextureInfo(GPUVAddr tic_addr, u32 tic_limit,
@@ -112,6 +120,7 @@ protected:
     ::Common::unordered_map<u32, Shader::TextureType> texture_types;
     ::Common::unordered_map<u32, Shader::TexturePixelFormat> texture_pixel_formats;
     ::Common::unordered_map<u64, u32> cbuf_values;
+    ::Common::unordered_map<u64, u8> storage_pointer_types; ///< IsCbufStorageBufferPointer answers
     ::Common::unordered_map<u64, Shader::ReplaceConstant> cbuf_replacements;
 
     u32 local_memory_size{};
@@ -206,6 +215,10 @@ public:
 
     [[nodiscard]] u32 TranslateProgramAddress(u32 address) const override;
 
+    [[nodiscard]] bool IsNativeProgram() const override;
+
+    [[nodiscard]] bool IsCbufStorageBufferPointer(u32 index, u32 offset) override;
+
     [[nodiscard]] u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) override;
 
     [[nodiscard]] Shader::TextureType ReadTextureType(u32 handle) override;
@@ -238,6 +251,7 @@ private:
     ::Common::unordered_map<u32, Shader::TextureType> texture_types;
     ::Common::unordered_map<u32, Shader::TexturePixelFormat> texture_pixel_formats;
     ::Common::unordered_map<u64, u32> cbuf_values;
+    ::Common::unordered_map<u64, u8> storage_pointer_types;
     ::Common::unordered_map<u64, Shader::ReplaceConstant> cbuf_replacements;
     std::array<u32, 3> workgroup_size{};
     u32 local_memory_size{};

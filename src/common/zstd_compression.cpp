@@ -35,16 +35,26 @@ std::vector<u8> CompressDataZSTDDefault(const u8* source, std::size_t source_siz
 }
 
 std::vector<u8> DecompressDataZSTD(std::span<const u8> compressed) {
-    const std::size_t decompressed_size =
+    return TryDecompressDataZSTD(compressed, std::vector<u8>{}.max_size())
+        .value_or(std::vector<u8>{});
+}
+
+std::optional<std::vector<u8>> TryDecompressDataZSTD(std::span<const u8> compressed,
+                                                     std::size_t max_size) {
+    // The size comes from the frame header, so check it before allocating
+    const unsigned long long decompressed_size =
         ZSTD_getFrameContentSize(compressed.data(), compressed.size());
-    std::vector<u8> decompressed(decompressed_size);
+    if (decompressed_size == ZSTD_CONTENTSIZE_ERROR ||
+        decompressed_size == ZSTD_CONTENTSIZE_UNKNOWN || decompressed_size > max_size) {
+        return std::nullopt;
+    }
+    std::vector<u8> decompressed(static_cast<std::size_t>(decompressed_size));
 
     const std::size_t uncompressed_result_size = ZSTD_decompress(
         decompressed.data(), decompressed.size(), compressed.data(), compressed.size());
 
-    if (decompressed_size != uncompressed_result_size || ZSTD_isError(uncompressed_result_size)) {
-        // Decompression failed
-        return {};
+    if (ZSTD_isError(uncompressed_result_size) || uncompressed_result_size != decompressed_size) {
+        return std::nullopt;
     }
     return decompressed;
 }
