@@ -76,8 +76,8 @@ public:
     /// Signal disabling of a uniform buffer
     virtual void DisableGraphicsUniformBuffer(size_t stage, u32 index) = 0;
 
-    /// Signal a GPU based semaphore as a fence
-    virtual void SignalFence(std::function<void()>&& func) = 0;
+    /// Signal a GPU based semaphore as a fence. force_completion also waits at low accuracy.
+    virtual void SignalFence(std::function<void()>&& func, bool force_completion = false) = 0;
 
     /// Send an operation to be done after a certain amount of flushes.
     virtual void SyncOperation(std::function<void()>&& func) = 0;

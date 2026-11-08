@@ -916,11 +916,11 @@ void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
             return;
         }
         if (True(image.flags & ImageFlagBits::SparseTiles)) {
-            MarkRangeWritten(image, cpu_addr, size);
+            MarkRangeWritten(image, image_id, cpu_addr, size);
             return;
         }
         if (UploadsByLayer(image)) {
-            MarkLayersWritten(image, cpu_addr, size);
+            MarkLayersWritten(image, image_id, cpu_addr, size);
             return;
         }
         if (True(image.flags & ImageFlagBits::CpuModified)) {
@@ -1831,40 +1831,61 @@ bool TextureCache<P>::UploadsByLayer(const ImageBase& image) const noexcept {
 }
 
 template <class P>
-void TextureCache<P>::MarkLayersWritten(Image& image, DAddr cpu_addr, size_t size) {
+void TextureCache<P>::MarkLayersWritten(Image& image, ImageId image_id, DAddr cpu_addr, size_t size) {
     if (True(image.flags & ImageFlagBits::CpuModified) && image.dirty_layers.empty()) {
         return; // all of it is dirty already
     }
     const u32 layers = static_cast<u32>(image.info.resources.layers);
-    if (False(image.flags & ImageFlagBits::CpuModified)) {
-        image.flags |= ImageFlagBits::CpuModified;
-        image.dirty_layers.assign(Common::DivCeil(layers, 64U), 0);
-    }
-    const DAddr begin = (std::max<DAddr>)(cpu_addr, image.cpu_addr) - image.cpu_addr;
-    const DAddr end = (std::min<DAddr>)(cpu_addr + size, image.cpu_addr + image.guest_size_bytes) -
-                      image.cpu_addr;
     const u32 stride = image.info.layer_stride;
-    if (end <= begin || stride == 0) {
+    if (stride == 0 || layers == 0) {
         return;
     }
-    const u32 last = (std::min)(static_cast<u32>((end - 1) / stride), layers - 1);
-    for (u32 layer = static_cast<u32>(begin / stride); layer <= last; ++layer) {
-        image.dirty_layers[layer / 64] |= u64{1} << (layer % 64);
-    }
+    ForEachWrittenRange(image, image_id, cpu_addr, size, [&](u64 offset, u64 bytes) {
+        if (False(image.flags & ImageFlagBits::CpuModified)) {
+            image.flags |= ImageFlagBits::CpuModified;
+            image.dirty_layers.assign(Common::DivCeil(layers, 64U), 0);
+        }
+        const u32 last = std::min(static_cast<u32>((offset + bytes - 1) / stride), layers - 1);
+        for (u32 layer = static_cast<u32>(offset / stride); layer <= last; ++layer) {
+            image.dirty_layers[layer / 64] |= u64{1} << (layer % 64);
+        }
+    });
 }
 
 template <class P>
-void TextureCache<P>::MarkRangeWritten(Image& image, DAddr cpu_addr, size_t size) {
+void TextureCache<P>::MarkRangeWritten(Image& image, ImageId image_id, DAddr cpu_addr, size_t size) {
     if (True(image.flags & ImageFlagBits::CpuModified) && image.dirty_ranges.empty()) {
         return; // all of it is dirty already
+    }
+    ForEachWrittenRange(image, image_id, cpu_addr, size, [&](u64 offset, u64 bytes) {
+        image.flags |= ImageFlagBits::CpuModified;
+        image.dirty_ranges.emplace_back(offset, bytes);
+    });
+}
+
+template <class P>
+template <typename Func>
+void TextureCache<P>::ForEachWrittenRange(Image& image, ImageId image_id, DAddr cpu_addr,
+                                         size_t size, Func&& func) {
+    if (True(image.flags & ImageFlagBits::Sparse)) {
+        const auto it = sparse_views.find(image_id);
+        ASSERT(it != sparse_views.end());
+        for (const ImageMapId map_id : it->second) {
+            const auto& map = slot_map_views[map_id];
+            const DAddr begin = std::max(cpu_addr, map.cpu_addr);
+            const DAddr end = std::min(cpu_addr + size, map.cpu_addr + map.size);
+            if (begin < end) {
+                func(map.gpu_addr - image.gpu_addr + begin - map.cpu_addr, end - begin);
+            }
+        }
+        return;
     }
     const DAddr begin = (std::max<DAddr>)(cpu_addr, image.cpu_addr);
     const DAddr end = (std::min<DAddr>)(cpu_addr + size, image.cpu_addr + image.guest_size_bytes);
     if (end <= begin) {
         return;
     }
-    image.flags |= ImageFlagBits::CpuModified;
-    image.dirty_ranges.emplace_back(begin - image.cpu_addr, end - begin);
+    func(begin - image.cpu_addr, end - begin);
 }
 
 template <class P>
@@ -2657,7 +2678,9 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     }
 
     if (!gpu_memory->IsContinuousRange(new_image.gpu_addr, new_image.guest_size_bytes) &&
-        new_info.is_sparse) {
+        (new_info.is_sparse ||
+         (new_info.native_tiling &&
+          Tegra::Nx2InSparseRegion(new_image.gpu_addr, new_image.guest_size_bytes)))) {
         new_image.flags |= ImageFlagBits::Sparse;
     }
 

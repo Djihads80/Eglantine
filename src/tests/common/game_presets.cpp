@@ -33,9 +33,7 @@ void CheckPreset(const Settings::Values& settings, u64 program_id) {
     CHECK(settings.use_reactive_flushing.GetValue() ==
           (program_id == Settings::OcarinaOfTimeProgramId));
     CHECK(settings.vsync_mode.GetValue() == Settings::VSyncMode::FifoRelaxed);
-    CHECK(settings.use_docked_mode.GetValue() ==
-          (program_id == Settings::OcarinaOfTimeProgramId ? Settings::ConsoleMode::Docked
-                                                       : Settings::ConsoleMode::Handheld));
+    CHECK(settings.use_docked_mode.GetValue() == Settings::ConsoleMode::Docked);
     CHECK(settings.scaling_filter.GetValue() == Settings::ScalingFilter::ScaleForce);
     CHECK(settings.anti_aliasing.GetValue() == Settings::AntiAliasing::Fxaa);
 }
