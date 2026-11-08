@@ -489,6 +489,11 @@ void VisitUsages(Info& info, IR::Inst& inst) {
     case IR::Opcode::IsImageScaled:
         info.uses_rescaling_uniform = true;
         break;
+    case IR::Opcode::TensorMulAdd:
+        info.uses_subgroup_shuffles = true;
+        info.uses_fp32_denorms_preserve = true;
+        info.uses_subgroup_invocation_id = true;
+        break;
     case IR::Opcode::LaneId:
         info.uses_subgroup_invocation_id = true;
         break;

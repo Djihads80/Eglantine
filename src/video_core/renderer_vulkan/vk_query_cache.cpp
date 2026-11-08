@@ -209,8 +209,17 @@ public:
         last_accumulation_checkpoint = (std::max)(last_accumulation_checkpoint, num_slots_used);
     }
 
+    // Called at each submission. The running query carries the count across it: a guest's
+    // reset-to-report window can span one.
     void CloseCounter() override {
         PauseCounter();
+        // A title that counts without resetting or reporting grows the query by a slot at every
+        // submission and render pass, and the query keeps every bank it touches alive. Ocarina of
+        // Time's title screen and file select reached 16,384 slots over 64 banks (its gameplay
+        // windows span at most 36 slots). Past a bank, drop the count as a reset would.
+        if (current_query && current_query->size_slots > SamplesQueryBank::BANK_SIZE) {
+            ResetCounter();
+        }
     }
 
     bool HasPendingSync() const override {
