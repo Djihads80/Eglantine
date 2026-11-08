@@ -1,7 +1,7 @@
 # Shader stutter: what the Ocarina fork found and changed
 
 A short handoff for anyone working on shader or pipeline compilation in Eglantine (Vulkan).
-Everything below is on the branch [`oot-60fps-wip`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/tree/oot-60fps-wip).
+Everything below is on the branch [`nx2`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/tree/nx2) of the fork (also pushed as `oot-60fps-wip`).
 It was measured on a Ryzen 9 9950X3D and an RTX 5090 (NVIDIA driver, Windows 11), in Ocarina of
 Time, with async shaders on.
 

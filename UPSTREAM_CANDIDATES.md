@@ -1,6 +1,6 @@
 # Upstream candidates from the Ocarina of Time branch
 
-Which commits on this branch (`oot-60fps-wip`) are worth sending to upstream Eglantine
+Which commits on this branch (`nx2` on the fork, also pushed as `oot-60fps-wip`) are worth sending to upstream Eglantine
 ([Djihads80/Eglantine](https://github.com/Djihads80/Eglantine)) as small pull requests, and in
 what order.
 
