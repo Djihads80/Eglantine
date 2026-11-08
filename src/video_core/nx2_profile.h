@@ -118,11 +118,16 @@ struct ThreadData {
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
     u64 sample_tick{}; ///< SampledScope: which constructions time themselves
-    /// Calls of each engine method the back ran (CountMethod), by method number.
-    std::unique_ptr<std::array<u32, 0x10000>> method_calls;
+    /// Calls of each engine method the back ran (CountMethod), by method number (made on first
+    /// use, kept for the thread's life: ThreadData stays trivially destructible).
+    std::array<u32, 0x10000>* method_calls{};
 };
 
-inline thread_local ThreadData t_data;
+// Constant-initialized and trivially destructible: no TLS init wrapper on each access. In the
+// Android library (dlopen'd) every access still resolves the TLS block through the linker, so
+// the scopes look it up once each. With all of that per access, a gpu_profile file left in the
+// user directory cost the GPU thread ~20% (simpleperf, Mario Kart World).
+constinit inline thread_local ThreadData t_data{};
 
 class Scope {
 public:
@@ -130,8 +135,9 @@ public:
         if (!enabled) {
             return;
         }
-        parent_child_ns = t_data.child_ns;
-        t_data.child_ns = 0;
+        data = &t_data;
+        parent_child_ns = data->child_ns;
+        data->child_ns = 0;
         start = Now();
     }
 
@@ -140,11 +146,10 @@ public:
             return;
         }
         const u64 elapsed = Now() - start;
-        auto& data = t_data;
         const auto index = static_cast<size_t>(zone);
-        data.exclusive_ns[index] += elapsed - data.child_ns;
-        ++data.count[index];
-        data.child_ns = parent_child_ns + elapsed;
+        data->exclusive_ns[index] += elapsed - data->child_ns;
+        ++data->count[index];
+        data->child_ns = parent_child_ns + elapsed;
     }
 
     Scope(const Scope&) = delete;
@@ -153,6 +158,7 @@ public:
 private:
     Zone zone;
     bool enabled;
+    ThreadData* data{};
     u64 start{};
     u64 parent_child_ns{};
 };
@@ -167,13 +173,14 @@ public:
         if (!enabled) {
             return;
         }
-        ++t_data.count[static_cast<size_t>(zone)];
-        timing = (t_data.sample_tick++ & ((u64{1} << Shift) - 1)) == 0;
+        data = &t_data;
+        ++data->count[static_cast<size_t>(zone)];
+        timing = (data->sample_tick++ & ((u64{1} << Shift) - 1)) == 0;
         if (!timing) {
             return;
         }
-        parent_child_ns = t_data.child_ns;
-        t_data.child_ns = 0;
+        parent_child_ns = data->child_ns;
+        data->child_ns = 0;
         start = Now();
     }
 
@@ -182,10 +189,9 @@ public:
             return;
         }
         const u64 elapsed = Now() - start;
-        auto& data = t_data;
-        const u64 own = elapsed > data.child_ns ? elapsed - data.child_ns : 0;
-        data.exclusive_ns[static_cast<size_t>(zone)] += own << Shift;
-        data.child_ns = parent_child_ns + elapsed;
+        const u64 own = elapsed > data->child_ns ? elapsed - data->child_ns : 0;
+        data->exclusive_ns[static_cast<size_t>(zone)] += own << Shift;
+        data->child_ns = parent_child_ns + elapsed;
     }
 
     SampledScope(const SampledScope&) = delete;
@@ -195,6 +201,7 @@ private:
     Zone zone;
     bool enabled;
     bool timing{};
+    ThreadData* data{};
     u64 start{};
     u64 parent_child_ns{};
 };
@@ -213,8 +220,7 @@ inline void CountMethod(u32 method, u32 amount = 1) {
     }
     auto& calls = t_data.method_calls;
     if (!calls) {
-        calls = std::make_unique<std::array<u32, 0x10000>>();
-        calls->fill(0);
+        calls = new std::array<u32, 0x10000>{};
     }
     (*calls)[method & 0xffff] += amount;
 }
@@ -382,11 +388,11 @@ inline void Report(const char* thread_name = "GPU thread") {
         }
     }
     LOG_INFO(HW_GPU, "{} per second:{}", thread_name, line);
-    auto method_calls = std::move(data.method_calls);
+    auto* const method_calls = data.method_calls;
     data = {};
     if (method_calls) {
         method_calls->fill(0);
-        data.method_calls = std::move(method_calls);
+        data.method_calls = method_calls;
     }
     data.window_start = now;
 }
