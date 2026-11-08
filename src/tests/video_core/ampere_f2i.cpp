@@ -81,3 +81,38 @@ TEST_CASE("Ampere F2I applies abs and neg to constant-buffer sources", "[video_c
         }
     }
 }
+
+TEST_CASE("Ampere F2I from F16 keeps its rounding and half selector", "[video_core][ampere]") {
+    using Shader::Ampere::Instruction;
+    using Shader::Ampere::LowerToMaxwell;
+    const Instruction exit{{0x0000794d, 0, 0x03800000, 0}};
+    // ptxas SM86: cvt.rmi.u32.f16 -> F2I.U32.F16.FLOOR.NTZ (00077305 00000003 00107000, .H1 with
+    // bit 60) and cvt.rzi.s32.f16 -> F2I.F16.TRUNC.NTZ (000b7305 00000003 0010f100).
+    for (const u32 rounding : {0U, 1U, 2U, 3U}) {
+        for (const bool high : {false, true}) {
+            for (const bool is_signed : {false, true}) {
+                const Instruction convert{{0x00207305, 0x0000001eU | (high ? 0x10000000U : 0U),
+                                           0x00103000U | (rounding << 14) | (is_signed ? 0x100U : 0U), 0}};
+                const auto lowered = LowerToMaxwell(std::array{convert, exit});
+                REQUIRE(static_cast<bool>(lowered));
+                const auto widen = std::ranges::find_if(lowered.instructions, [](u64 word) {
+                    return (word >> 52) == 0x5ca && ((word >> 48) & 0xf) == 8;
+                });
+                REQUIRE(widen != lowered.instructions.end());
+                CHECK(((*widen >> 20) & 0xff) == 0x1e);              // F2F reads Rs...
+                CHECK(((*widen >> 41) & 1) == static_cast<u64>(high)); // ...its selected half...
+                CHECK(((*widen >> 8) & 3) == 2);                     // ...into F32...
+                CHECK(((*widen >> 10) & 3) == 1);                    // ...from F16.
+                const auto convert_word = std::ranges::find_if(lowered.instructions, [](u64 word) {
+                    return (word >> 52) == 0x5cb;
+                });
+                REQUIRE(convert_word != lowered.instructions.end());
+                CHECK((*convert_word & 0xff) == 0x20);
+                CHECK(((*convert_word >> 39) & 3) == rounding);
+                CHECK(((*convert_word >> 12) & 1) == static_cast<u64>(is_signed));
+            }
+        }
+    }
+    const Instruction absolute{{0x00207305, 0x4000001e, 0x00107000, 0}};
+    CHECK_FALSE(static_cast<bool>(LowerToMaxwell(std::array{absolute, exit})));
+}

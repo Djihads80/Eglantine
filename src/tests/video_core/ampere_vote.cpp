@@ -25,6 +25,8 @@ TEST_CASE("Ampere uniform vote writes mapped uniform registers", "[video_core][a
         REQUIRE(((lowered.instructions[0] >> 48) & 3) == 1);
     }
 
-    const Instruction unsupported{{0x001c7886, 0, 0x038e0100, 0}};
-    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{unsupported, exit})));
+    const Instruction high_uniform{{0x001c7886, 0, 0x038e0100, 0}};
+    const auto lowered = LowerToMaxwell(std::array{high_uniform, exit});
+    REQUIRE(static_cast<bool>(lowered));
+    REQUIRE((lowered.instructions[0] & 0xff) == 214); // UR28's separately reserved mirror
 }
