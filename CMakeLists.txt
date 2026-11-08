@@ -752,15 +752,16 @@ endif()
 
 # TODO: Icon/install handling n such should be put into dist/CMakeLists.txt
 if(ENABLE_QT AND UNIX AND NOT APPLE)
-    install(FILES "dist/dev.eden_emu.eden.desktop"
+    install(FILES "dist/dev.eglantine.eglantine.desktop"
         DESTINATION "share/applications")
     install(FILES "dist/dev.eden_emu.eden.svg"
-        DESTINATION "share/icons/hicolor/scalable/apps")
+        DESTINATION "share/icons/hicolor/scalable/apps"
+        RENAME "dev.eglantine.eglantine.svg")
 
     # TODO: these files need to be updated.
-    install(FILES "dist/dev.eden_emu.eden.xml"
+    install(FILES "dist/dev.eglantine.eglantine.xml"
         DESTINATION "share/mime/packages")
-    install(FILES "dist/dev.eden_emu.eden.metainfo.xml"
+    install(FILES "dist/dev.eglantine.eglantine.metainfo.xml"
         DESTINATION "share/metainfo")
 endif()
 

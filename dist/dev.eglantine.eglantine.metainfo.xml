@@ -11,9 +11,9 @@ SPDX-License-Identifier: CC0-1.0
 -->
 
 <component type="desktop-application">
-  <id>dev.eden_emu.eden</id>
+  <id>dev.eglantine.eglantine</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <name>eden</name>
+  <name>Eglantine</name>
   <summary>Nintendo Switch emulator</summary>
   <description>
     <p>Eden is a free and open-source (FOSS) Switch 1 emulator started by developer Camille LaVey. Written in C++, with builds for Windows, Linux, macOS, Android, FreeBSD and more.</p>
@@ -35,10 +35,10 @@ SPDX-License-Identifier: CC0-1.0
   <url type="contact">https://discord.gg/HstXbPch7X</url>
   <url type="vcs-browser">https://git.eden-emu.dev</url>
   <url type="contribute">https://git.eden-emu.dev/eden-emu/eden</url>
-  <launchable type="desktop-id">dev.eden_emu.eden.desktop</launchable>
+  <launchable type="desktop-id">dev.eglantine.eglantine.desktop</launchable>
   <provides>
-    <binary>yuzu</binary>
-    <binary>yuzu-cmd</binary>
+    <binary>eglantine</binary>
+    <binary>eden-cli</binary>
   </provides>
   <supports>
     <control>pointing</control>
