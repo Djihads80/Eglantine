@@ -607,8 +607,8 @@ void RasterizerOpenGL::ModifyGPUMemory(size_t as_id, GPUVAddr addr, u64 size) {
     }
 }
 
-void RasterizerOpenGL::SignalFence(std::function<void()>&& func) {
-    fence_manager.SignalFence(std::move(func));
+void RasterizerOpenGL::SignalFence(std::function<void()>&& func, bool force_completion) {
+    fence_manager.SignalFence(std::move(func), force_completion);
 }
 
 void RasterizerOpenGL::SyncOperation(std::function<void()>&& func) {

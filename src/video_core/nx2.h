@@ -192,6 +192,17 @@ inline void Nx2SparseRegionCreated(u64 gpu_address, u64 size, u64 block_size) {
                                        std::vector<bool>((size + block_size - 1) / block_size)};
 }
 
+/// An initially GPU-only pool now has explicit tiles. Let the renderer bind only resident tiles,
+/// while preserving the written/mapped state of pools that were sparse from creation.
+inline void Nx2SparseRegionTiled(u64 gpu_address, u64 size, u64 block_size) {
+    Nx2AddSparseSpan(gpu_address, size);
+    std::scoped_lock lk{g_nx2_sparse_state_mutex};
+    if (!g_nx2_sparse_state.contains(gpu_address)) {
+        g_nx2_sparse_state[gpu_address] = {
+            size, block_size, std::vector<bool>((size + block_size - 1) / block_size)};
+    }
+}
+
 inline void Nx2SparseRegionDestroyed(u64 gpu_address) {
     std::scoped_lock lk{g_nx2_sparse_state_mutex};
     g_nx2_sparse_state.erase(gpu_address);

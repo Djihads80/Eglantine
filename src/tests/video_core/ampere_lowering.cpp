@@ -440,4 +440,38 @@ TEST_CASE("Ampere Ocarina byte constant loads, ULEA carries to UP3 and two-sourc
     REQUIRE(static_cast<bool>(convert));
     CHECK(field(FindMaxwell(convert, 0x5cb, 52), 41, 2) == 3);
 }
+TEST_CASE("Ampere three-input IADD3 preserves negative immediates", "[video_core][ampere]") {
+    // GrassCullGrid's R4 + (-1) + R7 selects the grid level. Bit 63 is the literal's sign bit.
+    for (const u32 literal : {0xffffffffU, 0xfffffffeU, 0x80000000U, 0x7fffffffU, 17U}) {
+        const std::array<Instruction, 2> code{{
+            {{0x04047810, literal, 0x07ffe007, 0x000fc400}},
+            EXIT,
+        }};
+        const auto lowered = LowerToMaxwell(code);
+        REQUIRE(static_cast<bool>(lowered));
+        const u64 add = FindMaxwell(lowered, 0x5c1, 52);
+        REQUIRE(add != 0);
+        CHECK(((add >> 48) & 1) == 0);
+        CHECK(((add >> 49) & 1) == 0);
+        const u64 move = FindMaxwell(lowered, 0x010, 52);
+        CHECK(static_cast<u32>(move >> 20) == literal);
+    }
+}
+
+TEST_CASE("Ampere three-input IADD3 retains register source negation", "[video_core][ampere]") {
+    const std::array<Instruction, 2> code{{
+        {{0x04047210, 0x80000005, 0x07ffe907, 0x000fc400}},
+        EXIT,
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(lowered));
+    std::vector<u64> adds;
+    for (const u64 word : lowered.instructions) {
+        if ((word >> 52) == 0x5c1) adds.push_back(word);
+    }
+    REQUIRE(adds.size() == 2);
+    CHECK(((adds[0] >> 48) & 1) == 1);
+    CHECK(((adds[0] >> 49) & 1) == 1);
+    CHECK(((adds[1] >> 48) & 1) == 1);
+}
 } // namespace

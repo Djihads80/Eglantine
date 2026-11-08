@@ -48,7 +48,7 @@ inline const std::map<u64, GamePreset> game_presets{
        {"vram_usage_mode", VramUsageMode::Conservative},
        {"use_reactive_flushing", false},
        {"use_vsync", VSyncMode::FifoRelaxed},
-       {"use_docked_mode", ConsoleMode::Handheld},
+       {"use_docked_mode", ConsoleMode::Docked},
        {"scaling_filter", ScalingFilter::ScaleForce},
        {"anti_aliasing", AntiAliasing::Fxaa}}}},
     {OcarinaOfTimeProgramId,

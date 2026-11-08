@@ -136,7 +136,11 @@ GPUVAddr MemoryManager::PageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr de
         const GPUVAddr current_gpu_addr = gpu_addr + offset;
         [[maybe_unused]] const auto current_entry_type = GetEntry(current_gpu_addr, false);
         SetEntry(current_gpu_addr, entry_type, false);
-        if (current_entry_type != entry_type) {
+        const bool changed_backing = entry_type == EntryType::Mapped &&
+            current_entry_type == EntryType::Mapped &&
+            page_table[PageEntryIndex(current_gpu_addr, false)] !=
+                static_cast<u32>((dev_addr + offset) >> cpu_page_bits);
+        if (current_entry_type != entry_type || changed_backing) {
             if (modified_size == 0) {
                 modified_start = current_gpu_addr;
             }
@@ -172,7 +176,11 @@ GPUVAddr MemoryManager::BigPageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr
         const GPUVAddr current_gpu_addr = gpu_addr + offset;
         [[maybe_unused]] const auto current_entry_type = GetEntry(current_gpu_addr, true);
         SetEntry(current_gpu_addr, entry_type, true);
-        if (current_entry_type != entry_type) {
+        const bool changed_backing = entry_type == EntryType::Mapped &&
+            current_entry_type == EntryType::Mapped &&
+            big_page_table_dev[PageEntryIndex(current_gpu_addr, true)] !=
+                static_cast<u32>((dev_addr + offset) >> cpu_page_bits);
+        if (current_entry_type != entry_type || changed_backing) {
             if (modified_size == 0) {
                 modified_start = current_gpu_addr;
             }
@@ -218,13 +226,33 @@ void MemoryManager::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) 
     rasterizer = rasterizer_;
 }
 
+void MemoryManager::PreserveMapping(GPUVAddr gpu_addr, std::size_t size) {
+    if (!UsesNativeTiling() || rasterizer == nullptr || size == 0) {
+        return;
+    }
+    boost::container::small_vector<std::pair<DAddr, std::size_t>, 32> ranges;
+    GetSubmappedRangeImpl<false>(gpu_addr, size, ranges);
+    for (const auto& [address, bytes] : ranges) {
+        rasterizer->FlushRegion(address, bytes, VideoCommon::CacheType::All);
+    }
+}
+
 GPUVAddr MemoryManager::Map(GPUVAddr gpu_addr, DAddr dev_addr, std::size_t size, PTEKind kind, bool is_big_pages) {
+    if (UsesNativeTiling() && rasterizer != nullptr && size != 0 &&
+        (!IsContinuousRange(gpu_addr, size) || GpuToCpuAddress(gpu_addr) != dev_addr)) {
+        PreserveMapping(gpu_addr, size);
+        // Another virtual view can own the newest image contents at this device address.
+        // Publish it while its translation is valid, then make sampled aliases reload it.
+        rasterizer->FlushRegion(dev_addr, size, VideoCommon::CacheType::All);
+        rasterizer->InvalidateRegion(dev_addr, size, VideoCommon::CacheType::TextureCache);
+    }
     if (is_big_pages)
         return BigPageTableOp(gpu_addr, dev_addr, size, kind, EntryType::Mapped);
     return PageTableOp(gpu_addr, dev_addr, size, kind, EntryType::Mapped);
 }
 
 GPUVAddr MemoryManager::MapSparse(GPUVAddr gpu_addr, std::size_t size, bool is_big_pages) {
+    PreserveMapping(gpu_addr, size);
     if (is_big_pages)
         return BigPageTableOp(gpu_addr, 0, size, PTEKind::INVALID, EntryType::Reserved);
     return PageTableOp(gpu_addr, 0, size, PTEKind::INVALID, EntryType::Reserved);
@@ -234,6 +262,7 @@ void MemoryManager::Unmap(GPUVAddr gpu_addr, std::size_t size) {
     if (size == 0) {
         return;
     }
+    PreserveMapping(gpu_addr, size);
     GetSubmappedRangeImpl<false>(gpu_addr, size, page_stash);
 
     for (const auto& [map_addr, map_size] : page_stash) {

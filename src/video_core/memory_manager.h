@@ -147,6 +147,9 @@ public:
     GPUVAddr MapSparse(GPUVAddr gpu_addr, std::size_t size, bool is_big_pages = true);
     void Unmap(GPUVAddr gpu_addr, std::size_t size);
 
+    /// Publish cached writes before changing the translation or its device backing.
+    void PreserveMapping(GPUVAddr gpu_addr, std::size_t size);
+
     void FlushRegion(GPUVAddr gpu_addr, size_t size,
                      VideoCommon::CacheType which = VideoCommon::CacheType::All) const;
 

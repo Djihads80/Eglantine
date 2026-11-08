@@ -1312,6 +1312,11 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     if (!use_asynchronous_shaders) {
         return pipeline;
     }
+    // Native draws can produce terrain data used only once. Submit them after compilation
+    // instead of leaving permanent holes when their first use misses the shader cache.
+    if (maxwell3d->GetNativeMacroEngine().native_turing) {
+        return pipeline;
+    }
     // If something is using depth, we can assume that games are not rendering anything which
     // will be used one time.
     if (maxwell3d->regs.zeta_enable) {

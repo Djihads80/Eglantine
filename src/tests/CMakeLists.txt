@@ -27,10 +27,12 @@ add_executable(tests
     core/nup_writer.cpp
     core/nx2_debug_server.cpp
     core/nx2_movie_pacing.cpp
+    core/nx2_gpu_memory_registry.cpp
     core/priority_queue.cpp
     core/internal_network/network.cpp
     video_core/frame_dump_schedule.cpp
     video_core/memory_tracker.cpp
+    video_core/nx2_sparse_residency.cpp
     video_core/spirv_storage_alignment.cpp
     video_core/pipeline_optimization.cpp
     video_core/spirv_atomic_retry.cpp

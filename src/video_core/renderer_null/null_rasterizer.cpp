@@ -63,7 +63,7 @@ VideoCore::RasterizerDownloadArea RasterizerNull::GetFlushArea(PAddr addr, u64 s
 void RasterizerNull::InvalidateGPUCache() {}
 void RasterizerNull::UnmapMemory(DAddr addr, u64 size) {}
 void RasterizerNull::ModifyGPUMemory(size_t as_id, GPUVAddr addr, u64 size) {}
-void RasterizerNull::SignalFence(std::function<void()>&& func) {
+void RasterizerNull::SignalFence(std::function<void()>&& func, bool /*force_completion*/) {
     func();
 }
 void RasterizerNull::SyncOperation(std::function<void()>&& func) {
