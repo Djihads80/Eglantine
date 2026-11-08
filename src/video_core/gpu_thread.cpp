@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
+#include <cstdlib>
 #include <thread>
 
 #ifdef __linux__
@@ -89,7 +90,14 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     if (waited < std::chrono::microseconds{500}) {
                         std::this_thread::yield();
                     } else if (waited < std::chrono::seconds{2}) {
-                        std::this_thread::sleep_for(std::chrono::microseconds{50});
+                        // EDEN_NX2_PENDING_SLEEP_US=<us> (A/B; 1000 is the old poll). Read the
+                        // first time a channel waits, after env.txt.
+                        static const std::chrono::microseconds pending_sleep{[] {
+                            const char* value = std::getenv("EDEN_NX2_PENDING_SLEEP_US");
+                            const long us = value != nullptr ? std::strtol(value, nullptr, 10) : 50L;
+                            return us > 0 ? us : 50L;
+                        }()};
+                        std::this_thread::sleep_for(pending_sleep);
                     } else {
                         std::this_thread::sleep_for(std::chrono::milliseconds{1});
                     }
