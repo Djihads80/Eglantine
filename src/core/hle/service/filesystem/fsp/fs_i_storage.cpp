@@ -8,7 +8,9 @@
 #include <chrono>
 #include <thread>
 
+#include "core/core.h"
 #include "core/file_sys/errors.h"
+#include "core/hle/kernel/k_process.h"
 #include "core/hle/service/cmif_serialization.h"
 #include "core/hle/service/filesystem/fsp/fs_i_storage.h"
 
@@ -35,13 +37,22 @@ Result IStorage::Read(
     R_UNLESS(length >= 0, FileSys::ResultInvalidSize);
     R_UNLESS(offset >= 0, FileSys::ResultInvalidOffset);
 
-    const auto now = std::chrono::steady_clock::now();
-    if (now < next_read_tick) {
-        std::this_thread::sleep_for(next_read_tick - now);
+    // Pacing reads to an SD card's speed fixed a freeze in an older game; Switch 2 games stream assets and are
+    // not slowed down.
+    if (!throttle_checked) {
+        const auto* const process = system.ApplicationProcess();
+        throttle_reads = process == nullptr || !process->IsSwitch2();
+        throttle_checked = true;
     }
-    next_read_tick = std::chrono::steady_clock::now() +
-                     std::chrono::nanoseconds{std::min(length, MaxChargedReadSize) *
-                                              1'000'000'000 / ReadBytesPerSecond};
+    if (throttle_reads) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now < next_read_tick) {
+            std::this_thread::sleep_for(next_read_tick - now);
+        }
+        next_read_tick = std::chrono::steady_clock::now() +
+                         std::chrono::nanoseconds{std::min(length, MaxChargedReadSize) *
+                                                  1'000'000'000 / ReadBytesPerSecond};
+    }
 
     // Read the data from the Storage backend
     backend->Read(out_bytes.data(), length, offset);

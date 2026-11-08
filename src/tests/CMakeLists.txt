@@ -25,6 +25,7 @@ add_executable(tests
     core/ldn.cpp
     core/internal_network/socket_proxy.cpp
     core/nup_writer.cpp
+    core/nup2.cpp
     core/nx2_debug_server.cpp
     core/priority_queue.cpp
     core/internal_network/network.cpp

@@ -25,6 +25,8 @@ private:
     static constexpr s64 ReadBytesPerSecond = 40'000'000;
     static constexpr s64 MaxChargedReadSize = 64 * 1024;
     std::chrono::steady_clock::time_point next_read_tick{};
+    bool throttle_checked{};
+    bool throttle_reads{true};
 
     Result Read(
         OutBuffer<BufferAttr_HipcMapAlias | BufferAttr_HipcMapTransferAllowsNonSecure> out_bytes,

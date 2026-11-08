@@ -140,6 +140,10 @@ add_library(core STATIC
     file_sys/nup_container.h
     file_sys/nup_writer.cpp
     file_sys/nup_writer.h
+    file_sys/nup2_container.cpp
+    file_sys/nup2_container.h
+    file_sys/nup2_writer.cpp
+    file_sys/nup2_writer.h
     file_sys/romfs.cpp
     file_sys/romfs.h
     file_sys/romfs_factory.cpp
@@ -182,6 +186,8 @@ add_library(core STATIC
     file_sys/vfs/vfs_concat.h
     file_sys/vfs/vfs_layered.cpp
     file_sys/vfs/vfs_layered.h
+    file_sys/vfs/vfs_mapped.cpp
+    file_sys/vfs/vfs_mapped.h
     file_sys/vfs/vfs_offset.cpp
     file_sys/vfs/vfs_offset.h
     file_sys/vfs/vfs_real.cpp
@@ -1163,10 +1169,14 @@ add_library(core STATIC
     loader/nro.h
     loader/nso.cpp
     loader/nso.h
+    loader/nso_verify.cpp
+    loader/nso_verify.h
     loader/nsp.cpp
     loader/nsp.h
     loader/nup.cpp
     loader/nup.h
+    loader/nup2.cpp
+    loader/nup2.h
     loader/xci.cpp
     loader/xci.h
     memory.cpp

@@ -487,10 +487,12 @@ void NupProgressDialog::SetProgress(const FileSys::Nup::PackProgress& progress) 
     bar->setValue(static_cast<int>(fraction * 1000));
     status->setText(tr("%1%").arg(fraction * 100, 0, 'f', 1));
 
-    QString text = tr("%1 / %2 MB  -  %3 / %4 files")
-                       .arg(Megabytes(progress.bytes_done), Megabytes(progress.bytes_total))
-                       .arg(progress.files_done)
-                       .arg(progress.files_total);
+    QString text = progress.files_total == 0
+                       ? tr("%1 / %2 MB").arg(Megabytes(progress.bytes_done), Megabytes(progress.bytes_total))
+                       : tr("%1 / %2 MB  -  %3 / %4 files")
+                             .arg(Megabytes(progress.bytes_done), Megabytes(progress.bytes_total))
+                             .arg(progress.files_done)
+                             .arg(progress.files_total);
     const double seconds = timer.elapsed() / 1000.0;
     if (seconds >= 3.0 && progress.bytes_done > 0 && fraction < 1.0) {
         const double rate = progress.bytes_done / seconds;

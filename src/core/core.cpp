@@ -27,6 +27,7 @@
 #include "core/device_memory.h"
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/fs_filesystem.h"
+#include "core/file_sys/nup2_container.h"
 #include "core/file_sys/nup_container.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/program_metadata.h"
@@ -122,6 +123,12 @@ namespace {
 // Detect the platform before initializing the kernel memory layout and guest clock.
 bool IsSwitch2Program(const FileSys::VirtualFile& file, u64 program_id, std::size_t program_index) {
     FileSys::ProgramMetadata metadata;
+    if (FileSys::Nup2Container::IsNup2File(file)) {
+        const FileSys::Nup2Container nup2{file};
+        const auto npdm = nup2.IsValid() ? nup2.GetExeFsDir()->GetFile("main.npdm") : nullptr;
+        return npdm != nullptr && metadata.Load(npdm) == Loader::ResultStatus::Success &&
+               metadata.IsSwitch2();
+    }
     if (FileSys::NupContainer::IsNupFile(file)) {
         FileSys::NupContainer nup{file};
         if (nup.GetStatus() != Loader::ResultStatus::Success) {

@@ -4,6 +4,11 @@
 // SPDX-FileCopyrightText: 2015 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <array>
+#include <filesystem>
+#include <fstream>
+
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QDir>
@@ -24,6 +29,7 @@
 
 #include "common/common_types.h"
 #include "core/core.h"
+#include "core/file_sys/nup2_container.h"
 #include "core/file_sys/nup_writer.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/registered_cache.h"
@@ -495,9 +501,17 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
         !FileSys::Nup::DumpRootFromMain(path) &&
         QString::fromStdString(path).endsWith(QStringLiteral(".nup"), Qt::CaseInsensitive);
     QAction* extract_nup = nullptr;
+    QAction* convert_nup2 = nullptr;
     if (is_nup_archive) {
         extract_nup = context_menu.addAction(tr("Dump NUP..."));
         extract_nup->setEnabled(!nup_conversion_running);
+        std::array<char, 4> magic{};
+        std::ifstream(std::filesystem::path{std::u8string{path.begin(), path.end()}}, std::ios::binary)
+            .read(magic.data(), magic.size());
+        if (!std::ranges::equal(magic, FileSys::Nup2Container::Magic)) {
+            convert_nup2 = context_menu.addAction(tr("Convert to NUP v2..."));
+            convert_nup2->setEnabled(!nup_conversion_running);
+        }
     }
     QMenu* dump_romfs_menu = context_menu.addMenu(tr("Dump RomFS"));
     QAction* dump_romfs = dump_romfs_menu->addAction(tr("Dump RomFS"));
@@ -505,9 +519,12 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     QAction* verify_integrity = context_menu.addAction(tr("Verify Integrity"));
     QAction* copy_tid = context_menu.addAction(tr("Copy Title ID to Clipboard"));
     QAction* convert_nup = nullptr;
+    QAction* convert_dump_nup2 = nullptr;
     if (FileSys::Nup::DumpRootFromMain(path)) {
         convert_nup = context_menu.addAction(tr("Convert to NUP..."));
         convert_nup->setEnabled(!nup_conversion_running);
+        convert_dump_nup2 = context_menu.addAction(tr("Convert to NUP v2..."));
+        convert_dump_nup2->setEnabled(!nup_conversion_running);
     }
 #if !defined(__APPLE__)
     QMenu* shortcut_menu = context_menu.addMenu(tr("Create Shortcut"));
@@ -597,6 +614,14 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     if (convert_nup) {
         connect(convert_nup, &QAction::triggered, this,
                 [this, path]() { emit ConvertToNupRequested(path); });
+    }
+    if (convert_dump_nup2) {
+        connect(convert_dump_nup2, &QAction::triggered, this,
+                [this, path]() { emit ConvertDumpToNup2Requested(path); });
+    }
+    if (convert_nup2) {
+        connect(convert_nup2, &QAction::triggered, this,
+                [this, path]() { emit ConvertToNup2Requested(path); });
     }
     if (extract_nup) {
         connect(extract_nup, &QAction::triggered, this,

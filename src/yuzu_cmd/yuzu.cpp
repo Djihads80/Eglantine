@@ -39,6 +39,7 @@
 #include "core/core_timing.h"
 #include "core/cpu_manager.h"
 #include "core/crypto/key_manager.h"
+#include "core/file_sys/nup2_writer.h"
 #include "core/file_sys/nup_writer.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/vfs/vfs_real.h"
@@ -423,6 +424,69 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     Common::Log::Initialize();
     Common::Log::SetColorConsoleBackendEnabled(true);
     Common::Log::Start();
+
+    // NUP v2 tools: --convert-nup <v1> <v2>, --convert-nup-dump <dump folder> <v2>, --pack-nup2 <exefs dir> <romfs image> <out> [version] [title],
+    // --verify-nup2 <v2> <v1>. Each runs and exits.
+    if (argc >= 3 && std::string_view(argv[1]) == "--check-nup2") {
+        const auto vfs = std::make_shared<FileSys::RealVfsFilesystem>();
+        std::string error;
+        const bool ok = FileSys::Nup2::VerifyRomFsHash(
+            vfs->OpenFile(argv[2], FileSys::OpenMode::Read),
+            [](u64 done, u64 total) {
+                std::fprintf(stderr, "\r%llu / %llu MiB", static_cast<unsigned long long>(done >> 20),
+                             static_cast<unsigned long long>(total >> 20));
+            },
+            &error);
+        LOG_INFO(Frontend, "{} {}", ok ? "RomFS SHA-256 OK" : "CHECK FAILED:", error);
+        return ok ? SDL_APP_SUCCESS : SDL_APP_FAILURE;
+    }
+    if (argc >= 4 && (std::string_view(argv[1]) == "--convert-nup" || std::string_view(argv[1]) == "--convert-nup-dump" ||
+                      std::string_view(argv[1]) == "--verify-nup2")) {
+        const auto vfs = std::make_shared<FileSys::RealVfsFilesystem>();
+        const std::string_view mode = argv[1];
+        const auto progress = [](u64 done, u64 total) {
+            std::fprintf(stderr, "\r%llu / %llu MiB", static_cast<unsigned long long>(done >> 20),
+                         static_cast<unsigned long long>(total >> 20));
+        };
+        std::string error;
+        if (mode == "--verify-nup2") {
+            const bool ok = FileSys::Nup2::VerifyAgainstNup1(vfs->OpenFile(argv[2], FileSys::OpenMode::Read),
+                                                              vfs->OpenFile(argv[3], FileSys::OpenMode::Read),
+                                                              progress, &error);
+            LOG_INFO(Frontend, "{} {}", ok ? "RomFS IDENTICAL" : "VERIFY FAILED:", error);
+            return ok ? SDL_APP_SUCCESS : SDL_APP_FAILURE;
+        }
+        if (mode == "--convert-nup-dump") {
+            const auto dump_result = FileSys::Nup2::ConvertFromDump(std::filesystem::u8path(argv[2]),
+                                                                     std::filesystem::u8path(argv[3]), progress, &error);
+            LOG_INFO(Frontend, "Convert result {} {}", static_cast<int>(dump_result), error);
+            return dump_result == FileSys::Nup2::PackResult::Success ? SDL_APP_SUCCESS : SDL_APP_FAILURE;
+        }
+        const auto result = FileSys::Nup2::ConvertFromNup1(vfs->OpenFile(argv[2], FileSys::OpenMode::Read),
+                                                           std::filesystem::u8path(argv[3]), progress, &error);
+        LOG_INFO(Frontend, "Convert result {} {}", static_cast<int>(result), error);
+        return result == FileSys::Nup2::PackResult::Success ? SDL_APP_SUCCESS : SDL_APP_FAILURE;
+    }
+    if (argc >= 5 && std::string_view(argv[1]) == "--pack-nup2") {
+        FileSys::Nup2::PackOptions options;
+        if (argc >= 6) {
+            options.display_version = argv[5];
+        }
+        if (argc >= 7) {
+            options.title_name = argv[6];
+        }
+        std::string error;
+        const auto result = FileSys::Nup2::Pack(
+            std::filesystem::u8path(argv[2]), std::filesystem::u8path(argv[3]), std::filesystem::u8path(argv[4]),
+            options,
+            [](u64 done, u64 total) {
+                std::fprintf(stderr, "\r%llu / %llu MiB", static_cast<unsigned long long>(done >> 20),
+                             static_cast<unsigned long long>(total >> 20));
+            },
+            &error);
+        LOG_INFO(Frontend, "Pack result {} {}", static_cast<int>(result), error);
+        return result == FileSys::Nup2::PackResult::Success ? SDL_APP_SUCCESS : SDL_APP_FAILURE;
+    }
 
     int option_index = 0;
 #ifdef _WIN32

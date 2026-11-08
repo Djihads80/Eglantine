@@ -273,7 +273,7 @@ QList<QStandardItem*> MakeGameListEntry(const std::string& path, const std::stri
         });
 
     FileSys::NACP nacp{};
-    if (file_type == Loader::FileType::NUP &&
+    if ((file_type == Loader::FileType::NUP || file_type == Loader::FileType::NUP2) &&
         loader.ReadControlData(nacp) == Loader::ResultStatus::Success) {
         const std::string version_string = nacp.GetVersionString();
         if (!version_string.empty()) {
@@ -434,7 +434,7 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::vector<std::fi
         if (target == ScanTarget::PopulateGameList &&
             (file_type == Loader::FileType::XCI || file_type == Loader::FileType::XCZ ||
              file_type == Loader::FileType::NSP || file_type == Loader::FileType::NSZ ||
-             file_type == Loader::FileType::NUP) &&
+             file_type == Loader::FileType::NUP || file_type == Loader::FileType::NUP2) &&
             !Loader::IsBootableGameContainer(file, file_type)) {
             return;
         }

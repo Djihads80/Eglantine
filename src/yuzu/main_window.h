@@ -21,6 +21,7 @@
 
 #include "common/common_types.h"
 #include "common/settings_enums.h"
+#include "core/file_sys/nup2_writer.h"
 #include "core/file_sys/nup_writer.h"
 #include "frontend_common/content_manager.h"
 #include "input_common/drivers/tas_input.h"
@@ -358,6 +359,9 @@ private slots:
     void OnGameListDumpRomFS(u64 program_id, const std::string& game_path, DumpRomFSTarget target);
     void OnGameListVerifyIntegrity(const std::string& game_path);
     void OnGameListConvertToNup(const std::string& game_path);
+    void OnGameListConvertToNup2(const std::string& game_path);
+    void OnGameListConvertDumpToNup2(const std::string& game_path);
+    void OnToolsConvertToNup2();
     void OnGameListExtractNup(const std::string& game_path);
     void OnGameListEditNupMetadata(const std::string& game_path);
     void OnGameListCopyTID(u64 program_id);
@@ -587,6 +591,10 @@ private:
 
     // Install progress dialog
     QProgressDialog* install_progress = nullptr;
+    using Nup2Job = std::function<FileSys::Nup2::PackResult(
+        const std::function<void(u64, u64)>&, std::string*, const std::atomic_bool*)>;
+    void StartNup2Conversion(const std::string& game_path, const std::filesystem::path& output,
+                             const QString& progress_title, const QPixmap& progress_icon, const Nup2Job& job);
     NupProgressDialog* nup_progress = nullptr;
     QFutureWatcher<FileSys::Nup::PackResult> nup_watcher;
     std::shared_ptr<std::atomic_bool> nup_cancel;

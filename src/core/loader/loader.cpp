@@ -29,7 +29,9 @@
 #include "core/loader/nro.h"
 #include "core/loader/nso.h"
 #include "core/loader/nsp.h"
+#include "core/file_sys/nup2_container.h"
 #include "core/loader/nup.h"
+#include "core/loader/nup2.h"
 #include "core/loader/xci.h"
 
 namespace Loader {
@@ -133,6 +135,8 @@ FileType IdentifyFile(FileSys::VirtualFile file) {
         return *xci_type;
     } else if (const auto nup_type = IdentifyFileLoader<AppLoader_NUP>(file)) {
         return *nup_type;
+    } else if (const auto nup2_type = IdentifyFileLoader<AppLoader_NUP2>(file)) {
+        return *nup2_type;
     } else if (const auto nro_type = IdentifyFileLoader<AppLoader_NRO>(file)) {
         return *nro_type;
     } else if (const auto nca_type = IdentifyFileLoader<AppLoader_NCA>(file)) {
@@ -153,7 +157,7 @@ FileType IdentifyFile(FileSys::VirtualFile file) {
 
 bool IsContainerType(FileType type) {
     return type == FileType::NSP || type == FileType::NSZ || type == FileType::XCI ||
-           type == FileType::XCZ || type == FileType::NUP;
+           type == FileType::XCZ || type == FileType::NUP || type == FileType::NUP2;
 }
 
 bool IsBootableGameContainer(FileSys::VirtualFile file, FileType type, u64 program_id,
@@ -164,6 +168,10 @@ bool IsBootableGameContainer(FileSys::VirtualFile file, FileType type, u64 progr
 
     if (type == FileType::Unknown) {
         type = IdentifyFile(file);
+    }
+
+    if (type == FileType::NUP2) {
+        return FileSys::Nup2Container{file}.IsValid();
     }
 
     if (type == FileType::NUP) {
@@ -240,6 +248,8 @@ std::string GetFileTypeString(FileType type) {
         return "NSZ";
     case FileType::NUP:
         return "NUP";
+    case FileType::NUP2:
+        return "NUPv2";
     case FileType::KIP:
         return "KIP";
     case FileType::DeconstructedRomDirectory:
@@ -409,7 +419,14 @@ static std::unique_ptr<AppLoader> GetFileLoader(Core::System& system, FileSys::V
 
     // NUP (NX Package) container format.
     case FileType::NUP:
+        // Version 2 files start with a different magic and use their own loader.
+        if (FileSys::Nup2Container::IsNup2File(file)) {
+            return std::make_unique<AppLoader_NUP2>(std::move(file));
+        }
         return std::make_unique<AppLoader_NUP>(std::move(file));
+
+    case FileType::NUP2:
+        return std::make_unique<AppLoader_NUP2>(std::move(file));
 
     // NX deconstructed ROM directory.
     case FileType::DeconstructedRomDirectory:

@@ -154,6 +154,10 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 
 #include "core/file_sys/card_image.h"
 #include "core/file_sys/common_funcs.h"
+#include "core/file_sys/nup2_container.h"
+#include "core/file_sys/vfs/vfs_real.h"
+#include "core/file_sys/nup2_writer.h"
+#include "core/file_sys/nup_container.h"
 #include "core/file_sys/nup_writer.h"
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/savedata_factory.h"
@@ -1470,6 +1474,8 @@ void MainWindow::ConnectWidgetEvents() {
     connect(game_list, &GameList::VerifyIntegrityRequested, this,
             &MainWindow::OnGameListVerifyIntegrity);
     connect(game_list, &GameList::ConvertToNupRequested, this, &MainWindow::OnGameListConvertToNup);
+    connect(game_list, &GameList::ConvertToNup2Requested, this, &MainWindow::OnGameListConvertToNup2);
+    connect(game_list, &GameList::ConvertDumpToNup2Requested, this, &MainWindow::OnGameListConvertDumpToNup2);
     connect(game_list, &GameList::ExtractNupRequested, this, &MainWindow::OnGameListExtractNup);
     connect(game_list, &GameList::EditNupMetadataRequested, this,
             &MainWindow::OnGameListEditNupMetadata);
@@ -1642,6 +1648,7 @@ void MainWindow::ConnectMenuEvents() {
     connect_menu(ui->action_Firmware_From_Folder, &MainWindow::OnInstallFirmware);
     connect_menu(ui->action_Firmware_From_ZIP, &MainWindow::OnInstallFirmwareFromZIP);
     connect_menu(ui->action_Install_Keys, &MainWindow::OnInstallDecryptionKeys);
+    connect_menu(ui->action_Convert_NUP_v2, &MainWindow::OnToolsConvertToNup2);
     connect_menu(ui->action_About, &MainWindow::OnAbout);
     connect_menu(ui->action_Eden_Dependencies, &MainWindow::OnEdenDependencies);
     connect_menu(ui->action_Data_Manager, &MainWindow::OnDataDialog);
@@ -4227,6 +4234,173 @@ void MainWindow::OnGameListConvertToNup(const std::string& game_path) {
             Qt::QueuedConnection);
         return result;
     }));
+}
+
+void MainWindow::OnToolsConvertToNup2() {
+    if (nup_running) {
+        return;
+    }
+    const auto filename = QFileDialog::getOpenFileName(
+        this, tr("Convert NUP to NUP v2"), QString::fromStdString(UISettings::values.roms_path),
+        tr("NUP (*.nup)"));
+    if (filename.isEmpty()) {
+        return;
+    }
+    UISettings::values.roms_path = QFileInfo(filename).path().toStdString();
+    OnGameListConvertToNup2(filename.toStdString());
+}
+
+void MainWindow::OnGameListConvertToNup2(const std::string& game_path) {
+    if (nup_running) {
+        return;
+    }
+    const QString convert_title = tr("Convert to NUP v2");
+    const auto to_path = [](const std::string& utf8) {
+        return std::filesystem::path{std::u8string{utf8.begin(), utf8.end()}};
+    };
+    const auto source = to_path(game_path);
+    const auto vfs = std::make_shared<FileSys::RealVfsFilesystem>();
+    const auto source_file = vfs->OpenFile(game_path, FileSys::OpenMode::Read);
+    if (FileSys::Nup2Container::IsNup2File(source_file)) {
+        QMessageBox::information(this, convert_title, tr("This file is already a NUP v2."));
+        return;
+    }
+    if (!FileSys::NupContainer::IsNupFile(source_file)) {
+        QMessageBox::warning(this, convert_title, tr("This is not a NUP v1 file."));
+        return;
+    }
+
+    auto default_target = source;
+    default_target.replace_filename(source.stem().native() + std::filesystem::path{u8"_v2.nup"}.native());
+    const auto out_name = QFileDialog::getSaveFileName(
+        this, convert_title, QString::fromStdString(Common::FS::PathToUTF8String(default_target)),
+        tr("NUP (*.nup)"));
+    if (out_name.isEmpty()) {
+        return;
+    }
+    const auto output = to_path(out_name.toStdString());
+    std::error_code ec;
+    if (std::filesystem::equivalent(output, source, ec)) {
+        QMessageBox::warning(this, convert_title, tr("The target cannot be the source file."));
+        return;
+    }
+
+    const auto probed = FileSys::Nup::ProbeNupMetadata(source);
+    const QString progress_title = QString::fromStdString(probed.title_name).trimmed().isEmpty()
+                                       ? QString::fromStdString(Common::FS::PathToUTF8String(source.stem()))
+                                       : QString::fromStdString(probed.title_name);
+    QPixmap progress_icon;
+    if (!probed.icon.empty()) {
+        progress_icon.loadFromData(probed.icon.data(), static_cast<uint>(probed.icon.size()));
+    }
+
+    StartNup2Conversion(game_path, output, progress_title, progress_icon,
+                        [source_file, output](const auto& progress, std::string* error, const std::atomic_bool* cancel) {
+                            return FileSys::Nup2::ConvertFromNup1(source_file, output, progress, error, cancel);
+                        });
+}
+
+void MainWindow::StartNup2Conversion(const std::string& game_path, const std::filesystem::path& output,
+                                     const QString& progress_title, const QPixmap& progress_icon,
+                                     const Nup2Job& job) {
+    nup_running = true;
+    nup_source_path = game_path;
+    game_list->SetNupConversionRunning(true);
+    nup_cancel = std::make_shared<std::atomic_bool>(false);
+    nup_progress = new NupProgressDialog(tr("Converting to NUP v2"), progress_title, progress_icon, this);
+    connect(nup_progress, &NupProgressDialog::CancelRequested, this, [this, cancel = nup_cancel] {
+        cancel->store(true);
+        if (nup_progress) {
+            nup_progress->SetCancelling();
+        }
+    });
+    nup_progress->show();
+
+    const auto cancel = nup_cancel;
+    auto last_update = std::make_shared<std::chrono::steady_clock::time_point>();
+    nup_watcher.setFuture(QtConcurrent::run([this, job, output, cancel, last_update] {
+        std::string error;
+        const auto on_progress = [this, last_update](u64 done, u64 total) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - *last_update < std::chrono::milliseconds(200)) {
+                return;
+            }
+            *last_update = now;
+            QMetaObject::invokeMethod(
+                this,
+                [this, done, total] {
+                    if (nup_progress) {
+                        nup_progress->SetProgress({.bytes_done = done, .bytes_total = total});
+                    }
+                },
+                Qt::QueuedConnection);
+        };
+        const auto result = job(on_progress, &error, cancel.get());
+        QMetaObject::invokeMethod(
+            this,
+            [this, result, error, output] {
+                nup_running = false;
+                nup_source_path.clear();
+                game_list->SetNupConversionRunning(false);
+                if (nup_progress) {
+                    nup_progress->Finish();
+                    nup_progress->deleteLater();
+                    nup_progress = nullptr;
+                }
+                nup_cancel.reset();
+                switch (result) {
+                case FileSys::Nup2::PackResult::Success:
+                    QMessageBox::information(this, tr("Conversion Complete"),
+                                             tr("The NUP v2 was created:\n%1")
+                                                 .arg(QString::fromStdString(Common::FS::PathToUTF8String(output))));
+                    OnGameListRefresh();
+                    break;
+                case FileSys::Nup2::PackResult::Cancelled:
+                    break;
+                default:
+                    QMessageBox::critical(this, tr("Conversion Failed"), QString::fromStdString(error));
+                    break;
+                }
+            },
+            Qt::QueuedConnection);
+        return result == FileSys::Nup2::PackResult::Success     ? FileSys::Nup::PackResult::Success
+               : result == FileSys::Nup2::PackResult::Cancelled ? FileSys::Nup::PackResult::Cancelled
+                                                                : FileSys::Nup::PackResult::IoError;
+    }));
+}
+
+void MainWindow::OnGameListConvertDumpToNup2(const std::string& game_path) {
+    if (nup_running) {
+        return;
+    }
+    const auto root = FileSys::Nup::DumpRootFromMain(game_path);
+    if (!root) {
+        return;
+    }
+    const QString convert_title = tr("Convert to NUP v2");
+    auto default_target = *root;
+    default_target += std::filesystem::path{u8"_v2.nup"};
+    const auto out_name = QFileDialog::getSaveFileName(
+        this, convert_title, QString::fromStdString(Common::FS::PathToUTF8String(default_target)),
+        tr("NUP (*.nup)"));
+    if (out_name.isEmpty()) {
+        return;
+    }
+    const std::string out_utf8 = out_name.toStdString();
+    const auto output = std::filesystem::path{std::u8string{out_utf8.begin(), out_utf8.end()}};
+
+    const auto probed = FileSys::Nup::ProbeMetadata(*root);
+    const QString progress_title = QString::fromStdString(probed.title_name).trimmed().isEmpty()
+                                       ? QString::fromStdString(Common::FS::PathToUTF8String(root->filename()))
+                                       : QString::fromStdString(probed.title_name);
+    QPixmap progress_icon;
+    if (!probed.icon.empty()) {
+        progress_icon.loadFromData(probed.icon.data(), static_cast<uint>(probed.icon.size()));
+    }
+    StartNup2Conversion(game_path, output, progress_title, progress_icon,
+                        [root = *root, output](const auto& progress, std::string* error, const std::atomic_bool* cancel) {
+                            return FileSys::Nup2::ConvertFromDump(root, output, progress, error, cancel);
+                        });
 }
 
 void MainWindow::OnGameListExtractNup(const std::string& game_path) {
