@@ -149,6 +149,26 @@ inline void Nx2ClearGpuWrittenPages() {
     return (g_nx2_gpu_written_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1;
 }
 
+/// False only when no page of [device_address, device_address + size) has been GPU-written.
+/// Every range the buffer cache records as GPU-modified also marks its pages here (under its
+/// lock). Ranges past the bitmap, or that wrap, answer true.
+[[nodiscard]] inline bool Nx2MayBeGpuWritten(u64 device_address, u64 size) {
+    if (size == 0) {
+        return false;
+    }
+    const u64 first = device_address >> Nx2WrittenPageBits;
+    const u64 last = (device_address + size - 1) >> Nx2WrittenPageBits;
+    if (last < first || last >= g_nx2_gpu_written_pages.size() * 64) {
+        return true;
+    }
+    for (u64 page = first; page <= last; ++page) {
+        if ((g_nx2_gpu_written_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Device pages with a query cache write still to land: counter reports and fence-timed releases
 // are written when their fence is released, not when the report runs, so an MME DMA read of one
 // (occlusion predicates) flushes the query cache over the read first or reads an older value
