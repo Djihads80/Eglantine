@@ -6,8 +6,9 @@ New entries go under `## [Unreleased]`; `tools/ci/bump-version.sh` turns them in
 
 ## [Unreleased]
 
+- Added Translations to builds
 - Added OOT Compatibility
-- Improved MKW Performances
+- Improved MKW Performances by a lot (got 25->45 fps on my low end build)
 - Added StarFox Compatibility
 - Less shader rebuilds
 - Changed dir from eden to eglantine
