@@ -12,7 +12,10 @@
 
 #include <sl.h>
 #include <sl_dlss.h>
+#include <sl_dlss_g.h>
 #include <sl_helpers_vk.h>
+#include <sl_pcl.h>
+#include <sl_reflex.h>
 
 namespace Vulkan::Streamline {
 

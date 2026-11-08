@@ -322,7 +322,10 @@ bool Start() {
     // Streamline's plugins come from the loader's folder or the NVIDIA app's downloads (OTA); the
     // DLSS model from the loader's folder, else the NVIDIA app's copy.
     const wchar_t* plugin_paths[] = {state.plugin_dir.c_str(), state.model_dir.c_str()};
-    const sl::Feature features[] = {sl::kFeatureDLSS};
+    const char* const probe_env = std::getenv("EDEN_NX2_DLSSG_PROBE");
+    const bool probe_dlssg = probe_env && std::atoi(probe_env) != 0;
+    const sl::Feature features[] = {sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex,
+                                    sl::kFeaturePCL};
     sl::Preferences preferences{};
     preferences.logLevel = LogLevel() >= 2 ? sl::LogLevel::eVerbose : sl::LogLevel::eDefault;
     preferences.logMessageCallback = LogFromStreamline;
@@ -332,7 +335,7 @@ bool Start() {
                         sl::PreferenceFlags::eUseManualHooking | sl::PreferenceFlags::eAllowOTA |
                         sl::PreferenceFlags::eLoadDownloadedPlugins;
     preferences.featuresToLoad = features;
-    preferences.numFeaturesToLoad = 1;
+    preferences.numFeaturesToLoad = probe_dlssg ? static_cast<uint32_t>(std::size(features)) : 1u;
     preferences.engine = sl::EngineType::eCustom;
     preferences.engineVersion = "1.0";
     preferences.projectId = PROJECT_ID;
@@ -343,6 +346,43 @@ bool Start() {
         LOG_ERROR(Render_Vulkan, "NVIDIA Streamline failed to start (result {}); using FSR 3.1",
                   static_cast<int>(result));
         return false;
+    }
+    if (probe_dlssg) {
+        const auto log_feature_probe = [&](sl::Feature feature, const char* name) {
+            sl::FeatureRequirements req{};
+            const sl::Result req_res = api.get_feature_requirements(feature, req);
+            sl::FeatureVersion ver{};
+            const sl::Result ver_res = api.get_feature_version(feature, ver);
+            const auto join = [](uint32_t count, const char** items) {
+                std::string out;
+                for (uint32_t i = 0; i < count; ++i) {
+                    if (items && items[i]) {
+                        if (!out.empty()) {
+                            out += ",";
+                        }
+                        out += items[i];
+                    }
+                }
+                return out;
+            };
+            LOG_INFO(Render_Vulkan,
+                     "Streamline probe {}: req_result={} ver_result={} sl={} ngx={} flags={:#x} "
+                     "(vk_supported={}) queues(gfx={},comp={},of={}) tags={} inst_ext=[{}] "
+                     "dev_ext=[{}] feat12=[{}] feat13=[{}]",
+                     name, static_cast<int>(req_res), static_cast<int>(ver_res),
+                     ver.versionSL.toStr(), ver.versionNGX.toStr(), static_cast<u32>(req.flags),
+                     (static_cast<u32>(req.flags) &
+                      static_cast<u32>(sl::FeatureRequirementFlags::eVulkanSupported)) != 0,
+                     req.vkNumGraphicsQueuesRequired, req.vkNumComputeQueuesRequired,
+                     req.vkNumOpticalFlowQueuesRequired, req.numRequiredTags,
+                     join(req.vkNumInstanceExtensions, req.vkInstanceExtensions),
+                     join(req.vkNumDeviceExtensions, req.vkDeviceExtensions),
+                     join(req.vkNumFeatures12, req.vkFeatures12),
+                     join(req.vkNumFeatures13, req.vkFeatures13));
+        };
+        log_feature_probe(sl::kFeatureDLSS_G, "kFeatureDLSS_G");
+        log_feature_probe(sl::kFeatureReflex, "kFeatureReflex");
+        log_feature_probe(sl::kFeaturePCL, "kFeaturePCL");
     }
     sl::FeatureRequirements requirements{};
     if (const sl::Result result = api.get_feature_requirements(sl::kFeatureDLSS, requirements);
@@ -415,6 +455,41 @@ bool AttachDevice(VkInstance instance, VkPhysicalDevice physical, VkDevice devic
     }
     sl::AdapterInfo adapter{};
     adapter.vkPhysicalDevice = physical;
+    const char* const probe_env = std::getenv("EDEN_NX2_DLSSG_PROBE");
+    if (probe_env && std::atoi(probe_env) != 0) {
+        const sl::Result dlssg_supported =
+            state.api.is_feature_supported(sl::kFeatureDLSS_G, adapter);
+        const sl::Result reflex_supported =
+            state.api.is_feature_supported(sl::kFeatureReflex, adapter);
+        const sl::Result pcl_supported = state.api.is_feature_supported(sl::kFeaturePCL, adapter);
+        LOG_INFO(Render_Vulkan,
+                 "Streamline AttachDevice support probe: kFeatureDLSS_G={} kFeatureReflex={} "
+                 "kFeaturePCL={}",
+                 static_cast<int>(dlssg_supported), static_cast<int>(reflex_supported),
+                 static_cast<int>(pcl_supported));
+        if (dlssg_supported == sl::Result::eOk) {
+            void* get_state_fn = nullptr;
+            const sl::Result fn_res =
+                state.api.get_feature_function(sl::kFeatureDLSS_G, "slDLSSGGetState", get_state_fn);
+            if (fn_res == sl::Result::eOk && get_state_fn != nullptr) {
+                auto* const get_dlssg_state = reinterpret_cast<PFun_slDLSSGGetState*>(get_state_fn);
+                sl::DLSSGState dlssg_state{};
+                const sl::Result state_res =
+                    get_dlssg_state(sl::ViewportHandle{0}, dlssg_state, nullptr);
+                LOG_INFO(Render_Vulkan,
+                         "Streamline slDLSSGGetState probe: result={} status={:#x} max_gen={} "
+                         "vsync_supported={} dyn_mfg_supported={} min_dim={} vram_bytes={}",
+                         static_cast<int>(state_res), static_cast<u32>(dlssg_state.status),
+                         dlssg_state.numFramesToGenerateMax,
+                         static_cast<int>(dlssg_state.bIsVsyncSupportAvailable),
+                         static_cast<int>(dlssg_state.bIsDynamicMFGSupported),
+                         dlssg_state.minWidthOrHeight, dlssg_state.estimatedVRAMUsageInBytes);
+            } else {
+                LOG_INFO(Render_Vulkan, "Streamline slDLSSGGetState resolve result={}",
+                         static_cast<int>(fn_res));
+            }
+        }
+    }
     if (const sl::Result result = state.api.is_feature_supported(sl::kFeatureDLSS, adapter);
         result != sl::Result::eOk) {
         LOG_WARNING(Render_Vulkan,
