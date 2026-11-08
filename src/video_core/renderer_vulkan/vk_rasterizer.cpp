@@ -850,6 +850,16 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
             return;
         }
     }
+    // The scene image: a depth-tested draw to a floating-point (HDR) colour target. Tonemapped
+    // post-processing targets are 8- or 10-bit.
+    if (const auto& regs = maxwell3d->regs;
+        regs.zeta_enable != 0 && regs.depth_test_enable != 0 && regs.rt_control.count > 0 &&
+        (regs.rt[0].format == Tegra::RenderTargetFormat::B10G11R11_FLOAT ||
+         regs.rt[0].format == Tegra::RenderTargetFormat::R16G16B16A16_FLOAT)) {
+        Tegra::Engines::g_nx2_scene_target.store(regs.rt[0].Address(), std::memory_order_relaxed);
+        Tegra::Engines::g_nx2_scene_target_size.store(
+            (u64{regs.rt[0].width} << 32) | regs.rt[0].height, std::memory_order_relaxed);
+    }
     // EDEN_NX2_RT_TRACE: log the first draw to every distinct colour target (debug aid).
     if (static const bool trace = std::getenv("EDEN_NX2_RT_TRACE") != nullptr; trace) {
         static std::set<std::tuple<GPUVAddr, u32, u32, u64, u64>> seen;

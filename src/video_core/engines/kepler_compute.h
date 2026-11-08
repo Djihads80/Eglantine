@@ -45,6 +45,11 @@ namespace Tegra::Engines {
 /// Draws left to trace after an upscale fallback (debug aid).
 extern std::atomic<u32> g_nx2_trace_draws_after_upscale;
 
+/// Colour target 0 of the latest depth-tested 3D draw to a float target (the scene image), and its
+/// size as width << 32 | height. Star Fox's cutscene network reads the frame drawn there.
+extern std::atomic<u64> g_nx2_scene_target;
+extern std::atomic<u64> g_nx2_scene_target_size;
+
 /**
  * This Engine is known as GK104_Compute. Documentation can be found in:
  * https://github.com/envytools/envytools/blob/master/rnndb/graph/gk104_compute.xml
@@ -312,6 +317,7 @@ private:
     bool ReadConstBufferWords(u32 slot, std::vector<u32>& words) const;
     void FollowPhotoUpscale();
     bool UpscaleFromConstBuffers();
+    bool CopySceneForStarFoxCutsceneNetwork();
 
     /// This frame's DLSS evaluation (Fortune's Weave): whether its passes all ran, and whether
     /// the game's own network output is shown instead of the replacement upscale.

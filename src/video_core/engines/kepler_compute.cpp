@@ -790,6 +790,9 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
         } else if (std::string_view{error.what()}.find("matrix multiply") !=
                    std::string_view::npos) {
             DescribeNativeResources(qmd);
+            if (CopySceneForStarFoxCutsceneNetwork()) {
+                return true;
+            }
             // The console runs this on tensor cores; stand in with a plain upscale of its input.
             if (UpscaleInsteadOfNativeProgram()) {
                 return true;
@@ -1070,6 +1073,8 @@ void KeplerCompute::DescribeNativeResources(const NativeQmdScheduler::Descriptor
 }
 
 std::atomic<u32> g_nx2_trace_draws_after_upscale{};
+std::atomic<u64> g_nx2_scene_target{};
+std::atomic<u64> g_nx2_scene_target_size{};
 
 // Fire Emblem: Fortune's Weave's first DLSS pass (rejected, before the network) has the input colour
 // at cbuf0+0x278, its motion vectors (R16G16 float, the input's size) at +0x290, its depth (Z32, the
@@ -1615,6 +1620,120 @@ bool KeplerCompute::UpscaleFromConstBuffers() {
         }
     }
     return false;
+}
+
+// Star Fox's docked cutscenes run a 10-pass tensor-core network at the frame's own size (1920x1080)
+// on the scene image before the final draw tonemaps its output. Its passes hold the network's
+// RGBA16F accumulation and output images, both the frame's size (cbuf0+0x1a0 and +0x350 in the
+// last pass of version 1.0.0). With the network skipped the output stays empty and only the UI
+// drawn later shows (and the photo upscale above blitted an unrelated 1280x720 image of the pass
+// as if it were a 2560x1440 upscale). Copy the scene image, the float colour target of the
+// frame's latest depth-tested draw, into those images instead. Copying the accumulation image
+// into the output feeds the history back into itself and blows out to white.
+bool KeplerCompute::CopySceneForStarFoxCutsceneNetwork() {
+    constexpr u64 StarFoxProgramId = 0x0400E88025B1A000ULL;
+    if (Settings::GetCurrentProgramID() != StarFoxProgramId) {
+        return false;
+    }
+    if (!(launch_description.const_buffer_enable_mask & 1)) {
+        return false;
+    }
+    const GPUVAddr scene_address = g_nx2_scene_target.load(std::memory_order_relaxed);
+    const u64 scene_size = g_nx2_scene_target_size.load(std::memory_order_relaxed);
+    const u32 scene_width = static_cast<u32>(scene_size >> 32);
+    const u32 scene_height = static_cast<u32>(scene_size);
+    if (scene_address == 0 || scene_width < 1280) {
+        return false;
+    }
+    // The pass's frame-sized RGBA16F images: the network's output, and its accumulation image
+    // (overwritten every frame as well, so it can't feed back). A pass with a larger image is an
+    // upscale (1600x900 -> 1920x1080 handheld, 1920x1080 -> 3840x2160 docked) and is left to
+    // UpscaleInsteadOfNativeProgram.
+    std::vector<u32> words;
+    if (!ReadConstBufferWords(0, words)) {
+        return false;
+    }
+    const auto tic_of = [&](u32 word) -> std::optional<Texture::TICEntry> {
+        const u32 tic_index = word & 0xfffff;
+        if (word == 0 || tic_index == 0 || tic_index > regs.tic.limit) return std::nullopt;
+        return GetTICEntry(tic_index);
+    };
+    const auto [reads, stores] = NativeImageHandles(regs.code_loc.Address());
+    for (const auto* handles : {&reads, &stores}) {
+        for (const u32 offset : *handles) {
+            if (offset / sizeof(u32) >= words.size()) continue;
+            const auto tic = tic_of(words[offset / sizeof(u32)]);
+            if (tic && (tic->Width() > scene_width || tic->Height() > scene_height)) {
+                return false;
+            }
+        }
+    }
+    std::vector<Texture::TICEntry> outputs;
+    for (const u32 word : words) {
+        const auto found = tic_of(word);
+        if (!found) continue;
+        const auto& tic = *found;
+        const bool plain_2d = tic.texture_type == Texture::TextureType::Texture2D ||
+                              tic.texture_type == Texture::TextureType::Texture2DNoMipmap;
+        if (!plain_2d || tic.Address() == 0 || !tic.IsBlockLinear()) continue;
+        if (tic.format == Texture::TextureFormat::R16G16B16A16 && tic.Width() == scene_width &&
+            tic.Height() == scene_height && tic.Address() != scene_address &&
+            std::ranges::none_of(outputs, [&](const auto& other) { return other.Address() == tic.Address(); })) {
+            outputs.push_back(tic);
+        }
+    }
+    if (outputs.empty()) {
+        return false;
+    }
+    // The scene image's own texture entry gives its format and block layout.
+    static GPUVAddr cached_address{};
+    static u32 cached_index{};
+    std::optional<Texture::TICEntry> scene;
+    const auto matches = [&](const Texture::TICEntry& tic) {
+        return tic.Address() == scene_address && tic.IsBlockLinear() &&
+               tic.Width() == scene_width && tic.Height() == scene_height &&
+               ColorRenderFormat(tic.format).has_value();
+    };
+    if (cached_address == scene_address && cached_index != 0 && cached_index <= regs.tic.limit) {
+        if (const auto tic = GetTICEntry(cached_index); matches(tic)) scene = tic;
+    }
+    for (u32 index = 1; !scene && index <= regs.tic.limit && index < 0x10000; ++index) {
+        if (const auto tic = GetTICEntry(index); matches(tic)) {
+            scene = tic;
+            cached_address = scene_address;
+            cached_index = index;
+        }
+    }
+    if (!scene) {
+        return false;
+    }
+    const Fermi2D::Config config{
+        .operation = Fermi2D::Operation::SrcCopy,
+        .filter = Fermi2D::Filter::Point,
+        .must_accelerate = true,
+        .dst_x0 = 0,
+        .dst_y0 = 0,
+        .dst_x1 = static_cast<s32>(scene_width),
+        .dst_y1 = static_cast<s32>(scene_height),
+        .src_x0 = 0,
+        .src_y0 = 0,
+        .src_x1 = static_cast<s32>(scene_width),
+        .src_y1 = static_cast<s32>(scene_height),
+    };
+    const auto source = BlockLinearSurface(*scene, *ColorRenderFormat(scene->format));
+    bool done = true;
+    for (const auto& output : outputs) {
+        const bool copied = rasterizer->AccelerateSurfaceCopy(
+            source, BlockLinearSurface(output, *ColorRenderFormat(output.format)), config);
+        done = done && copied;
+        static std::set<std::pair<GPUVAddr, GPUVAddr>> logged;
+        if (logged.emplace(regs.code_loc.Address(), output.Address()).second && logged.size() <= 32) {
+            LOG_INFO(HW_GPU, "Star Fox cutscene network {:#x}: scene {:#x} {}x{} -> {:#x}: {}",
+                     regs.code_loc.Address(), scene_address, scene_width, scene_height,
+                     output.Address(), copied ? "copied" : "not accelerated");
+        }
+    }
+    return done;
 }
 
 void KeplerCompute::ProcessLaunch() {
