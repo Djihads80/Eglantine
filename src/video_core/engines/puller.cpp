@@ -115,6 +115,10 @@ bool AcquireMetWithoutDrain(DmaPusher& dma_pusher, GPUVAddr address, u32 value,
             // The word will hold this release's value when the back passes the acquire.
             return entry_met;
         }
+        if (entry_met && Ledger::KeepsConsumed()) {
+            // Run by the back, written at its fence: still ahead of the acquire's successors.
+            return true;
+        }
     }
     return Ledger::Met(compare, dma_pusher.memory_manager.Read<u32>(address), value);
 }

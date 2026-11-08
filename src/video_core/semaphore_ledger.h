@@ -49,6 +49,20 @@ public:
         return enabled;
     }
 
+    /// EDEN_NX2_ACQ_LEDGER=2: a recorded release keeps meeting acquires after the back ran it.
+    /// The back executes puller releases as fence-timed query writes: the word holds the value
+    /// only once the host GPU passed that fence, so an acquire parsed after the back consumed the
+    /// release drained the back and then usually suspended until the fence. The release is in
+    /// the host queue before anything after the acquire, as while it was queued on the back.
+    /// With the split on Mario Kart World, ~87% of the front's time went to those drains.
+    static bool KeepsConsumed() {
+        static const bool keep = [] {
+            const char* value = std::getenv("EDEN_NX2_ACQ_LEDGER");
+            return value != nullptr && value[0] == '2';
+        }();
+        return keep;
+    }
+
     /// A 32-bit puller release of `value` to the word at `device_address` was queued.
     void NoteRelease(u64 device_address, u32 value, u64 order) {
         entries[device_address] = Entry{order, value};
