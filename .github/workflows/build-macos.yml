@@ -28,8 +28,7 @@ on:
         default: true
       runner:
         type: string
-        # Might be changed to latest for more availability
-        default: macos-15
+        default: macos-26
 
 permissions:
   contents: read
@@ -40,7 +39,7 @@ jobs:
     runs-on: ${{ inputs.runner }}
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 3000M
+      CCACHE_MAXSIZE: 1000M
       PLATFORM: macos-arm64
       SHA: ${{ inputs.sha }}
     steps:
@@ -62,7 +61,7 @@ jobs:
 
       - name: Setup build from compatibility pin
         if: hashFiles('.github/actions/setup-build/action.yml') == ''
-        uses: Djihads80/Eglantine/.github/actions/setup-build@5016e217b829b45fda263b05ee00560bd3656397
+        uses: Djihads80/Eglantine/.github/actions/setup-build@583b125d5a2a330bc3e04fed213b908db5f6a8f2
         with:
           platform: ${{ env.PLATFORM }}
           sha: ${{ inputs.sha }}
@@ -96,8 +95,9 @@ jobs:
             "-DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" \
             -DVulkanHeaders_FORCE_BUNDLED=ON \
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_QT_TRANSLATION=ON \
             -DENABLE_UPDATE_CHECKER=OFF \
-            -DUSE_DISCORD_PRESENCE=OFF \
+            -DUSE_DISCORD_PRESENCE=ON \
             -DUSE_CCACHE=ON \
             -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }}
 

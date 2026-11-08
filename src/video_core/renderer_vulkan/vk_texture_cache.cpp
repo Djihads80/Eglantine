@@ -1415,18 +1415,29 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
     boost::container::small_vector<VkBufferImageCopy, 16> vk_out_copies(copies.size());
     const VkImageAspectFlags src_aspect_mask = src.AspectMask();
     const VkImageAspectFlags dst_aspect_mask = dst.AspectMask();
+    // A VkBufferImageCopy region may name only one aspect (VUID-VkBufferImageCopy-aspectMask-09103).
+    // Combined depth-stencil images were copied with DEPTH|STENCIL in a single region, which is
+    // undefined behaviour and loses the device on NVIDIA (no VK_EXT_shader_stencil_export, so every
+    // colour <-> depth-stencil alias lands here). Reinterpret through the depth aspect only.
+    const auto copy_aspect = [](VkImageAspectFlags mask) {
+        return mask == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
+                   ? VkImageAspectFlags{VK_IMAGE_ASPECT_DEPTH_BIT}
+                   : mask;
+    };
+    const VkImageAspectFlags src_copy_aspect = copy_aspect(src_aspect_mask);
+    const VkImageAspectFlags dst_copy_aspect = copy_aspect(dst_aspect_mask);
 
     const auto bpp_in = BytesPerBlock(src.info.format) / DefaultBlockWidth(src.info.format);
     const auto bpp_out = BytesPerBlock(dst.info.format) / DefaultBlockWidth(dst.info.format);
     std::ranges::transform(copies, vk_in_copies.begin(),
-                           [src_aspect_mask, bpp_in, bpp_out](const auto& copy) {
+                           [src_copy_aspect, bpp_in, bpp_out](const auto& copy) {
                                auto copy2 = copy;
                                copy2.src_offset.x = (bpp_out * copy.src_offset.x) / bpp_in;
                                copy2.extent.width = (bpp_out * copy.extent.width) / bpp_in;
-                               return MakeBufferImageCopy(copy2, true, src_aspect_mask);
+                               return MakeBufferImageCopy(copy2, true, src_copy_aspect);
                            });
-    std::ranges::transform(copies, vk_out_copies.begin(), [dst_aspect_mask](const auto& copy) {
-        return MakeBufferImageCopy(copy, false, dst_aspect_mask);
+    std::ranges::transform(copies, vk_out_copies.begin(), [dst_copy_aspect](const auto& copy) {
+        return MakeBufferImageCopy(copy, false, dst_copy_aspect);
     });
     const u32 img_bpp = BytesPerBlock(dst.info.format);
     size_t total_size = 0;
@@ -1534,7 +1545,10 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
 
         cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER, VK_PIPELINE_STAGE_TRANSFER_BIT,
                        0, READ_BARRIER, {}, middle_out_barrier);
-        cmdbuf.CopyBufferToImage(copy_buffer, dst_image, VK_IMAGE_LAYOUT_GENERAL, vk_out_copies);
+        // middle_out_barrier moved dst to TRANSFER_DST_OPTIMAL; naming GENERAL here mismatched the
+        // actual layout (VUID-vkCmdCopyBufferToImage-dstImageLayout-00180).
+        cmdbuf.CopyBufferToImage(copy_buffer, dst_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 vk_out_copies);
         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, vk::PIPELINE_STAGE_GRAPHICS_COMPUTE,
                        0, {}, {}, post_barriers);
     });
@@ -4199,7 +4213,8 @@ void CustomBorderColorBudget::Release() noexcept {
     held = 0;
 }
 
-Sampler::Sampler(TextureCacheRuntime& runtime, const Tegra::Texture::TSCEntry& tsc) {
+Sampler::Sampler(TextureCacheRuntime& runtime, const Tegra::Texture::TSCEntry& tsc)
+    : descriptor{tsc} {
     const auto& device = runtime.device;
     device_ptr = &device;
     border_color = tsc.BorderColor();

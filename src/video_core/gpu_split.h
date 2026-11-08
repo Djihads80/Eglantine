@@ -119,6 +119,19 @@ public:
     }
     void DeferFunction(std::function<void()>&& func);
 
+    /// Runs `func` on the back and waits for it: for work on back-owned state, such as a buffer
+    /// cache download that records into the Vulkan scheduler. A drained back still submits from
+    /// its idle hook, so the front never touches that state itself.
+    template <typename Func>
+    void Run(const Func& func) {
+        if (on_back_thread || !active) {
+            func();
+            return;
+        }
+        Defer(func);
+        Drain();
+    }
+
     /// EDEN_NX2_SPLIT_CHECK=1 (debug): reports, with its stack, a thread other than the back
     /// using back-owned state (the Vulkan scheduler) while the back runs entries.
     static inline bool check_owner{};

@@ -43,14 +43,15 @@ jobs:
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 3000M
+      CCACHE_MAXSIZE: 1000M
       PLATFORM: linux-${{ matrix.arch }}${{ matrix.pgo && '-pgo' || '' }}
       SHA: ${{ inputs.sha }}
+
     strategy:
       fail-fast: false
       matrix:
         arch: [x86_64, aarch64]
-        pgo: ${{ fromJSON(inputs.pgo == 'both' && '[false, true]' || '[false]') }}
+        pgo: ${{ fromJSON(inputs.pgo == 'only' && '[true]' || (inputs.pgo == 'both' && '[false, true]' || '[false]')) }}
 
     steps:
       - name: Check out source
@@ -71,7 +72,7 @@ jobs:
 
       - name: Setup build from compatibility pin
         if: hashFiles('.github/actions/setup-build/action.yml') == ''
-        uses: Djihads80/Eglantine/.github/actions/setup-build@5016e217b829b45fda263b05ee00560bd3656397
+        uses: Djihads80/Eglantine/.github/actions/setup-build@583b125d5a2a330bc3e04fed213b908db5f6a8f2
         with:
           platform: ${{ env.PLATFORM }}
           sha: ${{ inputs.sha }}
@@ -79,12 +80,20 @@ jobs:
           tag: ${{ inputs.tag }}
           release: ${{ inputs.release }}
 
+      - name: Cache APT packages
+        uses: actions/cache@v6
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/*.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
+
       - name: Install Linux dependencies
         shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            autoconf cmake g++ gcc git glslang-tools libglu1-mesa-dev \
+            sudo autoconf cmake g++ gcc git glslang-tools libglu1-mesa-dev \
             libpulse-dev libtool libudev-dev libxkbcommon-x11-0 \
             mesa-common-dev nasm ninja-build qt6-base-private-dev \
             qt6-charts-dev qt6-tools-dev libavfilter-dev libavcodec-dev \
@@ -117,7 +126,6 @@ jobs:
           modules: qtcharts
           cache: true
 
-      # TODO: Move to ubuntu 26 which has llvm-23 by default
       # Ubuntu's own clang 18 cannot read a profile from a current LLVM, so take clang from the LLVM
       # apt repo. The versioned packages are named explicitly: that repo's unversioned clang/lld
       # metapackages can lag the binaries they depend on and then resolve to nothing. lld-23 only
@@ -127,9 +135,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          codename=$(lsb_release -cs)
+
           curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key |
             sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
-          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-$PGO_LLVM_VERSION main" |
+          echo "deb http://apt.llvm.org/$codename/ llvm-toolchain-$codename-$PGO_LLVM_VERSION main" |
             sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -160,8 +170,9 @@ jobs:
             -DYUZU_USE_BUNDLED_SDL3=ON
             -DVulkanHeaders_FORCE_BUNDLED=ON
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON
+            -DENABLE_QT_TRANSLATION=ON
             -DENABLE_UPDATE_CHECKER=OFF
-            -DUSE_DISCORD_PRESENCE=OFF
+            -DUSE_DISCORD_PRESENCE=ON
             -DUSE_CCACHE=ON
             -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }}
           )
@@ -234,7 +245,7 @@ jobs:
           "$tools/linuxdeploy-$arch.AppImage" --appdir AppDir \
             --executable build/release/bin/eglantine \
             --executable build/release/bin/eden-cli \
-            --desktop-file dist/dev.eden_emu.eden.desktop \
+            --desktop-file dist/dev.eglantine.eglantine.desktop \
             --icon-file "$icon" \
             --plugin qt \
             --output appimage

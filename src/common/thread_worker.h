@@ -81,7 +81,10 @@ public:
                     ++work_done;
                 }
             }
-            ++workers_stopped;
+            {
+                std::scoped_lock lock{queue_mutex};
+                ++workers_stopped;
+            }
             wait_condition.notify_all();
         };
         threads.reserve(num_workers);
@@ -115,6 +118,13 @@ public:
         wait_condition.wait(lock, [this] {
             return workers_stopped >= workers_queued || work_done >= work_scheduled;
         });
+    }
+
+    // Drops tasks no worker has started. Running tasks still finish.
+    void ClearRequests() {
+        std::scoped_lock lock{queue_mutex};
+        work_scheduled -= requests.size();
+        requests = std::queue<Task>{};
     }
 
 private:

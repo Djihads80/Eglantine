@@ -11,10 +11,12 @@
 #include <fmt/format.h>
 
 #include "video_core/renderer_vulkan/pipeline_helper.h"
+#include "video_core/renderer_vulkan/pipeline_optimization.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
+#include "video_core/renderer_vulkan/vk_frame_dump.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
@@ -88,15 +90,19 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         };
         // Only warp-level ops observe the subgroup size. Forcing 32 on other shaders makes Intel
         // compile SIMD32, which can spill a register-heavy kernel for minutes (Mario Kart World).
-        const bool uses_warp_ops = info.uses_subgroup_vote || info.uses_subgroup_invocation_id ||
-                                   info.uses_subgroup_shuffles || info.uses_subgroup_mask ||
-                                   info.uses_quad_shuffles || info.uses_fswzadd;
+        // A shader that lost a conditional barrier counts too: it relies on a whole warp running
+        // in step, and at a smaller subgroup size it reads stale shared memory, which shows as
+        // banding over the image in Mario Kart World on Intel's Windows driver.
+        const bool uses_warp_ops = info.UsesWarpOps();
         VkPipelineCreateFlags flags{};
         if (device.IsKhrPipelineExecutablePropertiesEnabled() && Settings::values.renderer_debug.GetValue()) {
             flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
         }
         if (uses_descriptor_buffer) {
             flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        }
+        if (BuildsUnoptimized(device.GetDriverID(), shader_hash)) {
+            flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         }
         const VkComputePipelineCreateInfo compute_ci{
             .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
@@ -152,11 +158,22 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             shader_notify->MarkShaderComplete();
         }
     }};
+    build_task = std::move(func);
     if (thread_worker) {
-        thread_worker->QueueWork(std::move(func));
+        thread_worker->QueueWork([this] { RunBuild(); });
     } else {
-        func();
+        RunBuild();
     }
+}
+
+void ComputePipeline::RunBuild() {
+    // A draw or dispatch that needs the pipeline builds it on the scheduler thread instead of
+    // waiting for the worker queue, which can hold hundreds of builds, to reach it.
+    if (build_claimed.exchange(true)) {
+        return;
+    }
+    build_task();
+    build_task = nullptr;
 }
 
 bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
@@ -170,7 +187,7 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     for (const auto& desc : info.storage_buffers_descriptors) {
         ASSERT(desc.count == 1);
         buffer_cache.BindComputeStorageBuffer(ssbo_index, desc.cbuf_index, desc.cbuf_offset,
-                                              desc.is_written);
+                                              desc.is_written, desc.indirect_offset);
         ++ssbo_index;
     }
 
@@ -243,6 +260,29 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
         add_image(desc, desc.is_written);
     }
     texture_cache.FillImageViews(std::span(views.data(), views.size()), true);
+    if (RecordingSampledTextures()) {
+        sampled_images.clear();
+        const size_t first = Shader::NumDescriptors(info.texture_buffer_descriptors) +
+                             Shader::NumDescriptors(info.image_buffer_descriptors);
+        const size_t count = Shader::NumDescriptors(info.texture_descriptors);
+        for (size_t view_index = first; view_index < first + count; ++view_index) {
+            sampled_images.push_back(
+                {views[view_index].index, views[view_index].id, samplers[view_index - first]});
+        }
+    }
+    if (RecordingWrittenImages()) {
+        written_images.clear();
+        size_t image_index{Shader::NumDescriptors(info.texture_buffer_descriptors) +
+                           Shader::NumDescriptors(info.image_buffer_descriptors) +
+                           Shader::NumDescriptors(info.texture_descriptors)};
+        for (const auto& desc : info.image_descriptors) {
+            for (u32 i = 0; i < desc.count; ++i, ++image_index) {
+                if (desc.is_written) {
+                    written_images.push_back(views[image_index].id);
+                }
+            }
+        }
+    }
 
     buffer_cache.UnbindComputeTextureBuffers();
     size_t index{};
@@ -285,6 +325,7 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     if (!is_built.load(std::memory_order::relaxed)) {
         // Wait for the pipeline to be built
         scheduler.Record([this](vk::CommandBuffer) {
+            RunBuild();
             std::unique_lock lock{build_mutex};
             build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
         });

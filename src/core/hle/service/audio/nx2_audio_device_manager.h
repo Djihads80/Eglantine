@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -17,22 +18,23 @@
 
 #include <fmt/ranges.h>
 
+#include "audio_core/audio_core.h"
 #include "common/string_util.h"
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_event.h"
-#include "core/memory.h"
+#include "core/hle/service/audio/errors.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/kernel_helpers.h"
 #include "core/hle/service/service.h"
+#include "core/memory.h"
 
 namespace Service::Audio {
 
 // Switch 2 sound mixer streams (nn::audio::sysmix, behind audsmx:u). A stream is a ring buffer in
 // the game's own memory: CreateStream hands over its address and size (4 KiB aligned), OpenStream
 // its format and length in frames, and once the streams are engaged the system takes frames out of
-// the ring at the stream's sample rate. Eden doesn't mix these into its output yet; it drains the
-// rings in real time so the game sees its audio being played (Switch Sports' menu movie feeds one).
+// the ring at the stream's sample rate. Supported PCM streams are queued to the normal output sink.
 // The ring's shared indices, in frames modulo (frame count + 1): the system's read index at
 // buffer + 0x44, the game's write index at buffer + 0x1004.
 struct Nx2SysmixStream {
@@ -51,6 +53,10 @@ struct Nx2SysmixStream {
     s32 data_threshold{}; ///< free frames that signal the data event
     Kernel::KEvent* state_event{};
     Kernel::KEvent* data_event{};
+    AudioCore::Sink::SinkStream* output{};
+    u64 data_offset{0x1040};
+    f32 gain{1.0f};
+    bool reported_samples{};
 };
 
 struct Nx2SysmixStreams {
@@ -66,9 +72,12 @@ inline std::shared_ptr<Nx2SysmixStreams> Nx2SysmixStreamList() {
     return list;
 }
 
-// Switch 2 virtual output devices (nn::audio::ListVirtualOutputDevices and friends), reached through
-// the object auddmg:u command 0 returns. Eden plays everything through one stereo 48 kHz output, so
-// there is one virtual device. The nx2: name keeps the other commands auto-stubbed and logged.
+namespace Devmgr {
+
+// nn::audio::devmgr::IUserSession: Switch 2 virtual output devices
+// (nn::audio::ListVirtualOutputDevices and friends), reached through the object auddmg:u command 0
+// returns. Eden plays everything through one stereo 48 kHz output, so there is one virtual device.
+// The nx2: name keeps the other commands auto-stubbed and logged.
 // - 0(u32): u32 count, the device names in the out buffer (0x100 bytes each).
 // - 100(u32): the default device's name in the out buffer.
 // - 300(16-byte stream format, name buffer): whether the format is supported (result only).
@@ -79,27 +88,27 @@ inline std::shared_ptr<Nx2SysmixStreams> Nx2SysmixStreamList() {
 // - 700(u32 stream id, u32 device functionality, name buffer): attach a sysmix stream to the
 //   device, which starts it (nn::audio::devmgr::AttachStream, behind OutputStream Start).
 // - 800(u32 stream id): detach it again (Stop).
-class INx2AudioVirtualDeviceManager final : public ServiceFramework<INx2AudioVirtualDeviceManager> {
+class IUserSession final : public ServiceFramework<IUserSession> {
 public:
-    explicit INx2AudioVirtualDeviceManager(Core::System& system_)
+    explicit IUserSession(Core::System& system_)
         : ServiceFramework{system_, "nx2:auddmg:u:manager"},
           service_context{system_, "nx2:auddmg:u:manager"},
           state_event{service_context.CreateEvent("nx2:auddmg:u:StateEvent")} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {0, &INx2AudioVirtualDeviceManager::ListVirtualOutputDevices, "ListVirtualOutputDevices"},
-            {100, &INx2AudioVirtualDeviceManager::GetDefaultVirtualOutputDevice, "GetDefaultVirtualOutputDevice"},
-            {300, &INx2AudioVirtualDeviceManager::IsStreamFormatSupported, "IsVirtualOutputDeviceStreamFormatSupported"},
-            {401, &INx2AudioVirtualDeviceManager::GetVirtualOutputDeviceProperties, "GetVirtualOutputDeviceProperties"},
-            {500, &INx2AudioVirtualDeviceManager::AcquireStateChangeEvent, "AcquireVirtualOutputDeviceStateEvent (guessed)"},
-            {700, &INx2AudioVirtualDeviceManager::AttachStream, "AttachStream"},
-            {800, &INx2AudioVirtualDeviceManager::DetachStream, "DetachStream"},
+            {0, &IUserSession::ListVirtualOutputDevices, "ListVirtualOutputDevices"},
+            {100, &IUserSession::GetDefaultVirtualOutputDevice, "GetDefaultVirtualOutputDevice"},
+            {300, &IUserSession::IsStreamFormatSupported, "IsVirtualOutputDeviceStreamFormatSupported"},
+            {401, &IUserSession::GetVirtualOutputDeviceProperties, "GetVirtualOutputDeviceProperties"},
+            {500, &IUserSession::AcquireStateChangeEvent, "AcquireVirtualOutputDeviceStateEvent (guessed)"},
+            {700, &IUserSession::AttachStream, "AttachStream"},
+            {800, &IUserSession::DetachStream, "DetachStream"},
         };
         // clang-format on
         RegisterHandlers(functions);
     }
 
-    ~INx2AudioVirtualDeviceManager() override {
+    ~IUserSession() override {
         service_context.CloseEvent(state_event);
     }
 
@@ -206,56 +215,64 @@ private:
     Kernel::KEvent* state_event;
 };
 
-// Switch 2 "auddmg:u": command 0 (16 bytes and the pid) returns the virtual device manager.
-class INx2AudioDeviceManagerService final : public ServiceFramework<INx2AudioDeviceManagerService> {
+// Switch 2 "auddmg:u" (nn::audio::devmgr::IUserSessionManager): command 0 (16 bytes and the pid)
+// returns the user session.
+class IUserSessionManager final : public ServiceFramework<IUserSessionManager> {
 public:
-    explicit INx2AudioDeviceManagerService(Core::System& system_)
+    explicit IUserSessionManager(Core::System& system_)
         : ServiceFramework{system_, "nx2:auddmg:u"} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {0, &INx2AudioDeviceManagerService::OpenVirtualDeviceManager, "OpenVirtualDeviceManager (guessed)"},
+            {0, &IUserSessionManager::OpenUserSession, "OpenUserSession"},
         };
         // clang-format on
         RegisterHandlers(functions);
     }
 
 private:
-    void OpenVirtualDeviceManager(HLERequestContext& ctx) {
+    void OpenUserSession(HLERequestContext& ctx) {
         LOG_DEBUG(Service_Audio, "called");
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(ResultSuccess);
-        rb.PushIpcInterface<INx2AudioVirtualDeviceManager>(ctx, system);
+        rb.PushIpcInterface<IUserSession>(ctx, system);
     }
 };
 
-// The stream object IUserSession command 1 returns. Commands (ids, request -> reply):
+} // namespace Devmgr
+
+namespace Sysmix {
+
+// nn::audio::sysmix::IExternalStreamSession, the stream object IUserSession command 1 returns.
+// Commands (ids, request -> reply):
 // - 0(u32 sample type, u32 channels, u32 sample rate, u32 frames, u32 prefill, u32 flags): open.
 // - 1: close. 2: u32 state. 3: f32 gain. 4(f32 gain, s64 ramp ns): set the gain.
 // - 5 / 6: acquire (copy handle) / release the state-change event.
 // - 7(u32 mode, s32 threshold) / 8: acquire (copy handle) / release the data event.
 // - 9(s64 ns): clock the stream. 10(s32 frames) -> u32: prime. 11(s32 frames) -> u32: purge.
 // - 12(name buffer): rename.
-class INx2SysmixStreamSession final : public ServiceFramework<INx2SysmixStreamSession> {
+class IExternalStreamSession final : public ServiceFramework<IExternalStreamSession> {
 public:
-    explicit INx2SysmixStreamSession(Core::System& system_, std::shared_ptr<Nx2SysmixStreams> streams_,
+    explicit IExternalStreamSession(Core::System& system_,
+                                     std::shared_ptr<Nx2SysmixStreams> streams_,
                                      std::shared_ptr<Nx2SysmixStream> stream_)
-        : ServiceFramework{system_, "nx2:audsmx:u:stream"}, service_context{system_, "nx2:audsmx:u:stream"},
-          streams{std::move(streams_)}, stream{std::move(stream_)} {
+        : ServiceFramework{system_, "nx2:audsmx:u:stream"},
+          service_context{system_, "nx2:audsmx:u:stream"}, streams{std::move(streams_)},
+          stream{std::move(stream_)} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {0, &INx2SysmixStreamSession::OpenStream, "OpenStream"},
-            {1, &INx2SysmixStreamSession::CloseStream, "CloseStream"},
-            {2, &INx2SysmixStreamSession::GetStreamState, "GetStreamState"},
-            {3, &INx2SysmixStreamSession::GetStreamGain, "GetStreamGain"},
-            {4, &INx2SysmixStreamSession::SetStreamGain, "SetStreamGain"},
-            {5, &INx2SysmixStreamSession::AcquireStateChangeEvent, "AcquireStreamStateChangeEvent"},
-            {6, &INx2SysmixStreamSession::Succeed, "ReleaseStreamStateChangeEvent"},
-            {7, &INx2SysmixStreamSession::AcquireDataEvent, "AcquireStreamDataEvent"},
-            {8, &INx2SysmixStreamSession::Succeed, "ReleaseStreamDataEvent"},
-            {9, &INx2SysmixStreamSession::Succeed, "ClockStream"},
-            {10, &INx2SysmixStreamSession::EchoFrames, "PrimeStream"},
-            {11, &INx2SysmixStreamSession::EchoFrames, "PurgeStream"},
-            {12, &INx2SysmixStreamSession::Succeed, "RenameStream"},
+            {0, &IExternalStreamSession::OpenStream, "OpenStream"},
+            {1, &IExternalStreamSession::CloseStream, "CloseStream"},
+            {2, &IExternalStreamSession::GetStreamState, "GetStreamState"},
+            {3, &IExternalStreamSession::GetStreamGain, "GetStreamGain"},
+            {4, &IExternalStreamSession::SetStreamGain, "SetStreamGain"},
+            {5, &IExternalStreamSession::AcquireStateChangeEvent, "AcquireStreamStateChangeEvent"},
+            {6, &IExternalStreamSession::Succeed, "ReleaseStreamStateChangeEvent"},
+            {7, &IExternalStreamSession::AcquireDataEvent, "AcquireStreamDataEvent"},
+            {8, &IExternalStreamSession::Succeed, "ReleaseStreamDataEvent"},
+            {9, &IExternalStreamSession::Succeed, "ClockStream"},
+            {10, &IExternalStreamSession::EchoFrames, "PrimeStream"},
+            {11, &IExternalStreamSession::EchoFrames, "PurgeStream"},
+            {12, &IExternalStreamSession::Succeed, "RenameStream"},
         };
         // clang-format on
         RegisterHandlers(functions);
@@ -264,11 +281,15 @@ public:
         stream->data_event = service_context.CreateEvent("nx2:audsmx:u:StreamDataEvent");
     }
 
-    ~INx2SysmixStreamSession() override {
+    ~IExternalStreamSession() override {
         // The drain timer signals these events under the lock: unlist the stream first.
         {
             std::scoped_lock lk{streams->mutex};
             streams->streams.erase(stream->id);
+            if (stream->output) {
+                system.AudioCore().GetOutputSink().CloseStream(stream->output);
+                stream->output = nullptr;
+            }
             service_context.CloseEvent(stream->state_event);
             service_context.CloseEvent(stream->data_event);
             stream->state_event = nullptr;
@@ -287,14 +308,40 @@ private:
         const auto prefill = rp.Pop<u32>();
         const auto flags = rp.Pop<u32>();
         LOG_INFO(Service_Audio,
-                 "stream {} open: sample type {}, {} channels, {} Hz, {} frames, prefill {}, flags {:#x}",
+                 "stream {} open: sample type {}, {} channels, {} Hz, {} frames, prefill {}, flags "
+                 "{:#x}",
                  stream->id, sample_type, channels, sample_rate, frames, prefill, flags);
+        const u32 sample_bytes = sample_type == 5 ? 4 : sample_type == 2 ? 2 : 0;
+        const u64 data_offset = 0x1040 + ((flags & 1) ? 0x80 : 0);
+        if (!frames || frames > 48000 || !channels || channels > 8 ||
+            (sample_bytes &&
+             data_offset + u64{frames + 1} * channels * sample_bytes > stream->size)) {
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push(ResultInvalidArgument);
+            return;
+        }
         {
             std::scoped_lock lk{streams->mutex};
+            if (stream->output) {
+                system.AudioCore().GetOutputSink().CloseStream(stream->output);
+                stream->output = nullptr;
+            }
             stream->sample_type = sample_type;
             stream->channels = channels;
             stream->sample_rate = sample_rate;
             stream->frames = frames;
+            stream->data_offset = data_offset;
+            if (sample_bytes && sample_rate == 48000 &&
+                (channels == 1 || channels == 2 || channels == 6)) {
+                stream->output = system.AudioCore().GetOutputSink().AcquireSinkStream(
+                    system, channels == 1 ? 2 : channels, "NX2 Sysmix",
+                    AudioCore::Sink::StreamType::Out);
+                stream->output->SetSystemVolume(stream->gain);
+            } else {
+                LOG_WARNING(Service_Audio,
+                            "Unsupported sysmix output format: type {} channels {} rate {}",
+                            sample_type, channels, sample_rate);
+            }
             stream->owed_frames = 0;
             stream->open = true;
             stream->state_event->Signal(system.Kernel());
@@ -307,6 +354,10 @@ private:
         {
             std::scoped_lock lk{streams->mutex};
             stream->open = false;
+            if (stream->output) {
+                system.AudioCore().GetOutputSink().CloseStream(stream->output);
+                stream->output = nullptr;
+            }
             stream->state_event->Signal(system.Kernel());
         }
         IPC::ResponseBuilder rb{ctx, 2};
@@ -326,14 +377,19 @@ private:
     }
 
     void GetStreamGain(HLERequestContext& ctx) {
+        std::scoped_lock lk{streams->mutex};
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(ResultSuccess);
-        rb.Push(gain);
+        rb.Push(stream->gain);
     }
 
     void SetStreamGain(HLERequestContext& ctx) {
         IPC::RequestParser rp{ctx};
-        gain = rp.Pop<f32>();
+        const f32 gain = rp.Pop<f32>();
+        std::scoped_lock lk{streams->mutex};
+        stream->gain = std::isfinite(gain) ? std::clamp(gain, 0.0f, 1.0f) : 0.0f;
+        if (stream->output)
+            stream->output->SetSystemVolume(stream->gain);
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
     }
@@ -348,7 +404,8 @@ private:
         IPC::RequestParser rp{ctx};
         const auto mode = rp.Pop<u32>();
         const auto threshold = rp.Pop<s32>();
-        LOG_INFO(Service_Audio, "stream {} data event: mode {}, threshold {}", stream->id, mode, threshold);
+        LOG_INFO(Service_Audio, "stream {} data event: mode {}, threshold {}", stream->id, mode,
+                 threshold);
         {
             // The game waits on this before its first write, so signal it at once when the ring
             // already has room (it is empty right after OpenStream); the drain timer keeps it up.
@@ -380,35 +437,35 @@ private:
     KernelHelpers::ServiceContext service_context;
     std::shared_ptr<Nx2SysmixStreams> streams;
     std::shared_ptr<Nx2SysmixStream> stream;
-    f32 gain{1.0f};
 };
 
-// The session audsmx:u command 0 returns. Commands:
+// nn::audio::sysmix::IUserSession, the session audsmx:u command 0 returns. Commands:
 // - 1(u32, u32 creation flags, u64 pid, u64 buffer address, u64 buffer size, name buffer):
 //   u32 stream id and the stream object.
 // - 2 / 3(buffer of u32 stream ids): engage / disengage those streams.
-class INx2SysmixUserSession final : public ServiceFramework<INx2SysmixUserSession> {
+class IUserSession final : public ServiceFramework<IUserSession> {
 public:
-    explicit INx2SysmixUserSession(Core::System& system_) : ServiceFramework{system_, "nx2:audsmx:u:session"} {
+    explicit IUserSession(Core::System& system_)
+        : ServiceFramework{system_, "nx2:audsmx:u:session"} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {1, &INx2SysmixUserSession::CreateStream, "CreateStream"},
-            {2, &INx2SysmixUserSession::EngageStreams, "EngageStreams"},
-            {3, &INx2SysmixUserSession::DisengageStreams, "DisengageStreams"},
+            {1, &IUserSession::CreateStream, "CreateStream"},
+            {2, &IUserSession::EngageStreams, "EngageStreams"},
+            {3, &IUserSession::DisengageStreams, "DisengageStreams"},
         };
         // clang-format on
         RegisterHandlers(functions);
         drain_timer = Core::Timing::CreateEvent(
             "nx2:audsmx:u drain",
-            [streams = streams, &system = system, owner = session_id](s64, std::chrono::nanoseconds)
-                -> std::optional<std::chrono::nanoseconds> {
+            [streams = streams, &system = system, owner = session_id](
+                s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
                 Drain(system, *streams, owner);
                 return std::nullopt;
             });
         system.CoreTiming().ScheduleLoopingEvent(DrainInterval, DrainInterval, drain_timer);
     }
 
-    ~INx2SysmixUserSession() override {
+    ~IUserSession() override {
         system.CoreTiming().UnscheduleEvent(drain_timer);
     }
 
@@ -435,12 +492,62 @@ private:
                 continue;
             }
             u32 filled = (write + capacity - read) % capacity;
+            if (!stream->engaged && stream->output && !stream->output->IsPaused()) {
+                stream->output->Stop();
+                stream->output->ClearQueue();
+            }
             if (stream->engaged) {
-                stream->owed_frames += stream->sample_rate *
-                                       std::chrono::duration<double>(DrainInterval).count();
+                stream->owed_frames +=
+                    stream->sample_rate * std::chrono::duration<double>(DrainInterval).count();
                 const auto owed = static_cast<u32>(stream->owed_frames);
                 stream->owed_frames -= owed;
+                if (stream->output && stream->output->GetQueueSize() >= 8)
+                    continue;
                 const u32 taken = (std::min)(filled, owed);
+                if (stream->output && owed) {
+                    const u32 channels = stream->channels;
+                    const u32 output_channels = channels == 1 ? 2 : channels;
+                    std::vector<s16> samples(owed * output_channels, 0);
+                    const u32 sample_bytes = stream->sample_type == 5 ? 4 : 2;
+                    std::vector<u8> input(taken * channels * sample_bytes);
+                    const u32 first = (std::min)(taken, capacity - read);
+                    const u64 data = stream->buffer + stream->data_offset;
+                    const u64 stride = channels * sample_bytes;
+                    memory.ReadBlock(data + read * stride, input.data(), first * stride);
+                    if (first < taken) {
+                        memory.ReadBlock(data, input.data() + first * stride,
+                                         (taken - first) * stride);
+                    }
+                    s32 peak{};
+                    for (u32 frame = 0; frame < taken; ++frame) {
+                        for (u32 channel = 0; channel < output_channels; ++channel) {
+                            const u32 source = frame * channels + (channels == 1 ? 0 : channel);
+                            s16 sample{};
+                            if (sample_bytes == 4) {
+                                f32 value{};
+                                std::memcpy(&value, input.data() + source * 4, 4);
+                                if (std::isfinite(value)) {
+                                    const f32 scaled = std::clamp(value, -1.0f, 1.0f) * 32768.0f;
+                                    sample =
+                                        static_cast<s16>(std::clamp(scaled, -32768.0f, 32767.0f));
+                                }
+                            } else {
+                                std::memcpy(&sample, input.data() + source * 2, 2);
+                            }
+                            samples[frame * output_channels + channel] = sample;
+                            peak = (std::max)(peak, std::abs(static_cast<s32>(sample)));
+                        }
+                    }
+                    AudioCore::Sink::SinkBuffer buffer{owed, 0, 0, false};
+                    stream->output->AppendBuffer(buffer, samples);
+                    stream->output->Start();
+                    if (peak && !stream->reported_samples) {
+                        stream->reported_samples = true;
+                        LOG_INFO(Service_Audio,
+                                 "sysmix stream {} output active: {} frames, PCM16 peak {}",
+                                 stream->id, taken, peak);
+                    }
+                }
                 if (taken != 0) {
                     memory.Write32(stream->buffer + ReadIndexOffset, (read + taken) % capacity);
                     filled -= taken;
@@ -476,7 +583,7 @@ private:
         IPC::ResponseBuilder rb{ctx, 3, 0, 1};
         rb.Push(ResultSuccess);
         rb.Push(stream->id);
-        rb.PushIpcInterface<INx2SysmixStreamSession>(ctx, system, streams, stream);
+        rb.PushIpcInterface<IExternalStreamSession>(ctx, system, streams, stream);
     }
 
     void SetEngaged(HLERequestContext& ctx, bool engaged) {
@@ -495,7 +602,8 @@ private:
                 }
             }
         }
-        LOG_INFO(Service_Audio, "{} streams {}", engaged ? "engage" : "disengage", fmt::join(ids, ","));
+        LOG_INFO(Service_Audio, "{} streams {}", engaged ? "engage" : "disengage",
+                 fmt::join(ids, ","));
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
     }
@@ -514,14 +622,15 @@ private:
     std::shared_ptr<Core::Timing::EventType> drain_timer;
 };
 
-// Switch 2 "audsmx:u": command 0 (16 bytes, the pid and a copy handle) returns the user session.
-class INx2AudioSoundMixerService final : public ServiceFramework<INx2AudioSoundMixerService> {
+// Switch 2 "audsmx:u" (nn::audio::sysmix::IUserSessionManager): command 0 (16 bytes, the pid and
+// a copy handle) returns the user session.
+class IUserSessionManager final : public ServiceFramework<IUserSessionManager> {
 public:
-    explicit INx2AudioSoundMixerService(Core::System& system_)
+    explicit IUserSessionManager(Core::System& system_)
         : ServiceFramework{system_, "nx2:audsmx:u"} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {0, &INx2AudioSoundMixerService::OpenUserSession, "OpenUserSession"},
+            {0, &IUserSessionManager::OpenUserSession, "OpenUserSession"},
         };
         // clang-format on
         RegisterHandlers(functions);
@@ -532,8 +641,10 @@ private:
         LOG_DEBUG(Service_Audio, "called");
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(ResultSuccess);
-        rb.PushIpcInterface<INx2SysmixUserSession>(ctx, system);
+        rb.PushIpcInterface<IUserSession>(ctx, system);
     }
 };
+
+} // namespace Sysmix
 
 } // namespace Service::Audio

@@ -27,6 +27,10 @@ public:
     }
 
     void Reset() noexcept {
+        if (!tracked) {
+            return;
+        }
+        tracked = false;
         std::ranges::fill(pages, 0ULL);
         recent.fill({~u64{0}, 0});
     }
@@ -40,6 +44,7 @@ public:
                 return;
             }
         }
+        tracked = true;
         recent[recent_cursor++ % recent.size()] = {offset, size};
         const size_t page = offset >> BUFFER_PAGE_SHIFT;
         const size_t page_end = (offset + size) >> BUFFER_PAGE_SHIFT;
@@ -79,17 +84,27 @@ public:
 
 private:
     void TrackPage(u64 page, u64 offset, u64 size) noexcept {
+        if (size == 0) {
+            return;
+        }
         const size_t offset_in_page = offset % BUFFER_PAGE_BYTES;
         const size_t first_bit = offset_in_page >> BUFFER_BYTES_PER_BITSHIFT;
-        const size_t num_bits = std::min<size_t>(size, BUFFER_PAGE_BYTES) >> BUFFER_BYTES_PER_BITSHIFT;
+        const size_t bytes = std::min<size_t>(size, BUFFER_PAGE_BYTES - offset_in_page);
+        const size_t last_bit = (offset_in_page + bytes - 1) >> BUFFER_BYTES_PER_BITSHIFT;
+        const size_t num_bits = last_bit - first_bit + 1;
         const size_t mask = ~u64{0} >> (64 - num_bits);
         pages[page] |= (~u64{0} & mask) << first_bit;
     }
 
     bool IsPageUsed(u64 page, u64 offset, u64 size) const noexcept {
+        if (size == 0) {
+            return false;
+        }
         const size_t offset_in_page = offset % BUFFER_PAGE_BYTES;
         const size_t first_bit = offset_in_page >> BUFFER_BYTES_PER_BITSHIFT;
-        const size_t num_bits = std::min<size_t>(size, BUFFER_PAGE_BYTES) >> BUFFER_BYTES_PER_BITSHIFT;
+        const size_t bytes = std::min<size_t>(size, BUFFER_PAGE_BYTES - offset_in_page);
+        const size_t last_bit = (offset_in_page + bytes - 1) >> BUFFER_BYTES_PER_BITSHIFT;
+        const size_t num_bits = last_bit - first_bit + 1;
         const size_t mask = ~u64{0} >> (64 - num_bits);
         const size_t mask2 = (~u64{0} & mask) << first_bit;
         return (pages[page] & mask2) != 0;
@@ -100,6 +115,7 @@ private:
     /// Ranges tracked last, (offset, size).
     std::array<std::pair<u64, u64>, 4> recent{{{~u64{0}, 0}, {~u64{0}, 0}, {~u64{0}, 0}, {~u64{0}, 0}}};
     size_t recent_cursor{};
+    bool tracked{};
 };
 
 } // namespace VideoCommon

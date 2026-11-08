@@ -7,9 +7,9 @@
 #pragma once
 
 #include <algorithm>
-#include <cstdlib>
 #include <array>
 #include <bit>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -17,14 +17,14 @@
 #include <optional>
 #include <span>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
-#include "common/container/unordered_map.h"
-#include <boost/container/static_vector.hpp>
 #include <boost/container/small_vector.hpp>
+#include <boost/container/static_vector.hpp>
+#include "common/container/unordered_map.h"
 
 #include "common/common_types.h"
-#include "common/spin_recursive_mutex.h"
 #include "common/div_ceil.h"
 #include "common/literals.h"
 #include "common/lru_cache.h"
@@ -32,12 +32,12 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/slot_vector.h"
+#include "common/spin_recursive_mutex.h"
 #include "video_core/buffer_cache/buffer_base.h"
 #include "video_core/buffer_cache/virtual_range_cache.h"
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/delayed_destruction_ring.h"
 #include "video_core/dirty_flags.h"
-#include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
@@ -61,6 +61,8 @@ constexpr u32 NUM_GRAPHICS_UNIFORM_BUFFERS = 18;
 constexpr u32 NUM_COMPUTE_UNIFORM_BUFFERS = 8;
 // Native compute shaders bind up to 18 global memory ranges; the enable masks are 32 bits wide.
 constexpr u32 NUM_STORAGE_BUFFERS = 32;
+// Compute programs can take pointer table entries beyond 32 bindings (Shader::Info::MAX_SSBOS).
+constexpr u32 NUM_COMPUTE_STORAGE_BUFFERS = 64;
 constexpr u32 NUM_TEXTURE_BUFFERS = 32;
 constexpr u32 NUM_STAGES = 5;
 
@@ -137,7 +139,7 @@ public:
     Binding indirect_buffer_binding;
 
     std::array<Binding, NUM_COMPUTE_UNIFORM_BUFFERS> compute_uniform_buffers;
-    std::array<Binding, NUM_STORAGE_BUFFERS> compute_storage_buffers;
+    std::array<Binding, NUM_COMPUTE_STORAGE_BUFFERS> compute_storage_buffers;
     std::array<TextureBufferBinding, NUM_TEXTURE_BUFFERS> compute_texture_buffers;
 
     std::array<u32, NUM_STAGES> enabled_uniform_buffer_masks{};
@@ -148,8 +150,8 @@ public:
 
     std::array<u32, NUM_STAGES> enabled_storage_buffers{};
     std::array<u32, NUM_STAGES> written_storage_buffers{};
-    u32 enabled_compute_storage_buffers = 0;
-    u32 written_compute_storage_buffers = 0;
+    u64 enabled_compute_storage_buffers = 0;
+    u64 written_compute_storage_buffers = 0;
 
     u32 total_graphics_storage_buffers = 0;
     u32 total_compute_storage_buffers = 0;
@@ -280,7 +282,7 @@ public:
     void UnbindGraphicsStorageBuffers(size_t stage);
 
     bool BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
-                                   bool is_written);
+                                   bool is_written, u32 indirect_offset = ~0U);
 
     void UnbindGraphicsTextureBuffers(size_t stage);
 
@@ -290,7 +292,7 @@ public:
     void UnbindComputeStorageBuffers();
 
     void BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
-                                  bool is_written);
+                                  bool is_written, u32 indirect_offset = ~0U);
 
     void UnbindComputeTextureBuffers();
 
@@ -305,6 +307,18 @@ public:
                                                           ObtainBufferSynchronize sync_info,
                                                           ObtainBufferOperation post_op);
     void FlushCachedWrites();
+
+    /// Where the CPU writes into GPU-written memory that were collected but not applied yet
+    /// (WriteMemory) come from: downloads must not write the GPU's older copy over them.
+    using PendingCpuWrites = std::function<void(const std::function<void(DAddr, size_t)>&)>;
+    void SetPendingCpuWrites(PendingCpuWrites source) {
+        pending_cpu_writes = std::move(source);
+    }
+
+    /// Takes CPU writes about to be applied one by one out of the GPU-written ranges first, so
+    /// applying one doesn't download the GPU's copy over another (WriteMemory keeps the GPU data
+    /// on the pages it writes).
+    void ClaimCpuWrites(std::span<const std::pair<DAddr, u64>> ranges);
 
     /// Return true when there are uncommitted buffers to be downloaded
     [[nodiscard]] bool HasUncommittedFlushes() const noexcept;
@@ -351,6 +365,59 @@ public:
     /// Return true when a CPU region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(DAddr addr, size_t size);
 
+    /// Visits the uniform and storage buffers bound for the last draw or dispatch with the cached
+    /// host buffer holding each range, if one does, for the frame dump. Nothing is created or
+    /// synchronized. Stage 5 is compute.
+    template <typename Func>
+    void ForEachBoundBuffer(bool compute, Func&& func) {
+        const auto visit = [&](u32 stage, bool storage, u32 index, bool written,
+                               const Binding& binding, u32 size) {
+            if (binding.device_addr == 0 || size == 0) {
+                return;
+            }
+            const Buffer* host = nullptr;
+            u32 offset = 0;
+            const u64 page = binding.device_addr >> CACHING_PAGEBITS;
+            if (const BufferId id = page < page_table.size() ? page_table[page] : BufferId{}) {
+                const Buffer& buffer = slot_buffers[id];
+                if (buffer.IsInBounds(binding.device_addr, size)) {
+                    host = &buffer;
+                    offset = buffer.Offset(binding.device_addr);
+                }
+            }
+            func(stage, storage, index, written, binding, size, host, offset);
+        };
+        if (compute) {
+            const auto* const sizes = channel_state->compute_uniform_buffer_sizes;
+            ForEachEnabledBit(channel_state->enabled_compute_uniform_buffer_mask, [&](u32 index) {
+                const Binding& binding = channel_state->compute_uniform_buffers[index];
+                visit(5, false, index, false, binding,
+                      sizes ? (std::min)(binding.size, (*sizes)[index]) : binding.size);
+            });
+            ForEachEnabledBit(channel_state->enabled_compute_storage_buffers, [&](u32 index) {
+                const Binding& binding = channel_state->compute_storage_buffers[index];
+                visit(5, true, index,
+                      ((channel_state->written_compute_storage_buffers >> index) & 1) != 0, binding,
+                      binding.size);
+            });
+            return;
+        }
+        const auto* const sizes = channel_state->uniform_buffer_sizes;
+        for (u32 stage = 0; stage < NUM_STAGES; ++stage) {
+            ForEachEnabledBit(channel_state->enabled_uniform_buffer_masks[stage], [&](u32 index) {
+                const Binding& binding = channel_state->uniform_buffers[stage][index];
+                visit(stage, false, index, false, binding,
+                      sizes ? (std::min)(binding.size, (*sizes)[stage][index]) : binding.size);
+            });
+            ForEachEnabledBit(channel_state->enabled_storage_buffers[stage], [&](u32 index) {
+                const Binding& binding = channel_state->storage_buffers[stage][index];
+                visit(stage, true, index,
+                      ((channel_state->written_storage_buffers[stage] >> index) & 1) != 0, binding,
+                      binding.size);
+            });
+        }
+    }
+
     /// Return true when a region is registered on the cache
     [[nodiscard]] bool IsRegionRegistered(DAddr addr, size_t size);
 
@@ -377,10 +444,12 @@ public:
     Common::SpinRecursiveMutex mutex;
     Runtime& runtime;
     bool any_buffer_uploaded = false;
+    /// Indirectly read banks of native programs already uploaded this frame.
+    std::unordered_set<DAddr> native_indirect_uniforms_this_frame;
 
 private:
-    template <typename Func>
-    static void ForEachEnabledBit(u32 enabled_mask, Func&& func) {
+    template <typename Mask, typename Func>
+    static void ForEachEnabledBit(Mask enabled_mask, Func&& func) {
         for (u32 index = 0; enabled_mask != 0; ++index, enabled_mask >>= 1) {
             const int disabled_bits = std::countr_zero(enabled_mask);
             index += disabled_bits;
@@ -465,7 +534,8 @@ private:
 
     void UpdateComputeTextureBuffers();
 
-    void MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u32 size, bool needs_sync = false);
+    void MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u32 size,
+                           bool needs_sync = false);
 
     /// Counts a GPU write to the command list pages in the range (invalidating their copies) and,
     /// while collecting, asks for new copies.
@@ -479,8 +549,7 @@ private:
 
     void JoinOverlap(BufferId new_buffer_id, BufferId overlap_id, bool accumulate_stream_score);
 
-    [[nodiscard]] BufferId CreateBuffer(DAddr device_addr, u32 wanted_size,
-                                        bool sparse_compatible);
+    [[nodiscard]] BufferId CreateBuffer(DAddr device_addr, u32 wanted_size, bool sparse_compatible);
 
     void Register(BufferId buffer_id);
 
@@ -510,8 +579,9 @@ private:
 
     void DeleteBuffer(BufferId buffer_id, bool do_not_mark = false);
 
-    [[nodiscard]] Binding StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
-                                               bool is_written, bool native_pointer = false) const;
+    [[nodiscard]] Binding StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index, bool is_written,
+                                               bool native_pointer = false,
+                                               bool table_pointer = false) const;
 
     [[nodiscard]] TextureBufferBinding GetTextureBufferBinding(GPUVAddr gpu_addr, u32 size,
                                                                PixelFormat format);
@@ -536,6 +606,13 @@ private:
     void RefreshRepackedVertexBuffers();
 
     void ClearDownload(DAddr base_addr, u64 size);
+
+    /// CPU writes collected but not yet applied (SetPendingCpuWrites).
+    [[nodiscard]] Common::RangeSet<DAddr> PendingCpuWriteRanges();
+
+    /// Writes downloaded bytes to guest memory, except over `cpu_written`.
+    void WriteDownloadedMemory(const Common::RangeSet<DAddr>& cpu_written, DAddr device_addr,
+                               const u8* data, u64 size);
 
     void InlineMemoryImplementation(DAddr dest_address, size_t copy_size,
                                     std::span<const u8> inlined_buffer);
@@ -589,15 +666,65 @@ private:
         return AsyncBufferDownloads() || memory_tracker.IsRegionPreflushable(device_addr, size);
     }
 
+    /// Whether the range holds GPU-written data that no fence downloads (not Preflushable).
+    bool HasGpuWritesNotDownloadedAtFence(DAddr device_addr, u64 size) {
+        if (AsyncBufferDownloads()) {
+            return false;
+        }
+        bool found = false;
+        memory_tracker.ForEachDownloadRange(
+            device_addr, size, false, [&](u64 start, u64 range_size) {
+                if (found) {
+                    return;
+                }
+                u64 covered = 0;
+                memory_tracker.ForEachPreflushableRange(
+                    start, range_size, [&](u64 lower, u64 length) {
+                        const u64 begin = (std::max)(lower, start);
+                        const u64 end = (std::min)(lower + length, start + range_size);
+                        covered += end > begin ? end - begin : 0;
+                    });
+                found = covered < range_size;
+            });
+        return found;
+    }
+
+    /// A GPU write: queues its Preflushable parts for download at the next fence and traps reads
+    /// of the rest. Queuing the whole range when any page of it was Preflushable copied whole
+    /// written storage buffers (up to 8 MiB) back at every fence: ~5 GB/s in title 1's forest.
+    void QueueGpuWrite(DAddr device_addr, u64 size) {
+        if (AsyncBufferDownloads()) {
+            uncommitted_gpu_modified_ranges.Add(device_addr, size);
+            return;
+        }
+        const DAddr end = device_addr + size;
+        DAddr cursor = device_addr;
+        memory_tracker.ForEachPreflushableRange(
+            device_addr, size, [&](DAddr start, u64 range_size) {
+                const DAddr lower = (std::max)(start, cursor);
+                const DAddr upper = (std::min)(start + range_size, end);
+                if (lower >= upper) {
+                    return;
+                }
+                if (lower > cursor) {
+                    ArmReadTraps(cursor, lower - cursor);
+                }
+                uncommitted_gpu_modified_ranges.Add(lower, upper - lower);
+                cursor = upper;
+            });
+        if (cursor < end) {
+            ArmReadTraps(cursor, end - cursor);
+        }
+    }
+
     /// GPU writes that are not downloaded at fences: trap the guest CPU's next read of their
     /// pages, which flushes them once and marks them Preflushable (then DownloadsAtFence).
     void ArmReadTraps(DAddr device_addr, u64 size) {
         const DAddr begin = Common::AlignDown(device_addr, Core::DEVICE_PAGESIZE);
         const DAddr end = Common::AlignUp(device_addr + size, Core::DEVICE_PAGESIZE);
         u64 armed_bytes = 0;
-        read_trapped_ranges.ForEachInRange(begin, end - begin, [&](DAddr lower, DAddr upper) {
-            armed_bytes += upper - lower;
-        });
+        read_trapped_ranges.ForEachInRange(
+            begin, end - begin, [&](DAddr lower, DAddr upper) { armed_bytes += upper - lower; });
         if (armed_bytes == end - begin) {
             return;
         }
@@ -616,6 +743,7 @@ private:
     /// fence pops. A write to a range after a download was taken removes it from that download
     /// (and every other pending one): its bytes are older than the write.
     std::deque<Common::RangeSet<DAddr>> pending_download_ranges;
+    PendingCpuWrites pending_cpu_writes;
     std::optional<Async_Buffer> current_buffer;
 
     std::deque<Async_Buffer> async_buffers_death_ring;
@@ -655,7 +783,7 @@ private:
         u64 copy_tick{};   ///< GPU tick that completes the copy
         /// `writes` when the front last flushed the page: guest memory holds it while equal
         u64 synced_writes{~u64{0}};
-        u32 copy_begin{};  ///< Bytes of the page the copy holds (a buffer can end inside it)
+        u32 copy_begin{}; ///< Bytes of the page the copy holds (a buffer can end inside it)
         u32 copy_end{};
         /// Written outside a compute dispatch or a DMA copy (a draw's storage writes) at least
         /// once: the front can't tell from what it sent whether such a write is still queued, so

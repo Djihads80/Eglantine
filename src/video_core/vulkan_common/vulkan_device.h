@@ -369,6 +369,12 @@ public:
                id != VK_DRIVER_ID_MESA_RADV;
     }
 
+    /// Whether a pipeline cache can be read while pipelines build into it, as Vulkan allows. Intel's
+    /// Windows driver crashes in vkGetPipelineCacheData when a build is running.
+    bool CanReadPipelineCacheDuringBuilds() const {
+        return GetDriverID() != VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS;
+    }
+
     /// Returns true for tile-based deferred renderers.
     bool IsTiler() const {
         switch (GetDriverID()) {
@@ -661,6 +667,16 @@ FN_MAX_LIMIT_LIST
     /// Returns true if the device supports VK_KHR_shader_quad_control.
     bool IsKhrShaderQuadControlSupported() const {
         return extensions.shader_quad_control && features.shader_quad_control.shaderQuadControl;
+    }
+
+    /// Returns true if the device can build tessellation pipelines.
+    bool IsTessellationSupported() const {
+        return features.features.tessellationShader;
+    }
+
+    /// Returns the largest patch size (control points, and TCS output vertices) a pipeline allows.
+    u32 GetMaxTessellationPatchSize() const {
+        return properties.properties.limits.maxTessellationPatchSize;
     }
 
     /// Returns true if the device supports task and mesh shaders (VK_EXT_mesh_shader).

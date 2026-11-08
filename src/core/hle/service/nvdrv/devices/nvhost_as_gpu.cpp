@@ -86,7 +86,7 @@ NvResult nvhost_as_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> i
         }
         case 0xb:
             if (g_nx2_driver) {
-                return WrapFixed(this, &nvhost_as_gpu::Nx2GetSyncpointShimInfo, input, output);
+                return WrapFixed(this, &nvhost_as_gpu::GetSyncRoMap, input, output);
             }
             break;
         case 0x14:
@@ -176,9 +176,10 @@ void nvhost_as_gpu::Nx2Map(u64 gpu_address, u64 cpu_address, u64 size) {
     Nx2GpuMemoryRegistry::Get().RecordDeviceRange(cpu_address, size, device_address);
     // On the GPU thread, like unmaps: a GMMU map takes the texture cache lock, and the callers hold
     // nx2:gpu locks that the GPU thread takes under that lock (sparse blocks backed on write).
-    system.GPU().MapInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {
-        gmmu->Map(gpu_address, device_address, size, Tegra::PTEKind::PITCH, false);
-    });
+    system.GPU().MapInOrder(
+        gpu_address, size, [gmmu = gmmu.get(), gpu_address, device_address, size] {
+            gmmu->Map(gpu_address, device_address, size, Tegra::PTEKind::PITCH, false);
+        });
     LOG_DEBUG(Service_NVDRV, "Switch 2 GPU mapping {:#x}+{:#x} -> CPU {:#x}", gpu_address, size,
               cpu_address);
 }
@@ -253,9 +254,10 @@ void nvhost_as_gpu::Nx2Sparse(u64 gpu_address, u64 size, bool create) {
     }
     nx2_sparse_ranges[gpu_address] = {size, device_address};
     // On the GPU thread, as in Nx2Map.
-    system.GPU().MapInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {
-        gmmu->Map(gpu_address, device_address, size, Tegra::PTEKind::PITCH, false);
-    });
+    system.GPU().MapInOrder(
+        gpu_address, size, [gmmu = gmmu.get(), gpu_address, device_address, size] {
+            gmmu->Map(gpu_address, device_address, size, Tegra::PTEKind::PITCH, false);
+        });
     LOG_DEBUG(Service_NVDRV, "Switch 2 sparse region {:#x}+{:#x} -> device {:#x}", gpu_address,
               size, device_address);
 }
@@ -295,20 +297,22 @@ void nvhost_as_gpu::Nx2SparseTile(u64 gpu_address, u64 cpu_address, u64 size) {
     // whose contents are now what the game's memory holds there.
     const DAddr device = device_address + (gpu_address - start);
     auto& smmu = system.Host1x().MemoryManager();
-    system.GPU().MapInOrder([&smmu, device, cpu_address, size, asid = session->asid] {
-        smmu.Unmap(device, size);
-        if (cpu_address != 0) {
-            smmu.Map(device, cpu_address, size, asid, true);
-        }
-    });
+    system.GPU().MapInOrder(
+        gpu_address, size, [&smmu, device, cpu_address, size, asid = session->asid] {
+            smmu.Unmap(device, size);
+            if (cpu_address != 0) {
+                smmu.Map(device, cpu_address, size, asid, true);
+            }
+        });
 }
 
 void nvhost_as_gpu::OnClose(DeviceFD fd) {}
 
-// Switch 2 NvRm (with characteristics flag 26) asks for the read-only syncpoint shim: a GPU page
-// whose u32 at id * stride reads as that syncpoint's value; NVN waits on syncpoints through it and
-// asserts without one. Same scheme as changes.patch, placed on the last page of the VA range.
-NvResult nvhost_as_gpu::Nx2GetSyncpointShimInfo(IoctlNx2SyncpointShimInfo& params) {
+// NVGPU_AS_IOCTL_GET_SYNC_RO_MAP: Switch 2 NvRm (with characteristics flag 26) asks for the
+// read-only syncpoint shim, a GPU page whose u32 at id * sync_size reads as that syncpoint's
+// value; NVN waits on syncpoints through it and asserts without one. Same scheme as
+// changes.patch, placed on the last page of the VA range.
+NvResult nvhost_as_gpu::GetSyncRoMap(IoctlGetSyncRoMap& params) {
     std::scoped_lock lock(mutex);
     if (!vm.initialised || !gmmu) {
         return NvResult::NotSupported;
@@ -318,11 +322,11 @@ NvResult nvhost_as_gpu::Nx2GetSyncpointShimInfo(IoctlNx2SyncpointShimInfo& param
         nx2_syncpoint_shim = true;
         gmmu->SetNativeSyncpointShim(address);
     }
-    params.address = address;
-    params.stride = sizeof(u32);
-    params.count = Tegra::MemoryManager::NumShimSyncpoints;
+    params.base_gpuva = address;
+    params.sync_size = sizeof(u32);
+    params.num_syncpoints = Tegra::MemoryManager::NumShimSyncpoints;
     LOG_INFO(Service_NVDRV, "Switch 2 syncpoint shim at {:#x} ({} syncpoints)", address,
-             params.count);
+             params.num_syncpoints);
     return NvResult::Success;
 }
 

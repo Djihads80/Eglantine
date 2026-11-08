@@ -35,12 +35,12 @@ permissions:
 jobs:
   msvc:
     name: windows-x86_64
-    # Might also need to upgrade that one
-    runs-on: windows-2022
+    if: inputs.pgo != 'only'
+    runs-on: windows-2025
     env:
       PLATFORM: windows-x86_64
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
-      SCCACHE_CACHE_SIZE: 3G
+      SCCACHE_CACHE_SIZE: 1000M
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -60,7 +60,7 @@ jobs:
 
       - name: Setup build from compatibility pin
         if: hashFiles('.github/actions/setup-build/action.yml') == ''
-        uses: Djihads80/Eglantine/.github/actions/setup-build@5016e217b829b45fda263b05ee00560bd3656397
+        uses: Djihads80/Eglantine/.github/actions/setup-build@583b125d5a2a330bc3e04fed213b908db5f6a8f2
         with:
           platform: ${{ env.PLATFORM }}
           sha: ${{ inputs.sha }}
@@ -111,11 +111,16 @@ jobs:
           -DYUZU_ROOM_STANDALONE=OFF
           -DYUZU_USE_BUNDLED_QT=OFF
           -DYUZU_USE_BUNDLED_SDL3=ON
+          -DENABLE_QT_TRANSLATION=ON
           -DENABLE_UPDATE_CHECKER=OFF
-          -DUSE_DISCORD_PRESENCE=OFF
+          -DUSE_DISCORD_PRESENCE=ON
           -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }}
           -DCMAKE_C_COMPILER_LAUNCHER=sccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+      - name: CCache zero stats
+        shell: bash
+        run: sccache --zero-stats
 
       - name: Build
         shell: bash
@@ -145,12 +150,12 @@ jobs:
 
   mingw-pgo:
     name: windows-x86_64-pgo
-    if: inputs.pgo == 'both'
-    runs-on: windows-2022
+    if: inputs.pgo == 'both' || inputs.pgo == 'only'
+    runs-on: windows-2025
     env:
       PLATFORM: windows-x86_64-pgo
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 3000M
+      CCACHE_MAXSIZE: 1000M
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -170,7 +175,7 @@ jobs:
 
       - name: Setup build from compatibility pin
         if: hashFiles('.github/actions/setup-build/action.yml') == ''
-        uses: Djihads80/Eglantine/.github/actions/setup-build@5016e217b829b45fda263b05ee00560bd3656397
+        uses: Djihads80/Eglantine/.github/actions/setup-build@583b125d5a2a330bc3e04fed213b908db5f6a8f2
         with:
           platform: ${{ env.PLATFORM }}
           sha: ${{ inputs.sha }}
@@ -223,8 +228,9 @@ jobs:
             -DYUZU_USE_BUNDLED_FFMPEG=ON \
             -DVulkanHeaders_FORCE_BUNDLED=ON \
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_QT_TRANSLATION=ON \
             -DENABLE_UPDATE_CHECKER=OFF \
-            -DUSE_DISCORD_PRESENCE=OFF \
+            -DUSE_DISCORD_PRESENCE=ON \
             -DUSE_CCACHE=ON \
             -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }} \
             -DCMAKE_C_COMPILER=clang \

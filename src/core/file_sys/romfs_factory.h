@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <mutex>
 #include <memory>
 
 #include "common/common_types.h"
@@ -56,6 +57,9 @@ private:
     VirtualFile base;
 
     bool updatable;
+    /// The merged RomFS with LayeredFS mods applied (not updatable: NUP containers).
+    mutable VirtualFile layered_file;
+    mutable std::mutex layered_mutex;
 
     ContentProvider& content_provider;
     Service::FileSystem::FileSystemController& filesystem_controller;

@@ -464,6 +464,9 @@ void Maxwell3D::TraceFirstMethodWrite(u32 method, u32 argument) {
 }
 
 void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
+    if (front_macros && !VideoCommon::GpuSplit::OnBackThread()) [[unlikely]] {
+        ReleaseFront();
+    }
     // It is an error to write to a register other than the current macro's ARG register before
     // it has finished execution.
     if (executing_macro != 0 && method != executing_macro + 1) {
@@ -533,6 +536,9 @@ void Maxwell3D::DumpRecentWrites(u32 method) {
 }
 
 void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
+    if (front_macros && !VideoCommon::GpuSplit::OnBackThread()) [[unlikely]] {
+        ReleaseFront();
+    }
     RecordWrite(method, amount ? base_start[0] : 0, amount, methods_pending);
     // Methods after 0xE00 are special, they're actually triggers for some microcode that was
     // uploaded to the GPU during initialization.
@@ -922,6 +928,19 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
     return *front;
 }
 
+// With the split on, engine methods run on its back only: one here on another thread means the
+// split stopped (accuracy settings changed mid-game). Hand the macros back: the front's copy
+// goes stale from now on, and a restart copies the registers again (Front).
+void Maxwell3D::ReleaseFront() {
+    executing_macro = front->executing_macro;
+    macro_params = std::move(front->parameters);
+    std::memcpy(shadow_state.reg_array.data(), front->shadow.data(), sizeof(front->shadow));
+    shadow_state.shadow_ram_control = front->control;
+    front.reset();
+    front_macros = false;
+    LOG_INFO(HW_GPU, "GPU thread split stopped: 3D macros back on the engine");
+}
+
 void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 method,
                            u32 argument, bool is_last_call, bool from_macro) {
     namespace Profile = VideoCommon::Nx2Profile;
@@ -1010,6 +1029,14 @@ void Maxwell3D::FrontCallMethod(Core::System& system, VideoCommon::GpuSplit& spl
         return;
     }
     FrontWrite(split, fs, method, argument, is_last_call, false);
+}
+
+void Maxwell3D::FrontWriteRun(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
+                              const u32* words, u32 count, bool ends_method) {
+    auto& fs = Front(system, split);
+    for (u32 i = 0; i < count; ++i) {
+        FrontWrite(split, fs, method + i, words[i], ends_method && i + 1 == count, false);
+    }
 }
 
 void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split,
@@ -1164,7 +1191,9 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::DmaReadBytes, read_bytes);
     }
     if (memory_manager.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
-        memory_manager.FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
+        split.Run([memory = &memory_manager, source, read_bytes] {
+            memory->FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
+        });
     }
     for (u32 i = 0; i < words; ++i) {
         const u32 word = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));

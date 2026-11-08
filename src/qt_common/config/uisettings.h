@@ -111,6 +111,7 @@ struct Values {
 
     Setting<bool> first_start{linkage, true, "firstStart", Category::Ui};
     Setting<bool> skip_mkw_settings_prompt{linkage, false, "skip_mkw_settings_prompt", Category::Ui};
+    Setting<bool> skip_oot_settings_prompt{linkage, false, "skip_oot_settings_prompt", Category::Ui};
     Setting<bool> pause_when_in_background{linkage,
                                            false,
                                            "pauseWhenInBackground",

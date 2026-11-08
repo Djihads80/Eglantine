@@ -12,7 +12,7 @@ sha="${SHA:?SHA is required}"
 kind="${KIND:?KIND is required}"
 base="https://github.com/${repo}/releases/download/${tag}"
 short="${sha:0:7}"
-macos_ver="${MACOS_RUNNER:-macos-15}"
+macos_ver="${MACOS_RUNNER:-macos-26}"
 macos_ver="${macos_ver#macos-}"
 
 link() { if [[ -e "$dir/$2" ]]; then printf '[%s](%s/%s)' "$1" "$base" "$2"; fi; return 0; }

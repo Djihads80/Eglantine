@@ -29,7 +29,7 @@ on:
         default: ""
       macos_runner:
         type: string
-        default: macos-15
+        default: macos-26
     secrets:
       DISCORD_WEBHOOK_URL:
         required: false
@@ -40,7 +40,7 @@ permissions:
 jobs:
   release:
     name: Publish ${{ inputs.tag }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       GH_TOKEN: ${{ github.token }}
       SHA: ${{ inputs.sha }}
@@ -174,7 +174,7 @@ jobs:
 
       - name: Ping Discord
         if: >-
-          (inputs.kind == 'stable' || inputs.kind == 'rc') &&
+          (inputs.kind == 'stable' || inputs.kind == 'rc' || inputs.kind == 'daily') &&
           github.repository == 'Djihads80/Eglantine'
         shell: bash
         env:

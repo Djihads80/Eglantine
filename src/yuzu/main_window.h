@@ -11,9 +11,9 @@
 
 #include <filesystem>
 #include <QElapsedTimer>
+#include <QFutureWatcher>
 #include <QMainWindow>
 #include <QMessageBox>
-#include <QFutureWatcher>
 #include <QPushButton>
 #include <QTimer>
 #include <QTranslator>
@@ -507,6 +507,7 @@ private:
 
     MultiplayerState* multiplayer_state = nullptr;
     bool asked_recommended_mkw_settings = false;
+    bool asked_recommended_oot_settings = false;
 
     GRenderWindow* render_window = nullptr;
     GameList* game_list = nullptr;

@@ -26,15 +26,22 @@ on:
         type: choice
         options: [branch, daily]
         default: branch
-      platforms:
-        description: Which OS builds to run
-        type: choice
-        options: [all, linux, windows, macos]
-        default: all
+      build_linux:
+        description: Build Linux binaries
+        type: boolean
+        default: true
+      build_windows:
+        description: Build Windows binaries
+        type: boolean
+        default: true
+      build_macos:
+        description: Build macOS binaries
+        type: boolean
+        default: true
       pgo:
         description: Also build the PGO variants
         type: choice
-        options: [none, both]
+        options: [none, both, only]
         default: none
       publish:
         description: Publish the binaries as a GitHub pre-release (otherwise only workflow artifacts)
@@ -63,7 +70,7 @@ jobs:
         contains(github.event.pull_request.labels.*.name, 'ci:build') &&
         (github.event.action != 'labeled' || github.event.label.name == 'ci:build')
       )
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       pull-requests: read
@@ -128,7 +135,7 @@ jobs:
     needs: prepare
     if: >-
       needs.prepare.outputs.skip != 'true' &&
-      (inputs.platforms == '' || inputs.platforms == 'all' || inputs.platforms == 'linux')
+      (github.event_name != 'workflow_dispatch' || inputs.build_linux)
     uses: ./.github/workflows/build-linux.yml
     with:
       sha: ${{ needs.prepare.outputs.sha }}
@@ -144,7 +151,7 @@ jobs:
     needs: prepare
     if: >-
       needs.prepare.outputs.skip != 'true' &&
-      (inputs.platforms == '' || inputs.platforms == 'all' || inputs.platforms == 'windows')
+      (github.event_name != 'workflow_dispatch' || inputs.build_windows)
     uses: ./.github/workflows/build-windows.yml
     with:
       sha: ${{ needs.prepare.outputs.sha }}
@@ -160,7 +167,7 @@ jobs:
     needs: prepare
     if: >-
       needs.prepare.outputs.skip != 'true' &&
-      (inputs.platforms == '' || inputs.platforms == 'all' || inputs.platforms == 'macos')
+      (github.event_name != 'workflow_dispatch' || inputs.build_macos)
     uses: ./.github/workflows/build-macos.yml
     with:
       sha: ${{ needs.prepare.outputs.sha }}
@@ -169,7 +176,7 @@ jobs:
       tag: ${{ needs.prepare.outputs.tag }}
       release: ${{ needs.prepare.outputs.kind == 'stable' || needs.prepare.outputs.kind == 'rc' }}
       nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
-      runner: ${{ vars.MACOS_RUNNER || 'macos-15' }}
+      runner: ${{ vars.MACOS_RUNNER || 'macos-26' }}
 
   # Publishes only when every OS that ran succeeded (skipped OSes don't count).
   release:
@@ -195,4 +202,4 @@ jobs:
       sha: ${{ needs.prepare.outputs.sha }}
       prev_tag: ${{ needs.prepare.outputs.prev_tag }}
       branch: ${{ needs.prepare.outputs.branch }}
-      macos_runner: ${{ vars.MACOS_RUNNER || 'macos-15' }}
+      macos_runner: ${{ vars.MACOS_RUNNER || 'macos-26' }}
