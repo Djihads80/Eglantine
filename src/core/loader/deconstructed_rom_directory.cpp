@@ -16,6 +16,7 @@
 #include "common/logging.h"
 #include "common/random.h"
 #include "common/settings.h"
+#include "common/string_util.h"
 #include "core/core.h"
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/control_metadata.h"
@@ -184,11 +185,12 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
                     const auto update_exefs_size = main_size(newest->GetSubdirectory("exefs"));
                     if (base_exefs_size != 0 && update_exefs_size != 0 &&
                         base_exefs_size != update_exefs_size) {
-                        LOG_ERROR(Loader,
-                                  "Base RomFS is absent and the update RomFS belongs to a different "
-                                  "build (base main {} bytes, update main {} bytes). Load the "
-                                  "update's exefs instead of the base one.",
-                                  base_exefs_size, update_exefs_size);
+                        LOG_ERROR(
+                            Loader,
+                            "Base RomFS is absent and the update RomFS belongs to a different "
+                            "build (base main {} bytes, update main {} bytes). Load the "
+                            "update's exefs instead of the base one.",
+                            base_exefs_size, update_exefs_size);
                         return nullptr;
                     }
                     LOG_INFO(Loader, "Base RomFS is absent, using the update RomFS (version {})",
@@ -214,7 +216,8 @@ std::string NewestProductTag(const FileSys::VirtualDir& dir, std::string_view pr
         }
         const std::string_view digits = std::string_view{file_name}.substr(prefix.size(), 3);
         if (file_name[prefix.size() + 3] != '.' ||
-            !std::all_of(digits.begin(), digits.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+            !std::all_of(digits.begin(), digits.end(),
+                         [](char c) { return c >= '0' && c <= '9'; })) {
             continue;
         }
         if (std::string version{digits}; version > best) {
@@ -226,19 +229,19 @@ std::string NewestProductTag(const FileSys::VirtualDir& dir, std::string_view pr
 
 // The display version of a dump without control data, from its RomFS: Nintendo EPD titles name
 // their resource size tables after it (System/Resource/ResourceSizeTable.Product.180.* in Mario
-// Kart World 1.8.0), and some name their game data list instead (GameData/GameDataList.Product.320.*
-// in Donkey Kong Bananza 3.2.0). A hotfix can keep its minor version's tables (Product.110 in a
-// 1.1.1).
+// Kart World 1.8.0), and some name their game data list instead
+// (GameData/GameDataList.Product.320.* in Donkey Kong Bananza 3.2.0). A hotfix can keep its minor
+// version's tables (Product.110 in a 1.1.1).
 std::string RomFSProductVersion(const FileSys::VirtualDir& romfs_dir) {
     if (romfs_dir == nullptr) {
         return {};
     }
     const auto system_dir = romfs_dir->GetSubdirectory("System");
-    std::string best = NewestProductTag(
-        system_dir != nullptr ? system_dir->GetSubdirectory("Resource") : nullptr,
-        "ResourceSizeTable.Product.");
-    if (const auto game_data = NewestProductTag(romfs_dir->GetSubdirectory("GameData"),
-                                                "GameDataList.Product.");
+    std::string best =
+        NewestProductTag(system_dir != nullptr ? system_dir->GetSubdirectory("Resource") : nullptr,
+                         "ResourceSizeTable.Product.");
+    if (const auto game_data =
+            NewestProductTag(romfs_dir->GetSubdirectory("GameData"), "GameDataList.Product.");
         game_data > best) {
         best = game_data;
     }
@@ -271,7 +274,8 @@ std::vector<FileSys::VirtualDir> FindSidecarDirs(const FileSys::VirtualDir& exef
         const bool storage_level =
             equals_ignore_case(name, "base") || equals_ignore_case(name, "update") ||
             equals_ignore_case(name, "updates") ||
-            (!name.empty() && name.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos);
+            (!name.empty() &&
+             name.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos);
         if (!storage_level) {
             break;
         }
@@ -282,10 +286,9 @@ std::vector<FileSys::VirtualDir> FindSidecarDirs(const FileSys::VirtualDir& exef
 
 } // namespace
 
-AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys::VirtualFile file_, bool override_update_)
-    : AppLoader(std::move(file_))
-    , override_update(override_update_)
-{
+AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys::VirtualFile file_,
+                                                                         bool override_update_)
+    : AppLoader(std::move(file_)), override_update(override_update_) {
     const auto file_dir = file->GetContainingDirectory();
     const auto sidecar_dirs = FindSidecarDirs(file_dir);
 
@@ -348,6 +351,9 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
     if (nacp_file != nullptr) {
         control.emplace(nacp_file);
         name = control->GetApplicationName();
+    } else if (sidecar_dirs.size() > 1 && Common::ToLower(file_dir->GetName()) == "exefs") {
+        // Without control data, name the game after its folder like the game list does
+        name = sidecar_dirs.back()->GetName();
     }
 
     romfs_exefs_dir = file_dir;
@@ -358,10 +364,8 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
 
 AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(
     FileSys::VirtualDir directory, bool override_update_)
-    : AppLoader(directory->GetFile("main"))
-    , dir(std::move(directory))
-    , override_update(override_update_)
-{
+    : AppLoader(directory->GetFile("main")), dir(std::move(directory)),
+      override_update(override_update_) {
     romfs_exefs_dir = dir;
 }
 
@@ -432,9 +436,8 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     // Loose-ExeFS loads bypass the NCA/NSP loaders, which are the ones that normally apply
     // LayeredFS to the RomFS; apply it here so mods in user/load/<titleid>/ work too.
     if (LooseRomFS() != nullptr) {
-        const FileSys::PatchManager patch_manager(metadata.GetTitleID(),
-                                                  system.GetFileSystemController(),
-                                                  system.GetContentProvider());
+        const FileSys::PatchManager patch_manager(
+            metadata.GetTitleID(), system.GetFileSystemController(), system.GetContentProvider());
         auto patched = patch_manager.PatchRomFS(nullptr, romfs);
         if (patched != nullptr) {
             romfs = std::move(patched);
@@ -492,11 +495,15 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     code_size += patch_ctx.GetTotalPatchSize();
 
     // TODO: this is bad form of ASLR, it sucks
-    std::uintptr_t aslr_offset = ((::Settings::values.rng_seed_enabled.GetValue()
-        ? ::Settings::values.rng_seed.GetValue() : Common::Random::Random64(0)) << 12) & 0xfff000;
+    std::uintptr_t aslr_offset =
+        ((::Settings::values.rng_seed_enabled.GetValue() ? ::Settings::values.rng_seed.GetValue()
+                                                         : Common::Random::Random64(0))
+         << 12) &
+        0xfff000;
 
     // Setup the process code layout
-    if (process.LoadFromMetadata(system.Kernel(), metadata, code_size, fastmem_base, aslr_offset).IsError()) {
+    if (process.LoadFromMetadata(system.Kernel(), metadata, code_size, fastmem_base, aslr_offset)
+            .IsError()) {
         return {ResultStatus::ErrorUnableToParseKernelMetadata, {}};
     }
 

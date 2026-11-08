@@ -59,18 +59,6 @@ static inline u64 xgetbv(u32 index) {
 #endif
 
 namespace Common {
-#ifdef ARCHITECTURE_x86_64
-CPUCaps::Manufacturer CPUCaps::ParseManufacturer(std::string_view brand_string) {
-    if (brand_string == "GenuineIntel") {
-        return Manufacturer::Intel;
-    } else if (brand_string == "AuthenticAMD") {
-        return Manufacturer::AMD;
-    } else if (brand_string == "HygonGenuine") {
-        return Manufacturer::Hygon;
-    }
-    return Manufacturer::Unknown;
-}
-
 std::optional<int> GetProcessorCount() {
 #if defined(_WIN32)
     // Get the buffer length.
@@ -110,6 +98,18 @@ std::optional<int> GetProcessorCount() {
     // Shame on you
     return std::nullopt;
 #endif
+}
+
+#ifdef ARCHITECTURE_x86_64
+CPUCaps::Manufacturer CPUCaps::ParseManufacturer(std::string_view brand_string) {
+    if (brand_string == "GenuineIntel") {
+        return Manufacturer::Intel;
+    } else if (brand_string == "AuthenticAMD") {
+        return Manufacturer::AMD;
+    } else if (brand_string == "HygonGenuine") {
+        return Manufacturer::Hygon;
+    }
+    return Manufacturer::Unknown;
 }
 
 /// @brief Detects the various CPU features

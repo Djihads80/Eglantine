@@ -2285,6 +2285,8 @@ void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& s
                   start, result.consumed, result.error);
     }
 #else
+    (void)system;
+    (void)split;
     fs.executing_macro.reset();
 #endif
     fs.parameters.clear();

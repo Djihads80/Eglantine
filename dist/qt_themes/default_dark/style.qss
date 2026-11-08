@@ -358,7 +358,7 @@ QWidget#lineDialog {
 QStackedWidget#bottomOSK,
 QWidget#contentDialog,
 QWidget#contentRichDialog {
-    background: rgba(240, 240, 240, 1);
+    background: rgba(44, 44, 44, 1);
 }
 
 QWidget#contentDialog,
@@ -370,7 +370,7 @@ QWidget#contentRichDialog {
 QWidget#buttonsDialog,
 QWidget#buttonsRichDialog {
     margin: 5px;
-    border-top: 2px solid rgba(44, 44, 44, 1);
+    border-top: 2px solid rgba(240, 240, 240, 1);
 }
 
 QWidget#legendOSKnum {
@@ -456,6 +456,12 @@ QWidget#contentDialog QLabel#label_dialog {
 QWidget#contentDialog QLabel#label_title,
 QWidget#contentRichDialog QLabel#label_title_rich {
     padding: 0px 65px;
+}
+
+QDialog#OverlayDialog QLabel,
+QDialog#OverlayDialog QTextBrowser {
+    color: rgba(240, 240, 240, 1);
+    background: transparent;
 }
 
 QDialog#OverlayDialog QPushButton {

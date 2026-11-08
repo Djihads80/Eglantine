@@ -28,8 +28,7 @@ on:
         default: true
       runner:
         type: string
-        # Might be changed to latest for more availability
-        default: macos-15
+        default: macos-26
 
 permissions:
   contents: read
@@ -96,8 +95,9 @@ jobs:
             "-DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" \
             -DVulkanHeaders_FORCE_BUNDLED=ON \
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_QT_TRANSLATION=ON \
             -DENABLE_UPDATE_CHECKER=OFF \
-            -DUSE_DISCORD_PRESENCE=OFF \
+            -DUSE_DISCORD_PRESENCE=ON \
             -DUSE_CCACHE=ON \
             -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }}
 

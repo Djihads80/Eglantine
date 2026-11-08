@@ -509,14 +509,18 @@ QWidget#contentRichDialog QLabel#label_title_rich {
 }
 
 QWidget#contentDialog QLabel#label_dialog {
-    background: #2E2E2E;
-
     padding: 20px 65px;
 }
 
 QWidget#contentDialog QLabel#label_title,
 QWidget#contentRichDialog QLabel#label_title_rich {
     padding: 0px 65px;
+}
+
+QDialog#OverlayDialog QLabel,
+QDialog#OverlayDialog QTextBrowser {
+    color: rgba(0, 0, 0, 1);
+    background: transparent;
 }
 
 QDialog#OverlayDialog QPushButton {

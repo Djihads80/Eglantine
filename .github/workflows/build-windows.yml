@@ -35,8 +35,8 @@ permissions:
 jobs:
   msvc:
     name: windows-x86_64
-    # Might also need to upgrade that one
-    runs-on: windows-2022
+    if: inputs.pgo != 'only'
+    runs-on: windows-2025
     env:
       PLATFORM: windows-x86_64
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
@@ -111,8 +111,9 @@ jobs:
           -DYUZU_ROOM_STANDALONE=OFF
           -DYUZU_USE_BUNDLED_QT=OFF
           -DYUZU_USE_BUNDLED_SDL3=ON
+          -DENABLE_QT_TRANSLATION=ON
           -DENABLE_UPDATE_CHECKER=OFF
-          -DUSE_DISCORD_PRESENCE=OFF
+          -DUSE_DISCORD_PRESENCE=ON
           -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }}
           -DCMAKE_C_COMPILER_LAUNCHER=sccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
@@ -149,8 +150,8 @@ jobs:
 
   mingw-pgo:
     name: windows-x86_64-pgo
-    if: inputs.pgo == 'both'
-    runs-on: windows-2022
+    if: inputs.pgo == 'both' || inputs.pgo == 'only'
+    runs-on: windows-2025
     env:
       PLATFORM: windows-x86_64-pgo
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -227,8 +228,9 @@ jobs:
             -DYUZU_USE_BUNDLED_FFMPEG=ON \
             -DVulkanHeaders_FORCE_BUNDLED=ON \
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_QT_TRANSLATION=ON \
             -DENABLE_UPDATE_CHECKER=OFF \
-            -DUSE_DISCORD_PRESENCE=OFF \
+            -DUSE_DISCORD_PRESENCE=ON \
             -DUSE_CCACHE=ON \
             -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }} \
             -DCMAKE_C_COMPILER=clang \

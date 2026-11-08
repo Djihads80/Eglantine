@@ -32,9 +32,9 @@
 #include "video_core/nx2_war_probe.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/texture.h"
-#ifdef ARCHITECTURE_x86_64
 #include "video_core/front_macro_memo.h"
 #include "video_core/macro_dma_forward.h"
+#ifdef ARCHITECTURE_x86_64
 #include "video_core/macro_turing_jit.h"
 #endif
 
@@ -2828,6 +2828,9 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
         FrontVerify(split, fs);
     }
 #else
+    (void)system;
+    (void)split;
+    (void)borrowed;
     fs.executing_macro = 0;
     fs.parameters.clear();
 #endif
