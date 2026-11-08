@@ -56,6 +56,14 @@ bool WritesMemory(Engines::EngineInterface* engine, Engines::EngineTypes type, u
     }
     return false;
 }
+
+// Draws can write command lists too (Tegra::Nx2DrawListCopies): only the reads of GPU-written
+// lists wait for them.
+bool DrawMayWriteLists(Engines::EngineTypes type) {
+    return type == Engines::EngineTypes::Maxwell3D &&
+           Tegra::g_nx2_has_command_list_pages.load(std::memory_order_relaxed) &&
+           Tegra::Nx2DrawListCopies();
+}
 } // Anonymous namespace
 
 DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Control::ChannelState& channel_state_)
@@ -572,9 +580,14 @@ void DmaPusher::CallMethod(u32 argument) {
         const bool writer = split.Active() &&
                             WritesMemory(subchannel, subchannel_type[dma_state.subchannel],
                                          dma_state.method, 1);
+        const bool draw_writer =
+            split.Active() && DrawMayWriteLists(subchannel_type[dma_state.subchannel]);
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
+            }
+            if (draw_writer) {
+                split.NoteDrawWriter();
             }
         };
         if (split.Active()) {
@@ -630,9 +643,14 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
         const bool writer = split.Active() &&
                             WritesMemory(subchannel, subchannel_type[dma_state.subchannel],
                                          dma_state.method, dma_state.non_incrementing ? 1 : num_methods);
+        const bool draw_writer =
+            split.Active() && DrawMayWriteLists(subchannel_type[dma_state.subchannel]);
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
+            }
+            if (draw_writer) {
+                split.NoteDrawWriter();
             }
         };
         if (split.Active()) {
@@ -734,7 +752,7 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
         return false;
     }
     if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
-        split.WaitForWriters();
+        split.WaitForWriters(true);
     }
     using GpuWrittenList = VideoCore::RasterizerInterface::GpuWrittenList;
     command_headers.resize_destructive(count);

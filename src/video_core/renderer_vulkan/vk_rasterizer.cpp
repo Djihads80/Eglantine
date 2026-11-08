@@ -529,6 +529,15 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         return;
     }
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+    const bool list_copies = Tegra::Nx2DrawListCopies();
+    if (list_copies) {
+        buffer_cache.Nx2CollectListCopies(true);
+    }
+    SCOPE_EXIT {
+        if (list_copies) {
+            buffer_cache.Nx2CollectListCopies(false, true);
+        }
+    };
     // update engine as channel may be different.
     pipeline->SetEngine(maxwell3d, gpu_memory);
     const u32 repack_dirty = buffer_cache_runtime.SetVertexRepackLayout(

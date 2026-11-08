@@ -343,9 +343,9 @@ public:
     /// Switch 2 GPU-written command lists (nx2.h, g_nx2_command_list_pages). While collecting (a
     /// compute dispatch or a DMA copy being recorded), writes to command list pages are noted;
     /// Nx2CopyListPages then records copies of those pages into host memory after the work.
-    void Nx2CollectListCopies(bool collect) {
+    void Nx2CollectListCopies(bool collect, bool keep_requests = false) {
         nx2_collect_list_copies = collect;
-        if (!collect) {
+        if (!collect && !keep_requests) {
             nx2_list_copy_requests.clear();
         }
     }

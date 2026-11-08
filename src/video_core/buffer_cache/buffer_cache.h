@@ -2602,6 +2602,14 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
 
 template <class P>
 void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
+    // Draws' list copies wait for the next dispatch or DMA copy (Tegra::Nx2DrawListCopies): a
+    // page left without its copy reads through the flush path instead.
+    nx2_list_copy_requests.erase(std::remove_if(nx2_list_copy_requests.begin(),
+                                                nx2_list_copy_requests.end(),
+                                                [buffer_id](const auto& request) {
+                                                    return request.first == buffer_id;
+                                                }),
+                                 nx2_list_copy_requests.end());
     if constexpr (requires { runtime.OnBufferDeleted(slot_buffers[buffer_id]); }) {
         runtime.OnBufferDeleted(slot_buffers[buffer_id]);
     }

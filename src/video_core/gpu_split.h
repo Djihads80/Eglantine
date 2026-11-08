@@ -146,9 +146,13 @@ public:
     void NoteWriter() {
         last_writer_position = write_position;
     }
-    /// Waits until the back executed the compute and copy work sent so far (not what came after).
-    /// Returns whether any of it was still queued.
-    bool WaitForWriters();
+    /// A draw that may write command lists was just sent (Tegra::Nx2DrawListCopies).
+    void NoteDrawWriter() {
+        last_draw_writer_position = write_position;
+    }
+    /// Waits until the back executed the compute and copy work sent so far (not what came after),
+    /// and the draws too with `include_draws`. Returns whether any of it was still queued.
+    bool WaitForWriters(bool include_draws = false);
 
 private:
     enum class Kind : u64 {
@@ -207,6 +211,7 @@ private:
     // Front side.
     u64 write_position{};
     u64 last_writer_position{};
+    u64 last_draw_writer_position{};
     u64 published_local{};
     u64 consumed_cache{};
     /// Words between publishes: small right after a drain, while the back has nothing to do.

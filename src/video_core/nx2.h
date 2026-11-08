@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -13,6 +14,7 @@
 #include <vector>
 
 #include "common/common_types.h"
+#include "common/settings.h"
 
 namespace Tegra {
 
@@ -64,6 +66,26 @@ inline void Nx2MarkCommandListPage(u64 device_address) {
         word.fetch_or(bit, std::memory_order_relaxed);
         g_nx2_has_command_list_pages.store(true, std::memory_order_relaxed);
     }
+}
+
+// Command list pages draws write (storage writes) get copies too, as after dispatches and DMA
+// copies, so their lists read a copy instead of draining the split and flushing the caches:
+// Bananza's culling draws fill ~46 lists a frame, and each flush waited for the host GPU (20 to
+// 30 fps on an Arc A770). The copies are recorded at the next dispatch or DMA copy, outside the
+// render pass; a list read before then takes the flush, and reads of GPU-written lists also
+// wait for the 3D methods sent before them. On for Bananza; EDEN_NX2_DRAW_LIST_COPIES=0 turns
+// it off, =1 turns it on for every title.
+[[nodiscard]] inline bool Nx2DrawListCopies() {
+    static const int forced = [] {
+        const char* value = std::getenv("EDEN_NX2_DRAW_LIST_COPIES");
+        return value == nullptr ? -1 : (value[0] == '0' ? 0 : 1);
+    }();
+    if (forced != -1) {
+        return forced == 1;
+    }
+    // Checked on each call: another title can be booted without restarting the emulator.
+    constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
+    return Settings::GetCurrentProgramID() == DonkeyKongBananzaProgramId;
 }
 
 [[nodiscard]] inline bool Nx2IsCommandListPage(u64 device_address) {
