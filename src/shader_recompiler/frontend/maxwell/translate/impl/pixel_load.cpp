@@ -34,6 +34,9 @@ void TranslatorVisitor::PIXLD(u64 insn) {
         throw NotImplementedException("Non-zero source register");
     }
     switch (pixld.mode) {
+    case Mode::CovMask:
+        X(pixld.dest_reg, ir.SampleMask());
+        break;
     case Mode::MyIndex:
         X(pixld.dest_reg, ir.SampleId());
         break;

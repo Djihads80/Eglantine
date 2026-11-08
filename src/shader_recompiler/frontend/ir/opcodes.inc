@@ -67,6 +67,7 @@ OPCODE(WorkgroupId,                                         U32x3,              
 OPCODE(LocalInvocationId,                                   U32x3,                                                                                          )
 OPCODE(InvocationId,                                        U32,                                                                                            )
 OPCODE(InvocationInfo,                                      U32,                                                                                            )
+OPCODE(SampleMask,                                          U32,                                                                                            )
 OPCODE(SampleId,                                            U32,                                                                                            )
 OPCODE(IsHelperInvocation,                                  U1,                                                                                             )
 OPCODE(SR_WScaleFactorXY,                                   U32,                                                                                            )

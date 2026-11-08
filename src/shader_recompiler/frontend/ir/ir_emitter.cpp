@@ -393,6 +393,10 @@ U32 IREmitter::InvocationInfo() {
     return Inst<U32>(Opcode::InvocationInfo);
 }
 
+U32 IREmitter::SampleMask() {
+    return Inst<U32>(Opcode::SampleMask);
+}
+
 U32 IREmitter::SampleId() {
     return Inst<U32>(Opcode::SampleId);
 }

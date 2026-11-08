@@ -266,6 +266,7 @@ public:
     Id local_invocation_id{};
     Id invocation_id{};
     Id patch_vertices_in{};
+    Id input_sample_mask{};
     Id sample_id{};
     Id is_helper_invocation{};
     Id subgroup_local_invocation_id{};

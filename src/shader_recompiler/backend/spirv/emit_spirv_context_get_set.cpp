@@ -578,6 +578,11 @@ Id EmitInvocationInfo(EmitContext& ctx) {
     }
 }
 
+Id EmitSampleMask(EmitContext& ctx) {
+    const Id pointer{ctx.OpAccessChain(ctx.input_u32, ctx.input_sample_mask, ctx.u32_zero_value)};
+    return ctx.OpLoad(ctx.U32[1], pointer);
+}
+
 Id EmitSampleId(EmitContext& ctx) {
     return ctx.OpLoad(ctx.U32[1], ctx.sample_id);
 }

@@ -1636,6 +1636,10 @@ void EmitContext::DefineInputs(const IR::Program& program) {
         (stage == Shader::Stage::TessellationControl || stage == Shader::Stage::TessellationEval)) {
         patch_vertices_in = DefineInput(*this, U32[1], false, spv::BuiltIn::PatchVertices);
     }
+    if (info.uses_sample_mask) {
+        input_sample_mask = DefineInput(*this, TypeArray(U32[1], Const(1U)), false,
+                                       spv::BuiltIn::SampleMask);
+    }
     if (info.uses_sample_id) {
         sample_id = DefineInput(*this, U32[1], false, spv::BuiltIn::SampleId);
         if (stage == Stage::Fragment) {
