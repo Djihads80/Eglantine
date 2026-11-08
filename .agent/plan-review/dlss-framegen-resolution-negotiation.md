@@ -581,3 +581,71 @@ STATUS: AGREED
   - `(ii) frame_gen=true, frame_gen_multiplier=2, frame_gen_target_rate=60` (`p0-kokiri-fg-m2-r60` / `p0-kokiri-prof-fg-m2-r60`): Guest `Nx2Frame` `n` median **`39.0` presents/s** (`38.40 FPS`), `vi2` **`38.34 / 38.55 / 38.68 FPS`**, `composite = 8 / 8 / 8 us`, back-thread `compute = 11.8..12.1 ms/s`, present cadence: **not measured**.
 - **Takeaway for Phase 2:** At the ~39 FPS Kokiri baseline on a 360 Hz display (`VSync` period `2.78 ms`), pushing 2 frames per composite (~78 presents/s) does **not** exhaust the swapchain's `free_queue` or back-pressure guest `Nx2Frame` FPS (`composite` remains `7–8 us` on the `vi2` thread because `Composite` runs on the scheduler worker). Phase 2 is cleared to proceed: adding the VRR half-period hold in `PresentThread` (outside both `queue_mutex` and `swapchain_mutex` per Turn 4 R3.2) plus `TryGetRenderFrame()` (Turn 4 R3.3) and the `bf21a9337b` history fix (Turn 4 R2) will space the generated and real frames by `~12.8 ms` (`T_base / 2`) without stalling the guest.
 
+---
+
+## Phase 1, Phase 2 & Phase 3A Implementation & Verification Results — Gemini (2026-11-08 05:16)
+
+All code phases (`Phase 1A`, `Phase 1B`, `Phase 2`, and `Phase 3A`) have been implemented, built (`eglantine.exe`, `eden-cli.exe`, `tests.exe`), unit-tested (`[ocarina_upscale]` 94/94 assertions in 6 test cases; `[nx2_perf]` 11,738,588/11,738,588 assertions in 67 test cases), and verified end-to-end in the Kokiri Forest lab (`-Stay -GameplayWait 45 -Flash 40`, `fogscore.py`, `PresentCadence`, `Nx2Frame`).
+
+### 1. Commits on `local-combined`
+- **`0ebb1f1166`**: `agent: record Phase 0 DLSS and FrameGen measurements`
+- **`c36e38011c`** + **`bfe327139e`**: `video_core: replace Ocarina of Time anti-aliasing with NVIDIA DLSS (DLAA & Super Resolution)` + `renderer_vulkan: exclude occlusion-query proxy draw from OoT DLSS jitter`
+  - Ported `175c56bafa` (`nvidia_dlss` setting, Streamline v2.14.16 wrapper in `src/video_core/vulkan_common/streamline.cpp`, `UpscaleEngine` in `src/video_core/renderer_vulkan/present/upscale.cpp`, and Ocarina of Time compute pass hook in `src/video_core/engines/kepler_compute.cpp` + `src/video_core/renderer_vulkan/vk_rasterizer.cpp`).
+  - Extended to support **both** Phase 1A (`2560x1440 -> 2560x1440` DLAA with `"Max Resolution (built-in)"` ON, `sl::DLSSMode::eDLAA`, `sl::DLSSPreset::ePresetK`, matching `native_key = 0xda6df3e54c716df2` / `shader_hash = 0x9dfd3ff9ed9cb72a` / `0x6bd913e1f34e83eb`) **and** Phase 1B (`1920x1080 -> 2560x1440` DLSS Super Resolution Quality with `"Max Resolution (built-in)"` OFF, `sl::DLSSMode::eMaxQuality`, `sl::DLSSPreset::ePresetK`, matching `native_key = 0x6f9367bd41dc0b58` / `shader_hash = 0xcf806c2846075a1f`), plus `InputPass` matching `native_key = 0x42593194bb0b2b32` / `shader_hash = 0xa2fcaa95c5a162f3`.
+  - Enforced `D2` (keeping all 4 post-tonemap compute passes active) and `D3` (excluding both `PrimitiveTopology::Points` and `sample_query_only` (`color_mask_common != 0 && rt_control.count == 1 && !zeta_enable && sample_counter_enable != 0 && rt[0].format == PixelFormat::R8_UNORM && rt[0].width <= 64 && rt[0].height <= 64`) from Halton sub-pixel camera jitter in `RasterizerVulkan::UpdateDynamicStates` so sun/corona occlusion queries are never displaced).
+  - Relaxed `source_image->Width() >= dest_image->Width()` to `>` in `RasterizerVulkan::CameraMotionUpscale` so both `1920x1080 -> 2560x1440` (SR) and `2560x1440 -> 2560x1440` (DLAA) execute cleanly.
+- **`46a64c290c`**: `present: preserve FSR3 temporal history and correct motion interpolation`
+  - Ported `bf21a9337b` across `src/video_core/host_shaders/fsr3_frame_interpolation.comp`, `src/video_core/renderer_vulkan/present/frame_gen.cpp`, `src/video_core/renderer_vulkan/present/fsr3_frame_gen.cpp`, and `src/video_core/renderer_vulkan/present/fsr3_frame_gen.h`.
+- **`79da53c6be`**: `renderer_vulkan: add non-blocking TryGetRenderFrame and VRR half-period present pacing`
+  - Implemented `PresentManager::TryGetRenderFrame()` (`src/video_core/renderer_vulkan/vk_present_manager.cpp`) so `RendererVulkan::Composite` skips frame generation for a composite rather than blocking `vi2` if `free_queue` has `< 2` frames.
+  - Added `Frame::is_generated`, real-to-real EMA `ema_base_interval_ns` (`alpha = 0.2`, clamped to `[8 ms, 50 ms]`, reset if `dt_real > 100 ms`), and VRR half-period pacing in `PresentManager::PresentThread` outside both `queue_mutex` and `swapchain_mutex` (using `std::this_thread::sleep_until(target - 1.5 ms)` + `_mm_pause()` spin to hold the real frame until `t_gen_present + 0.5 * ema_base_interval_ns` unless `present_queue.size() > 1`).
+  - Added once-per-second `PresentCadence:` logging (`n`, `real`, `gen`, `dt_p50`, `dt_p10`, `dt_p90`, `dt_max`, `base_ms`) in `PresentManager::PresentThread`.
+- **`ab3d29175b`**: `vulkan_common: add EDEN_NX2_DLSSG_PROBE Streamline feature and state probe`
+  - Added opt-in `EDEN_NX2_DLSSG_PROBE=1` diagnostics in `src/video_core/vulkan_common/streamline.cpp` (`slGetFeatureRequirements` + `slGetFeatureVersion` for `kFeatureDLSS_G`, `kFeatureReflex`, `kFeaturePCL`; `slIsFeatureSupported` + `slGetFeatureFunction("slDLSSGGetState")` + `slDLSSGGetState` dump in `Streamline::AttachDevice`), keeping default `nvidia_dlss=true` isolated from `sl.dlss_g`'s `vkCreateSwapchainKHR` hook until Phase 3B (`D6.1`–`D6.10`).
+  - Deployed signed NVIDIA runtime libraries `NvLowLatencyVk.dll` and `nvngx_dlssg.dll` to `%APPDATA%\eglantine\streamline\nvidia-app\`.
+
+---
+
+### 2. Verification Summary Table (Kokiri Spawn Save, `-Stay -GameplayWait 45 -Flash 40`)
+
+| Phase & Run Directory | Config (`qt-*.ini`) | Streamline / DLSS Log Confirmation | Guest `Nx2Frame` FPS (`n` / `iv_p50` ms) & `vi2` `composite` | `PresentCadence` (`n`, `real`/`gen`, `dt_p50` / `dt_p10` / `dt_p90` ms) | `fogscore.py` ($\ge 0.35$) | `-Flash 40` (`luma` median / stdev / outliers; `cg` outliers) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Phase 1B (DLSS SR `1080p -> 1440p`)**<br>`.agent/lab/runs/p1b-dlss-sr` | `qt-kokiri-dlss-sr.ini`<br>(`Max Resolution` OFF, `nvidia_dlss=true`, `frame_gen=false`) | `NVIDIA DLSS (Streamline): 1920x1080 -> 2560x1440, mode 3, preset 11`<br>`Anti-aliasing replaced by NVIDIA DLSS: 1920x1080 -> 2560x1440` | **`39..41` FPS** (`iv_p50 = 24.45..26.42 ms`), `vi2`: `38.93 FPS`, `composite = 8 us` | `n=39..41` (`real=39..41, gen=0`, `dt_p50 = 24.5..26.4 ms`) | **`0.494`** (`luma = 0.4352`) | `median=0.4401`, `stdev=0.0061`, **`outliers=0`** (`cg outliers=0`) |
+| **Phase 1A (DLAA `1440p -> 1440p`)**<br>`.agent/lab/runs/p1a-dlss-dlaa` | `qt-kokiri-dlss-dlaa.ini`<br>(`Max Resolution` ON, `nvidia_dlss=true`, `frame_gen=false`) | `NVIDIA DLSS (Streamline): 2560x1440 -> 2560x1440, mode 6, preset 11`<br>`Anti-aliasing replaced by NVIDIA DLSS: 2560x1440 -> 2560x1440` | **`39..41` FPS** (`iv_p50 = 24.50..26.30 ms`), `vi2`: `38.97 FPS`, `composite = 8 us` | `n=39..41` (`real=39..41, gen=0`, `dt_p50 = 24.5..26.3 ms`) | **`0.495`** (`luma = 0.4325`) | `median=0.4335`, `stdev=0.0043`, **`outliers=0`** (`cg outliers=0`) |
+| **Phase 2 (VRR FrameGen `2x`)**<br>`.agent/lab/runs/p2-fg-vrr` | `qt-kokiri-fg-m2-r0.ini`<br>(`Max Resolution` OFF, `nvidia_dlss=false`, `frame_gen=true, m=2, r=0`) | *(Native spatial upscaler + FSR3 FrameGen 2x)* | **`39..41` FPS** (`iv_p50 = 24.67..26.61 ms`), `vi2`: `38.49 FPS`, `composite = 20 us` | **`n=78..80`** (`real=39..40, gen=39..40`, **`dt_p50 = 12.71..12.89 ms`**, `dt_p10 = 10.13..10.31 ms`, `dt_p90 = 13.92..14.60 ms`) | **`0.496`** (`luma = 0.4287`) | `median=0.4313`, `stdev=0.0062`, **`outliers=0`** (`cg outliers=0`) |
+| **Phase 1B + Phase 2 (`DLSS SR + VRR FG 2x`)**<br>`.agent/lab/runs/p2-dlss-sr-fg` | `qt-kokiri-dlss-sr-fg.ini`<br>(`Max Resolution` OFF, `nvidia_dlss=true`, `frame_gen=true, m=2, r=0`) | `NVIDIA DLSS (Streamline): 1920x1080 -> 2560x1440, mode 3, preset 11` + `PresentCadence` 2x | **`39..41` FPS** (`iv_p50 = 24.75..26.06 ms`), `vi2`: `39.11 FPS`, `composite = 20 us` | **`n=78..80`** (`real=39..40, gen=39..40`, **`dt_p50 = 12.76..13.10 ms`**, `dt_p10 = 10.73..10.99 ms`, `dt_p90 = 13.69..14.17 ms`) | **`0.499`** (`luma = 0.4394`) | `median=0.4375`, `stdev=0.0028`, **`outliers=0`** (`cg outliers=0`) |
+| **Phase 1A + Phase 2 (`DLAA + VRR FG 2x`)**<br>`.agent/lab/runs/p2-dlss-dlaa-fg` | `qt-kokiri-dlss-dlaa-fg.ini`<br>(`Max Resolution` ON, `nvidia_dlss=true`, `frame_gen=true, m=2, r=0`) | `NVIDIA DLSS (Streamline): 2560x1440 -> 2560x1440, mode 6, preset 11` + `PresentCadence` 2x | **`38..40` FPS** (`iv_p50 = 25.53..26.28 ms`), `vi2`: `38.22 FPS`, `composite = 21 us` | **`n=77..79`** (`real=39..40, gen=38..40`, **`dt_p50 = 12.97..13.32 ms`**, `dt_p10 = 9.70..10.73 ms`, `dt_p90 = 14.18..14.66 ms`) | **`0.506`** (`luma = 0.4420`) | `median=0.4310`, `stdev=0.0048`, **`outliers=0`** (`cg outliers=0`) |
+
+---
+
+### 3. Phase 3A Probe Results (`.agent/lab/runs/p3a-dlssg-probe`, `EDEN_NX2_DLSSG_PROBE=1`)
+
+Running on the user's **NVIDIA GeForce RTX 5090** (driver `595.59.0.0`, internal `617.14`), Streamline v2.14.16 OTA discovery loaded all 5 plugins from `C:\ProgramData\NVIDIA\NGX\models\` (`sl_common_0`, `sl_dlss_0`, `sl_dlss_g_0`, `sl_reflex_0`, `sl_pcl_0`, version `2.14.16` / `134672`) plus `NvLowLatencyVk.dll` and `nvngx_dlssg.dll` (`v310.5.3` / `20318480`) from `%APPDATA%\eglantine\streamline\nvidia-app\`:
+
+1. **`slGetFeatureRequirements` & `slGetFeatureVersion` (`streamline.cpp:365`):**
+   - **`kFeatureDLSS_G`:**
+     - `req_result=0 ver_result=0 sl=2.14.16 ngx=310.9.16 flags=0x1e (vk_supported=true) queues(gfx=1,comp=2,of=1) tags=4`
+     - `inst_ext=[VK_KHR_external_semaphore_capabilities,VK_KHR_get_physical_device_properties2,VK_KHR_external_memory_capabilities]`
+     - `dev_ext=[VK_NV_optical_flow,VK_KHR_external_semaphore,VK_KHR_timeline_semaphore,VK_KHR_maintenance4,VK_KHR_external_memory_win32,VK_KHR_external_memory,VK_KHR_push_descriptor,VK_NVX_binary_import,VK_KHR_external_semaphore_win32,VK_NVX_image_view_handle,VK_KHR_buffer_device_address]`
+     - `feat12=[timelineSemaphore,descriptorIndexing,bufferDeviceAddress] feat13=[synchronization2]`
+   - **`kFeatureReflex`:**
+     - `req_result=0 ver_result=0 sl=2.14.1 ngx=0.0.0 flags=0x7 (vk_supported=true) queues(gfx=0,comp=0,of=0) tags=0`
+     - `inst_ext=[] dev_ext=[VK_NV_low_latency2,VK_NV_low_latency] feat12=[] feat13=[]`
+   - **`kFeaturePCL`:**
+     - `req_result=0 ver_result=0 sl=2.14.1 ngx=0.0.0 flags=0x7 (vk_supported=true) queues(gfx=0,comp=0,of=0) tags=0 inst_ext=[] dev_ext=[] feat12=[] feat13=[]`
+
+2. **`AttachDevice` & `slDLSSGGetState` (`streamline.cpp:544-592`):**
+   - `Streamline AttachDevice support probe: kFeatureDLSS_G=0 kFeatureReflex=0 kFeaturePCL=0` (`sl::Result::eOk` for all three!)
+   - `dlss_gEntry.cpp:1440[slOnPluginStartup] Host SDK version: 2.14.16, platform: Vulkan (VSync with FG: not supported)`
+   - `dlfg.cpp:1042[checkModelVersion] ModelVersion parameter indicates FG v2 or later (0x200)`
+   - `dlss_gEntry.cpp:1504[slOnPluginStartup] Multi-frame supported, max generated frames 5 (SL Plugin supports 5, NGX feature supports 5)`
+   - `flipMetering.cpp:96[initialize] VK_NV_present_metering available`
+   - `dlfg.cpp:171[checkDynamicMFGSupport] Dynamic MFG not supported: driver missing required components`
+   - `Streamline slDLSSGGetState probe: result=0 status=0x0 max_gen=5 vsync_supported=0 dyn_mfg_supported=0 min_dim=100 vram_bytes=0`
+
+3. **Key Phase 3A Conclusions (Confirming `P2`, `D6`, and `R3`):**
+   - **Dynamic MFG (`eDynamic`) is unsupported by the current NVIDIA Vulkan driver (`dyn_mfg_supported=0`, `"Dynamic MFG not supported: driver missing required components"`), and VSync with FG is unsupported on Vulkan (`vsync_supported=0`).**
+   - **Fixed Multi-Frame Generation (`eOn`) is supported up to `max_gen=5` (`2x..6x` total frames) with hardware `VK_NV_present_metering` flip metering available on the RTX 5090.**
+   - Loading `kFeatureDLSS_G` unconditionally hooks `vkCreateSwapchainKHR` (`Requesting swap-chain (1280,720) with 3 buffers, using 6 buffers`) and requires full Phase 3B integration (`D6.1`–`D6.10`: `slGetVulkanInfo`, optical-flow/compute queues, `VK_NV_optical_flow`, `VK_NV_low_latency2`, `slReflexSetOptions`, `slPCLSetMarker`, and `kBufferTypeHUDLessColor` / `kBufferTypeUIColorAndAlpha` / `kBufferTypeDepth` / `kBufferTypeMotionVectors` tagging at present). Keeping `kFeatureDLSS_G` gated behind `EDEN_NX2_DLSSG_PROBE=1` while shipping Phase 1A + Phase 1B + Phase 2 gives the user immediate **DLSS Super Resolution / DLAA (Preset K)** + **~78–80 displayed FPS (`dt_p50 ≈ 12.8 ms`)** on their 360 Hz G-Sync display today.
+
+

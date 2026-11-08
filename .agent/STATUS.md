@@ -1,9 +1,16 @@
 # STATUS (shared, local-only; update it whenever a result changes the picture)
 
-Last updated: 2026-11-08 01:00 local (merged `upstream/nx2` `74db237124` and `upstream/nx2-experimental` `797461a8b6` into `local-combined`).
+Last updated: 2026-11-08 05:17 local (Phase 0, Phase 1A/1B NVIDIA DLSS DLAA & Super Resolution, Phase 2 VRR FrameGen 2x pacing + FSR3 history fix, and Phase 3A Streamline DLSS-G probe landed and verified on `local-combined`).
 
 ## Goal
 Play The Legend of Zelda: Ocarina of Time (`0400486024DEC000`) at a locked 60 FPS without crashes.
+
+## DLSS (DLAA + Super Resolution) & VRR FrameGen 2x COMPLETED 2026-11-08 ~05:17 (`0ebb1f1166`..`ab3d29175b`)
+- **Plan & Results:** `.agent/plan-review/dlss-framegen-resolution-negotiation.md`.
+- **Phase 0 (`0ebb1f1166`):** Measured Kokiri spawn baseline (`39.0` FPS MaxRes OFF vs `38.0` FPS MaxRes ON; `EDEN_NX2_COOP_HMMA=0` zero effect on gameplay compute time `12.5 ms/s`; `frame_gen=true` zero guest back-pressure) and traced end-of-frame compute + HUD ordering (`seq 2781..2784` 4-pass compute upscaler runs *before* HUD quads `seq 2785..2844`, and `OutputPass` switches between `0x6f9367bd41dc0b58` for `1080p -> 1440p` and `0xda6df3e54c716df2` for `1440p -> 1440p`).
+- **Phase 1A & 1B (`c36e38011c`, `bfe327139e`):** Ported `175c56bafa` (`nvidia_dlss` setting, Streamline v2.14.16 wrapper, `UpscaleEngine`, OoT camera-motion upscale + Halton jitter) and extended it to support both **Phase 1B (`1920x1080 -> 2560x1440` DLSS Super Resolution Quality `eMaxQuality`, Preset K, Max Resolution OFF)** and **Phase 1A (`2560x1440 -> 2560x1440` DLAA `eDLAA`, Preset K, Max Resolution ON)**, keeping all 4 compute passes active (`D2`) and excluding point topology + `sample_query_only` sun-occlusion proxy draws from jitter (`D3`). Verified in `p1b-dlss-sr` (`fogscore = 0.494`, `flash outliers = 0`, `39..41` FPS) and `p1a-dlss-dlaa` (`fogscore = 0.495`, `flash outliers = 0`, `39..41` FPS).
+- **Phase 2 (`46a64c290c`, `79da53c6be`):** Ported `bf21a9337b` (preserving FSR3 optical-flow luma history across resize/swapchain recreation and fixing motion vector interpolation polarity) and added `PresentManager::TryGetRenderFrame()` + VRR half-period present pacing (`t_gen_present + 0.5 * ema_base_interval_ns` outside `queue_mutex` and `swapchain_mutex`) + `PresentCadence:` logging in `vk_present_manager.cpp`. Verified in `p2-fg-vrr`, `p2-dlss-sr-fg`, and `p2-dlss-dlaa-fg`: **`PresentCadence: n=78..80 real=39..40 gen=39..40 dt_p50=12.71..13.25 ms`** (~78–80 displayed FPS on 360 Hz VRR), `fogscore = 0.496..0.506`, `flash outliers = 0`.
+- **Phase 3A (`ab3d29175b`):** Added opt-in `EDEN_NX2_DLSSG_PROBE=1` in `streamline.cpp` and deployed signed `NvLowLatencyVk.dll` + `nvngx_dlssg.dll` to `%APPDATA%\eglantine\streamline\nvidia-app\`. Verified on RTX 5090 (`p3a-dlssg-probe`): `kFeatureDLSS_G`, `kFeatureReflex`, and `kFeaturePCL` all report `sl::Result::eOk (0)`; `slDLSSGGetState` reports `max_gen=5 vsync_supported=0 dyn_mfg_supported=0` (`VK_NV_present_metering` available; driver reports Dynamic MFG unsupported on Vulkan).
 
 ## FORK SWITCH PREPARED 2026-11-08 (not pushed)
 - README `a5ac8fdc57`: "Switching to this fork" section (download from the fork's Releases, shared `%APPDATA%\eglantine`, shader cache rebuilt per switch, portable `user` folder for side-by-side without copying `config`, which holds absolute paths, build/remote commands, report here). `84b60c9da8`: docs name the fork's `nx2` as the public branch.
