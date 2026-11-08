@@ -747,6 +747,16 @@ void VisitUsages(Info& info, IR::Inst& inst) {
         info.used_storage_buffer_types |= IR::Type::U64 | IR::Type::U32x2;
         info.uses_int64_bit_atomics = true;
         break;
+    case IR::Opcode::BindlessImageAtomicUMax64:
+    case IR::Opcode::BoundImageAtomicUMax64:
+    case IR::Opcode::ImageAtomicUMax64: {
+        const auto flags{inst.Flags<IR::TextureInstInfo>()};
+        info.uses_int64 = true;
+        info.uses_atomic_image_u64 = true;
+        info.uses_image_1d |=
+            flags.type == TextureType::Color1D || flags.type == TextureType::ColorArray1D;
+        break;
+    }
     case IR::Opcode::BindlessImageAtomicIAdd32:
     case IR::Opcode::BindlessImageAtomicSMin32:
     case IR::Opcode::BindlessImageAtomicUMin32:

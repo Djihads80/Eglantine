@@ -254,6 +254,7 @@ public:
 
     Id image_buffer_type{};
     Id image_u32{};
+    Id image_u64{};
 
     std::array<UniformDefinitions, Info::MAX_CBUFS> cbufs{};
     std::array<StorageDefinitions, Info::MAX_SSBOS> ssbos{};

@@ -2026,6 +2026,13 @@ Value IREmitter::ImageAtomicUMax(const Value& handle, const Value& coords, const
     return Inst(op, Flags{info}, handle, coords, value);
 }
 
+Value IREmitter::ImageAtomicUMax64(const Value& handle, const Value& coords, const U64& value,
+                                  TextureInstInfo info) {
+    const Opcode op{handle.IsImmediate() ? Opcode::BoundImageAtomicUMax64
+                                        : Opcode::BindlessImageAtomicUMax64};
+    return Inst(op, Flags{info}, handle, coords, value);
+}
+
 Value IREmitter::ImageAtomicIMax(const Value& handle, const Value& coords, const Value& value,
                                  bool is_signed, TextureInstInfo info) {
     return is_signed ? ImageAtomicSMax(handle, coords, value, info)

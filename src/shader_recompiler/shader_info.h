@@ -155,6 +155,7 @@ enum class ImageFormat : u32 {
     R32_UINT,
     R32G32_UINT,
     R32G32B32A32_UINT,
+    R64_UINT,
 };
 
 enum class Interpolation {
@@ -357,6 +358,7 @@ struct Info {
     /// is a candidate and its bound length (not an NVN size word) limits the range.
     bool native_global_bounds{};
     bool uses_atomic_image_u32{};
+    bool uses_atomic_image_u64{};
     bool uses_shadow_lod{};
     bool uses_rescaling_uniform{};
     bool uses_cbuf_indirect{};

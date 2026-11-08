@@ -14,6 +14,7 @@
 #include "common/bit_util.h"
 #include "common/literals.h"
 #include "common/settings.h"
+#include "shader_recompiler/exception.h"
 #include "video_core/renderer_opengl/gl_device.h"
 #include "video_core/renderer_opengl/gl_shader_manager.h"
 #include "video_core/renderer_opengl/gl_state_tracker.h"
@@ -420,6 +421,8 @@ OGLTexture MakeImage(const VideoCommon::ImageInfo& info, GLenum gl_internal_form
 
 [[nodiscard]] GLenum ShaderFormat(Shader::ImageFormat format) {
     switch (format) {
+    case Shader::ImageFormat::R64_UINT:
+        throw Shader::NotImplementedException("64-bit image atomics require the Vulkan backend");
     case Shader::ImageFormat::Typeless:
         break;
     case Shader::ImageFormat::R8_SINT:

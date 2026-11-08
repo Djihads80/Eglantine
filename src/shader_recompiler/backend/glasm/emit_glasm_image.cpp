@@ -206,6 +206,8 @@ std::string_view FormatStorage(ImageFormat format) {
         return "S16";
     case ImageFormat::R32_UINT:
         return "U32";
+    case ImageFormat::R64_UINT:
+        throw NotImplementedException("GLASM 64-bit image storage");
     case ImageFormat::R32G32_UINT:
         return "U32X2";
     case ImageFormat::R32G32B32A32_UINT:
@@ -816,6 +818,18 @@ void EmitBindlessImageAtomicUMin32(EmitContext&) {
 
 void EmitBindlessImageAtomicSMax32(EmitContext&) {
     throw LogicError("Unreachable instruction");
+}
+
+void EmitBindlessImageAtomicUMax64(EmitContext&) {
+    throw NotImplementedException("64-bit image atomics require the Vulkan backend");
+}
+
+void EmitBoundImageAtomicUMax64(EmitContext&) {
+    throw NotImplementedException("64-bit image atomics require the Vulkan backend");
+}
+
+void EmitImageAtomicUMax64(EmitContext&) {
+    throw NotImplementedException("64-bit image atomics require the Vulkan backend");
 }
 
 void EmitBindlessImageAtomicUMax32(EmitContext&) {

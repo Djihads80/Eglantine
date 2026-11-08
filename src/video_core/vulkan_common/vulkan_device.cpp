@@ -270,6 +270,7 @@ VkFormatFeatureFlags GetFormatFeatures(VkFormatProperties properties, FormatType
         VK_FORMAT_R32G32_SFLOAT,
         VK_FORMAT_R32G32_SINT,
         VK_FORMAT_R32G32_UINT,
+        VK_FORMAT_R64_UINT,
         VK_FORMAT_R32_SFLOAT,
         VK_FORMAT_R32_SINT,
         VK_FORMAT_R32_UINT,
@@ -1548,6 +1549,14 @@ void Device::RemoveUnsuitableExtensions() {
                                      features.shader_atomic_int64.shaderSharedInt64Atomics;
     RemoveExtensionFeatureIfUnsuitable(extensions.shader_atomic_int64, features.shader_atomic_int64,
                                        VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME);
+
+    extensions.shader_image_atomic_int64 = features.features.shaderInt64 &&
+                                          features.shader_image_atomic_int64.shaderImageInt64Atomics;
+    RemoveExtensionFeatureIfUnsuitable(extensions.shader_image_atomic_int64,
+                                       features.shader_image_atomic_int64,
+                                       VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME);
+    // Sparse 64-bit image atomics are not used.
+    features.shader_image_atomic_int64.sparseImageInt64Atomics = false;
 
     // VK_EXT_shader_demote_to_helper_invocation
     extensions.shader_demote_to_helper_invocation =

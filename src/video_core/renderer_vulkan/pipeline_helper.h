@@ -39,6 +39,7 @@ using Shader::Backend::SPIRV::NUM_TEXTURE_AND_IMAGE_SCALING_WORDS;
         return PixelFormat::R16_SINT;
     case Shader::ImageFormat::R32_UINT:
         return PixelFormat::R32_UINT;
+    case Shader::ImageFormat::R64_UINT: // Same 64-bit texel footprint; StorageView selects R64_UINT.
     case Shader::ImageFormat::R32G32_UINT:
         return PixelFormat::R32G32_UINT;
     case Shader::ImageFormat::R32G32B32A32_UINT:

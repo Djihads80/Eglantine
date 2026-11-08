@@ -73,6 +73,8 @@ spv::ImageFormat GetImageFormat(ImageFormat format) {
         return spv::ImageFormat::R16ui;
     case ImageFormat::R16_SINT:
         return spv::ImageFormat::R16i;
+    case ImageFormat::R64_UINT:
+        return spv::ImageFormat::R64ui;
     case ImageFormat::R32_UINT:
         return spv::ImageFormat::R32ui;
     case ImageFormat::R32G32_UINT:
@@ -552,6 +554,10 @@ Id EmitContext::BitOffset16(const IR::Value& offset) {
 }
 
 void EmitContext::DefineCommonTypes(const Info& info) {
+    if (info.uses_atomic_image_u64 &&
+        (!profile.support_int64 || !profile.support_image_int64_atomics)) {
+        throw NotImplementedException("64-bit image atomics require VK_EXT_shader_image_atomic_int64");
+    }
     void_id = TypeVoid();
 
     U1 = Name(TypeBool(), "u1");
@@ -1594,6 +1600,9 @@ void EmitContext::DefineTextures(const Info& info, u32& binding, u32& scaling_in
         ++binding;
         ++scaling_index;
     }
+    if (info.uses_atomic_image_u64) {
+        image_u64 = TypePointer(spv::StorageClass::Image, U64);
+    }
     if (info.uses_atomic_image_u32) {
         image_u32 = TypePointer(spv::StorageClass::Image, U32[1]);
     }
@@ -1602,7 +1611,8 @@ void EmitContext::DefineTextures(const Info& info, u32& binding, u32& scaling_in
 void EmitContext::DefineImages(const Info& info, u32& binding, u32& scaling_index) {
     images.reserve(info.image_descriptors.size());
     for (const ImageDescriptor& desc : info.image_descriptors) {
-        const Id sampled_type{desc.is_integer ? U32[1] : F32[1]};
+        const Id sampled_type{desc.format == ImageFormat::R64_UINT ? U64
+                             : desc.is_integer ? U32[1] : F32[1]};
         const Id image_type{ImageType(*this, desc, sampled_type)};
         const Id pointer_type{TypePointer(spv::StorageClass::UniformConstant, image_type)};
         const Id id{AddGlobalVariable(pointer_type, spv::StorageClass::UniformConstant)};

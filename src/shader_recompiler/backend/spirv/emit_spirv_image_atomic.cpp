@@ -62,6 +62,25 @@ Id EmitImageAtomicUMax32(EmitContext& ctx, IR::Inst* inst, const IR::Value& inde
     return ImageAtomicU32(ctx, inst, index, coords, value, &Sirit::Module::OpAtomicUMax);
 }
 
+Id EmitImageAtomicUMax64(EmitContext& ctx, IR::Inst* inst, const IR::Value& index,
+                         Id coords, Id value) {
+    if (!index.IsImmediate() || index.U32() != 0) {
+        throw NotImplementedException("Image indexing");
+    }
+    const auto info{inst->Flags<IR::TextureInstInfo>()};
+    const Id pointer{ctx.OpImageTexelPointer(ctx.image_u64, Image(ctx, info), coords, ctx.Const(0U))};
+    const auto [scope, semantics]{AtomicArgs(ctx)};
+    return ctx.OpAtomicUMax(ctx.U64, pointer, scope, semantics, value);
+}
+
+Id EmitBindlessImageAtomicUMax64(EmitContext&) {
+    throw NotImplementedException("Unresolved bindless U64 image atomic");
+}
+
+Id EmitBoundImageAtomicUMax64(EmitContext&) {
+    throw NotImplementedException("Unresolved bound U64 image atomic");
+}
+
 Id EmitImageAtomicInc32(EmitContext&, IR::Inst*, const IR::Value&, Id, Id) {
     // TODO: This is not yet implemented
     throw NotImplementedException("SPIR-V Instruction");
