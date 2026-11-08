@@ -152,9 +152,43 @@ struct AcquireStats {
     std::array<std::atomic<u64>, 4> suspend_ns{};
     std::array<std::atomic<u64>, 4> resume_drains{}; ///< Drains polling a suspended acquire
     std::array<std::atomic<u64>, 4> resume_drain_ns{};
+    std::array<std::atomic<u64>, 4> narrow{}; ///< Of the drains, met before the back ran out
     std::atomic<u64> window_start{};
 };
 AcquireStats g_acquire_stats;
+
+// EDEN_NX2_ACQ_NARROW=1: an acquire that would drain the back waits only until the back has run
+// far enough for AcquireMetWithoutDrain to hold (polled while the back works), not for all that
+// was sent; when the back runs out of work first, it drains as before. With the split on Mario
+// Kart World, ~80% of the front's drain time went to acquires on words compute QMDs release,
+// and ~92% of those were met once drained.
+bool AcquireNarrow() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_ACQ_NARROW");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+// EDEN_NX2_ACQ_VERIFY=1: every acquire the front lets pass without draining the back is checked
+// on the back where it stands in the ring (the word flushed first): MISMATCH when the word does
+// not meet it there, counted per way it passed and logged for the first ones.
+enum class VerifyPath : u32 { Ledger, QmdSkip, Narrow, Resume, Count };
+constexpr std::array<const char*, static_cast<size_t>(VerifyPath::Count)> verify_names{
+    "ledger", "QMD skip", "narrow", "resume"};
+struct AcquireVerify {
+    std::array<std::atomic<u64>, static_cast<size_t>(VerifyPath::Count)> checked{};
+    std::array<std::atomic<u64>, static_cast<size_t>(VerifyPath::Count)> mismatches{};
+};
+AcquireVerify g_acquire_verify;
+
+bool AcquireVerifyEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_ACQ_VERIFY");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
 
 // 0: a puller release of this channel, 1: of another channel, 2: a compute QMD release, 3: none
 // the front saw (the CPU, 3D reports). `met`: the recorded release meets the acquire.
@@ -205,10 +239,12 @@ void ReportAcquireStats() {
         const u64 suspend_ns = take(stats.suspend_ns[i]);
         const u64 resume_drains = take(stats.resume_drains[i]);
         const u64 resume_drain_ns = take(stats.resume_drain_ns[i]);
-        line += fmt::format(" | {}: {:.0f} drains ({:.0f} met by the release) {:.1f} ms, {:.0f} "
-                            "suspended {:.1f} ms, {:.0f} resume drains {:.1f} ms",
+        const u64 narrow = take(stats.narrow[i]);
+        line += fmt::format(" | {}: {:.0f} drains ({:.0f} met by the release, {:.0f} narrow) {:.1f} "
+                            "ms, {:.0f} suspended {:.1f} ms, {:.0f} resume drains {:.1f} ms",
                             names[i], static_cast<double>(drains) / seconds,
                             static_cast<double>(met) / seconds,
+                            static_cast<double>(narrow) / seconds,
                             static_cast<double>(drain_ns) / 1e6 / seconds,
                             static_cast<double>(suspends) / seconds,
                             static_cast<double>(suspend_ns) / 1e6 / seconds,
@@ -216,6 +252,58 @@ void ReportAcquireStats() {
                             static_cast<double>(resume_drain_ns) / 1e6 / seconds);
     }
     LOG_INFO(HW_GPU, "Split acquires that drained, per second over {:.1f} s{}", seconds, line);
+    if (AcquireVerifyEnabled()) {
+        std::string verify;
+        for (size_t i = 0; i < verify_names.size(); ++i) {
+            verify += fmt::format(" | {}: {} checked, {} MISMATCH", verify_names[i],
+                                  g_acquire_verify.checked[i].load(std::memory_order_relaxed),
+                                  g_acquire_verify.mismatches[i].load(std::memory_order_relaxed));
+        }
+        LOG_INFO(HW_GPU, "Split acquire verify, since boot{}", verify);
+    }
+}
+
+// The acquire's word where the back reaches it in the ring (EDEN_NX2_ACQ_VERIFY).
+void VerifyOnBack(DmaPusher& dma_pusher, const Puller::PendingAcquire& acquire, VerifyPath path) {
+    if (!AcquireVerifyEnabled() || !VideoCommon::GpuSplit::Get().Active()) {
+        return;
+    }
+    VideoCommon::GpuSplit::Get().Defer([dma = &dma_pusher, address = acquire.address,
+                                        value = acquire.value, operation = acquire.operation,
+                                        path] {
+        const Puller::PendingAcquire check{
+            .address = address,
+            .value = value,
+            .operation = operation,
+            .since = {},
+            .last_fences = {},
+            .reported = false,
+        };
+        const u32 word = ReadSemaphoreWord(*dma, address);
+        const auto index = static_cast<size_t>(path);
+        g_acquire_verify.checked[index].fetch_add(1, std::memory_order_relaxed);
+        if (!check.Matches(word)) {
+            const u64 count =
+                g_acquire_verify.mismatches[index].fetch_add(1, std::memory_order_relaxed);
+            if (count < 16) {
+                LOG_WARNING(HW_GPU,
+                            "Split acquire MISMATCH ({}): {:#x} op {} value {:#x}, the word is "
+                            "{:#x} where the back reaches the acquire",
+                            verify_names[index], address, operation, value, word);
+            }
+        }
+    });
+}
+
+struct NarrowContext {
+    DmaPusher* dma_pusher;
+    const Puller::PendingAcquire* acquire;
+};
+
+bool NarrowMet(void* context) {
+    const auto& narrow = *static_cast<const NarrowContext*>(context);
+    return AcquireMetWithoutDrain(*narrow.dma_pusher, narrow.acquire->address,
+                                  narrow.acquire->value, CompareOf(narrow.acquire->operation));
 }
 
 // EDEN_NX2_QMD_ACQUIRE_SKIP=1: an acquire on a word compute QMDs release does not drain the back
@@ -250,6 +338,7 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     if (AcquireMetWithoutDrain(dma_pusher, pending_acquire->address, pending_acquire->value,
                                CompareOf(pending_acquire->operation))) {
         CountLedgerAcquire();
+        VerifyOnBack(dma_pusher, *pending_acquire, VerifyPath::Resume);
         return true;
     }
     // A release latched the wait (Nx2SemaphoreWaiters): the back has run it, so resume without
@@ -500,9 +589,14 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         }
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireChecks, 1);
         if (AcquireMetWithoutDrain(dma_pusher, acquire.address, acquire.value,
-                                   CompareOf(acquire.operation)) ||
-            QmdAcquireSkip(dma_pusher, acquire.address)) {
+                                   CompareOf(acquire.operation))) {
             CountLedgerAcquire();
+            VerifyOnBack(dma_pusher, acquire, VerifyPath::Ledger);
+            return;
+        }
+        if (QmdAcquireSkip(dma_pusher, acquire.address)) {
+            CountLedgerAcquire();
+            VerifyOnBack(dma_pusher, acquire, VerifyPath::QmdSkip);
             return;
         }
         const bool stats = Nx2AcqStats() && VideoCommon::GpuSplit::Get().Active();
@@ -512,14 +606,29 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                                  CompareOf(acquire.operation), stats_met)
                   : -1;
         const u64 drain_start = stats ? SteadyNowNs() : 0;
-        DrainBack();
+        bool narrow_met = false;
+        if (AcquireNarrow() && VideoCommon::GpuSplit::Get().Active()) {
+            NarrowContext context{&dma_pusher, &acquire};
+            narrow_met = VideoCommon::GpuSplit::Get().WaitUntil(
+                &NarrowMet, &context, VideoCommon::Nx2Profile::Zone::DrainAcquire);
+        }
+        if (!narrow_met) {
+            DrainBack();
+        }
         if (stats) {
+            g_acquire_stats.narrow[stats_class].fetch_add(narrow_met ? 1 : 0,
+                                                          std::memory_order_relaxed);
             g_acquire_stats.drains[stats_class].fetch_add(1, std::memory_order_relaxed);
             g_acquire_stats.met[stats_class].fetch_add(stats_met ? 1 : 0,
                                                        std::memory_order_relaxed);
             g_acquire_stats.drain_ns[stats_class].fetch_add(SteadyNowNs() - drain_start,
                                                             std::memory_order_relaxed);
             ReportAcquireStats();
+        }
+        if (narrow_met) {
+            CountLedgerAcquire();
+            VerifyOnBack(dma_pusher, acquire, VerifyPath::Narrow);
+            return;
         }
         if (acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
             return;

@@ -182,6 +182,10 @@ public:
     /// `zone`: the profile zone the wait counts as (SplitWriters without one).
     bool WaitForPosition(u64 position);
     bool WaitForPosition(u64 position, Nx2Profile::Zone zone);
+    /// Front thread: waits while the back works through what was sent until `met(context)`
+    /// holds (true), or until the back has run all of it without that (false, `met` checked
+    /// once more). Returns sooner than Drain when what `met` waits for is not at the end.
+    bool WaitUntil(bool (*met)(void*), void* context, Nx2Profile::Zone zone);
     /// Front thread: the ring position after the last compute or copy work sent.
     [[nodiscard]] u64 WriterPosition() const {
         return last_writer_position;
