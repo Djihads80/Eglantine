@@ -9,11 +9,14 @@
 
 > [!IMPORTANT]
 > **This fork: The Legend of Zelda: Ocarina of Time (Switch 2) is playable here.**
-> No crashes in Kokiri Forest, no brightness flashes since 2026-11-06, normal game speed when the frame rate dips.
-> Not 60 FPS yet: ~36 FPS standing at our lab save's Kokiri Forest spot and 43-45 after a short walk, on an RTX 5090.
+> It includes upstream Eglantine's `nx2-experimental` and adds fixes on top: no crashes in
+> Kokiri Forest, no brightness flashes, correct fog, fixed save thumbnails, much shorter shader
+> stutter and normal game speed when the frame rate dips.
+> Not 60 FPS yet: about 39-41 FPS at the Kokiri Forest spawn point, on an RTX 5090.
 > The goal is a locked 60 FPS, and help is welcome.
 >
-> - [What works, the numbers and the key changes](OOT_STABLE.md)
+> - **[Switching from upstream Eglantine](#switching-to-this-fork)**: download, your data, going back
+> - [Current state: numbers, shader stutter, known issues](OOT_STATE.md)
 > - [How we got here: the method in one page](OOT_WORKFLOW.md)
 > - [Help wanted: open tasks, easiest first](OOT_HELP_WANTED.md)
 > - [Contribute: build, measure, send a change](OOT_CONTRIBUTING.md)
@@ -77,7 +80,50 @@ For information on provided development tooling, see the [Tools directory](./too
 
 ## Download
 
-You can download the latest releases from [here](https://github.com/Djihads80/Eglantine/releases).
+Builds of this fork: [Releases](https://github.com/A-Man-With-A-Plan-dev/Eglantine/releases).
+Upstream Eglantine's builds: [here](https://github.com/Djihads80/Eglantine/releases).
+
+## Switching to this fork
+
+**To play:**
+
+1. Download the latest build from [Releases](https://github.com/A-Man-With-A-Plan-dev/Eglantine/releases)
+   and unzip it into its own folder. Don't unzip it over your upstream Eglantine folder.
+2. Run `eglantine.exe`. It uses the same user folder as upstream Eglantine
+   (`%APPDATA%\eglantine` on Windows), so your keys, firmware, games list, saves, mods and settings
+   are already there. Nothing needs to be copied. Back up your saves (`nand\user\save`) first anyway.
+3. The first time you play each game, its shader cache is rebuilt once. Expect some stutter on
+   that first visit to each area.
+
+**Going back** is the same: run upstream's `eglantine.exe`. Each time you switch builds the shader
+cache of the game you play is rebuilt, because the two builds store it in different formats. If you
+want to keep both builds side by side, make one of them portable: create an empty folder named
+`user` next to its `eglantine.exe` and copy `keys`, `nand`, `load` and `sdmc` into it from
+`%APPDATA%\eglantine`. That build then keeps its own settings, saves and cache in the `user`
+folder. Don't copy `config`: it can still point at the folders in `%APPDATA%\eglantine`, so set
+the settings up again instead.
+
+**To build from source:**
+
+```
+git clone --recursive https://github.com/A-Man-With-A-Plan-dev/Eglantine.git
+```
+
+Or add the fork to an existing upstream clone:
+
+```
+git remote add fork https://github.com/A-Man-With-A-Plan-dev/Eglantine.git
+git fetch fork
+git switch -c fork-nx2 --track fork/nx2
+git submodule update --init --recursive
+```
+
+The build steps are the same as upstream's: see the [General Build Guide](docs/Build.md).
+
+**Reporting problems:** open an [issue here](https://github.com/A-Man-With-A-Plan-dev/Eglantine/issues),
+not on upstream, and say that you use this fork. Include your CPU, GPU, the game, where in the game,
+and `%APPDATA%\eglantine\log\eden_log.txt` from that session. If a game runs worse here than on
+upstream, also try launching it with `EDEN_NX2_PERF_OPT=0` (see [OOT_STATE.md](OOT_STATE.md)).
 
 ## Support
 
