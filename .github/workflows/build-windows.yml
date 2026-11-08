@@ -113,7 +113,7 @@ jobs:
           -DYUZU_USE_BUNDLED_SDL3=ON
           -DENABLE_QT_TRANSLATION=ON
           -DENABLE_UPDATE_CHECKER=OFF
-          -DUSE_DISCORD_PRESENCE=OFF
+          -DUSE_DISCORD_PRESENCE=ON
           -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }}
           -DCMAKE_C_COMPILER_LAUNCHER=sccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
@@ -230,7 +230,7 @@ jobs:
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
             -DENABLE_QT_TRANSLATION=ON
             -DENABLE_UPDATE_CHECKER=OFF \
-            -DUSE_DISCORD_PRESENCE=OFF \
+            -DUSE_DISCORD_PRESENCE=ON \
             -DUSE_CCACHE=ON \
             -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }} \
             -DCMAKE_C_COMPILER=clang \

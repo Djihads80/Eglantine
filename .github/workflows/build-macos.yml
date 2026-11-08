@@ -98,7 +98,7 @@ jobs:
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
             -DENABLE_QT_TRANSLATION=ON
             -DENABLE_UPDATE_CHECKER=OFF \
-            -DUSE_DISCORD_PRESENCE=OFF \
+            -DUSE_DISCORD_PRESENCE=ON \
             -DUSE_CCACHE=ON \
             -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }}
 
