@@ -7,9 +7,9 @@
 #pragma once
 
 #include <algorithm>
-#include <cstdlib>
 #include <array>
 #include <bit>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -20,12 +20,11 @@
 #include <unordered_set>
 #include <vector>
 
-#include "common/container/unordered_map.h"
-#include <boost/container/static_vector.hpp>
 #include <boost/container/small_vector.hpp>
+#include <boost/container/static_vector.hpp>
+#include "common/container/unordered_map.h"
 
 #include "common/common_types.h"
-#include "common/spin_recursive_mutex.h"
 #include "common/div_ceil.h"
 #include "common/literals.h"
 #include "common/lru_cache.h"
@@ -33,12 +32,12 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/slot_vector.h"
+#include "common/spin_recursive_mutex.h"
 #include "video_core/buffer_cache/buffer_base.h"
 #include "video_core/buffer_cache/virtual_range_cache.h"
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/delayed_destruction_ring.h"
 #include "video_core/dirty_flags.h"
-#include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
@@ -535,7 +534,8 @@ private:
 
     void UpdateComputeTextureBuffers();
 
-    void MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u32 size, bool needs_sync = false);
+    void MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u32 size,
+                           bool needs_sync = false);
 
     /// Counts a GPU write to the command list pages in the range (invalidating their copies) and,
     /// while collecting, asks for new copies.
@@ -549,8 +549,7 @@ private:
 
     void JoinOverlap(BufferId new_buffer_id, BufferId overlap_id, bool accumulate_stream_score);
 
-    [[nodiscard]] BufferId CreateBuffer(DAddr device_addr, u32 wanted_size,
-                                        bool sparse_compatible);
+    [[nodiscard]] BufferId CreateBuffer(DAddr device_addr, u32 wanted_size, bool sparse_compatible);
 
     void Register(BufferId buffer_id);
 
@@ -673,18 +672,20 @@ private:
             return false;
         }
         bool found = false;
-        memory_tracker.ForEachDownloadRange(device_addr, size, false, [&](u64 start, u64 range_size) {
-            if (found) {
-                return;
-            }
-            u64 covered = 0;
-            memory_tracker.ForEachPreflushableRange(start, range_size, [&](u64 lower, u64 length) {
-                const u64 begin = (std::max)(lower, start);
-                const u64 end = (std::min)(lower + length, start + range_size);
-                covered += end > begin ? end - begin : 0;
+        memory_tracker.ForEachDownloadRange(
+            device_addr, size, false, [&](u64 start, u64 range_size) {
+                if (found) {
+                    return;
+                }
+                u64 covered = 0;
+                memory_tracker.ForEachPreflushableRange(
+                    start, range_size, [&](u64 lower, u64 length) {
+                        const u64 begin = (std::max)(lower, start);
+                        const u64 end = (std::min)(lower + length, start + range_size);
+                        covered += end > begin ? end - begin : 0;
+                    });
+                found = covered < range_size;
             });
-            found = covered < range_size;
-        });
         return found;
     }
 
@@ -698,18 +699,19 @@ private:
         }
         const DAddr end = device_addr + size;
         DAddr cursor = device_addr;
-        memory_tracker.ForEachPreflushableRange(device_addr, size, [&](DAddr start, u64 range_size) {
-            const DAddr lower = (std::max)(start, cursor);
-            const DAddr upper = (std::min)(start + range_size, end);
-            if (lower >= upper) {
-                return;
-            }
-            if (lower > cursor) {
-                ArmReadTraps(cursor, lower - cursor);
-            }
-            uncommitted_gpu_modified_ranges.Add(lower, upper - lower);
-            cursor = upper;
-        });
+        memory_tracker.ForEachPreflushableRange(
+            device_addr, size, [&](DAddr start, u64 range_size) {
+                const DAddr lower = (std::max)(start, cursor);
+                const DAddr upper = (std::min)(start + range_size, end);
+                if (lower >= upper) {
+                    return;
+                }
+                if (lower > cursor) {
+                    ArmReadTraps(cursor, lower - cursor);
+                }
+                uncommitted_gpu_modified_ranges.Add(lower, upper - lower);
+                cursor = upper;
+            });
         if (cursor < end) {
             ArmReadTraps(cursor, end - cursor);
         }
@@ -721,9 +723,8 @@ private:
         const DAddr begin = Common::AlignDown(device_addr, Core::DEVICE_PAGESIZE);
         const DAddr end = Common::AlignUp(device_addr + size, Core::DEVICE_PAGESIZE);
         u64 armed_bytes = 0;
-        read_trapped_ranges.ForEachInRange(begin, end - begin, [&](DAddr lower, DAddr upper) {
-            armed_bytes += upper - lower;
-        });
+        read_trapped_ranges.ForEachInRange(
+            begin, end - begin, [&](DAddr lower, DAddr upper) { armed_bytes += upper - lower; });
         if (armed_bytes == end - begin) {
             return;
         }
@@ -782,7 +783,7 @@ private:
         u64 copy_tick{};   ///< GPU tick that completes the copy
         /// `writes` when the front last flushed the page: guest memory holds it while equal
         u64 synced_writes{~u64{0}};
-        u32 copy_begin{};  ///< Bytes of the page the copy holds (a buffer can end inside it)
+        u32 copy_begin{}; ///< Bytes of the page the copy holds (a buffer can end inside it)
         u32 copy_end{};
         /// Written outside a compute dispatch or a DMA copy (a draw's storage writes) at least
         /// once: the front can't tell from what it sent whether such a write is still queued, so

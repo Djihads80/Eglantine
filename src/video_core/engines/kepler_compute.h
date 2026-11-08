@@ -75,15 +75,20 @@ public:
     }
 
     /// The channel's MME data RAM, shared with its 3D engine.
-    void SetNativeDataRam(std::array<u32, 0xc00>* data_ram) { native_data_ram = data_ram; }
-    void SetNativeMacroMode(MacroEngine* shared_macro, std::span<u32> positions, NativeMacroContext* context = nullptr) {
-        if (native_context != context) native_compute_uploaded = false;
+    void SetNativeDataRam(std::array<u32, 0xc00>* data_ram) {
+        native_data_ram = data_ram;
+    }
+    void SetNativeMacroMode(MacroEngine* shared_macro, std::span<u32> positions,
+                            NativeMacroContext* context = nullptr) {
+        if (native_context != context)
+            native_compute_uploaded = false;
         native_context = context;
         native_mode = shared_macro != nullptr;
         upload_state.SetNativePartialTransfers(native_mode);
         native_macro = shared_macro;
         native_macro_positions = positions;
-        if (native_mode) execution_mask.set();
+        if (native_mode)
+            execution_mask.set();
         else {
             execution_mask.reset();
             execution_mask[KEPLER_COMPUTE_REG_INDEX(exec_upload)] = true;
@@ -243,18 +248,24 @@ public:
                   "KeplerCompute LaunchParams has wrong size");
 
     /// Write the value to the register identified by method.
-    void CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) override;
+    void CallMethod(Core::System& system, u32 method, u32 method_argument,
+                    bool is_last_call) override;
 
     /// Write multiple values to the register identified by method.
-    void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) override;
+    void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount,
+                         u32 methods_pending) override;
 
     std::optional<GPUVAddr> GetIndirectComputeAddress() const {
         return indirect_compute;
     }
 
-    bool IsNativeMode() const { return native_mode; }
-    /// Whether the dispatch being run is a pass of a game DLSS evaluation (Fortune's Weave).
-    bool IsDlssDispatch() const { return native_mode && dlss_chain.active; }
+    bool IsNativeMode() const {
+        return native_mode;
+    }
+    /// Whether the current native dispatch belongs to a recognized game DLSS evaluation.
+    bool IsDlssDispatch() const {
+        return native_mode && dlss_chain.active;
+    }
     /// Whether the matrix multiplies (tensor-core instructions) of the program being dispatched
     /// are emulated: in a game DLSS evaluation when the game's own network may draw, and always
     /// for Donkey Kong Bananza and Ocarina of Time.
@@ -266,7 +277,9 @@ public:
     /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by
     /// the front instead of CallMethod for native compute engines: runs their macros and macro
     /// uploads against a copy of the registers and sends the register writes to the back.
-    bool FrontRunsMacros() const { return native_mode; }
+    bool FrontRunsMacros() const {
+        return native_mode;
+    }
     void FrontCallMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
                          u32 argument, bool is_last_call, const GPUVAddr* segment);
     void FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
