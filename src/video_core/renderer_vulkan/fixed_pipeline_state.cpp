@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <bit>
 #include <numeric>
@@ -124,7 +125,8 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
     tessellation_spacing.Assign(static_cast<u32>(regs.tessellation.params.spacing.Value()));
     tessellation_clockwise.Assign(regs.tessellation.params.output_primitives.Value() ==
                                   Maxwell::Tessellation::OutputPrimitives::Triangles_CW);
-    patch_control_points_minus_one.Assign(regs.patch_vertices - 1);
+    // The field holds 1..32 points; an unset (0) or oversized register would wrap or truncate.
+    patch_control_points_minus_one.Assign(std::clamp<u32>(regs.patch_vertices, 1, 32) - 1);
     const bool can_collapse_topology_class =
         features.has_extended_dynamic_state && features.has_extended_dynamic_state_2;
     topology.Assign(can_collapse_topology_class
@@ -183,10 +185,13 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
     // The reference is part of the pipeline only while the test compares with it: title 1
     // animates the register with the test off (text fading in and out), which made a new
     // pipeline, translated on the GPU thread, for every value (~84% of its runtime pipelines).
+    // Other titles fade with the test on, moving the reference by less than one step of 8-bit
+    // alpha per frame. Rounding it to 1/255 keeps those fades to one pipeline per step that
+    // the textures can tell apart, instead of one per frame and a new set every run.
     const u32 packed_alpha_test = alpha_test_func.Value();
     alpha_test_ref = packed_alpha_test != PackComparisonOp(Maxwell::ComparisonOp::Never_GL) &&
                              packed_alpha_test != PackComparisonOp(Maxwell::ComparisonOp::Always_GL)
-                         ? std::bit_cast<u32>(regs.alpha_test_ref)
+                         ? std::bit_cast<u32>(std::round(regs.alpha_test_ref * 255.0f) / 255.0f)
                          : 0;
     point_size = std::bit_cast<u32>(regs.point_size);
 

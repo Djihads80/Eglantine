@@ -46,6 +46,10 @@ add_library(core STATIC
     debugger/gdbstub.h
     debugger/gdbstub_arch.cpp
     debugger/gdbstub_arch.h
+    debugger/nx2_debug_server.cpp
+    debugger/nx2_debug_server.h
+    debugger/nx2_debug_tools.cpp
+    debugger/nx2_debug_tools.h
     device_memory.cpp
     device_memory.h
     device_memory_manager.h
@@ -532,6 +536,7 @@ add_library(core STATIC
     hle/service/audio/audio_renderer_manager.cpp
     hle/service/audio/audio_renderer_manager.h
     hle/service/audio/nx2_audio_device_manager.h
+    hle/service/audio/nx2_hwacod.h
     hle/service/audio/nx2_audio_user_client.h
     hle/service/audio/audio_renderer.cpp
     hle/service/audio/audio_renderer.h

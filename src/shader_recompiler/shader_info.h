@@ -175,6 +175,9 @@ struct StorageBufferDescriptor {
     u32 cbuf_offset;
     u32 count;
     bool is_written;
+    /// When set, the buffer pointer is read from memory at this offset from the constant buffer
+    /// pointer, which is bound as its own descriptor.
+    u32 indirect_offset{~0U};
 
     auto operator<=>(const StorageBufferDescriptor&) const = default;
 };
@@ -262,15 +265,23 @@ struct MeshInfo {
     u32 payload_words{}; ///< Task output region / mesh input region, in 32-bit words
     u32 max_vertices{};
     u32 max_primitives{};
-    u32 topology{}; ///< SET_MESH_SHADER_A output topology (4 = triangles)
+    u32 topology{}; ///< SET_MESH_SHADER_A output topology (0 = points, 1 = lines, 4 = triangles)
     boost::container::static_vector<u32, 136> vertex_lines;
     boost::container::static_vector<u32, 136> primitive_lines;
+
+    /// Vertex indices per primitive, which is also its byte count in the map region.
+    [[nodiscard]] u32 PrimitiveVertices() const noexcept {
+        return topology == 0 ? 1 : topology == 1 ? 2 : 3;
+    }
 };
 
 struct Info {
     static constexpr size_t MAX_INDIRECT_CBUFS{14};
     static constexpr size_t MAX_CBUFS{18};
-    static constexpr size_t MAX_SSBOS{32};
+    /// Compute programs can bind up to MAX_SSBOS storage buffers; graphics programs and compute
+    /// programs with EDEN_NX2_WIDE_COMPUTE_SSBOS=0 keep the old limit of MAX_GRAPHICS_SSBOS.
+    static constexpr size_t MAX_SSBOS{64};
+    static constexpr size_t MAX_GRAPHICS_SSBOS{32};
 
     bool is_task{}; ///< Switch 2 task program (Stage::Task)
     bool is_mesh{}; ///< Switch 2 mesh program (Stage::Mesh)

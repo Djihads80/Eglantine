@@ -11,7 +11,9 @@
 #include <cstdlib>
 #include <fstream>
 #include <optional>
+#include <set>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include "common/assert.h"
@@ -20,10 +22,13 @@
 #include "shader_recompiler/exception.h"
 #include "core/core.h"
 #include "video_core/gpu_split.h"
+#include "video_core/nx2_diag.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/nx2.h"
 #include "video_core/engines/fermi_2d.h"
+#include "video_core/texture_cache/texture_cache_base.h"
 #include "video_core/engines/kepler_compute.h"
+#include "video_core/engines/native_upscale.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/game_dlss_status.h"
 #include "video_core/memory_manager.h"
@@ -442,6 +447,9 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
 }
 
 void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
+    if (front_macros && !VideoCommon::GpuSplit::OnBackThread()) [[unlikely]] {
+        ReleaseFront();
+    }
     if (native_mode) {
         // Most of the compute class's register writes (QMD fields replayed by its macros for
         // each of thousands of dispatches a second) only store the value: ~4% of title 1's GPU
@@ -539,6 +547,10 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
         const u32 high = qmd[33 + slot * 2];
         if (high & 0x1ff00) {
             LOG_ERROR(HW_GPU, "Native compute constant address exceeds supported GPU width");
+            if (VideoCommon::Nx2Diag::CountersEnabled()) {
+                VideoCommon::Nx2Diag::Diagnostics::Get().Note(true, regs.code_loc.Address(), 0, "dropped", 0, 0,
+                                                              "constant address too wide");
+            }
             return false;
         }
         auto& buffer = launch_description.const_buffer_config[slot];
@@ -546,8 +558,50 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
         buffer.address_high.Assign(high & 0xff);
         buffer.size.Assign(((high >> 19) & 0x1fff) << 4);
     }
-    if (!launch_description.block_dim_x || !launch_description.block_dim_y || !launch_description.block_dim_z)
+    const u64 diag_code = regs.code_loc.Address();
+    const u32 diag_groups = launch_description.grid_dim_x.Value() * launch_description.grid_dim_y.Value() *
+                            launch_description.grid_dim_z.Value();
+    const u32 diag_threads = launch_description.block_dim_x.Value() * launch_description.block_dim_y.Value() *
+                             launch_description.block_dim_z.Value();
+    const auto diag_note = [&](std::string_view outcome, std::string_view detail = {}) {
+        namespace Diag = VideoCommon::Nx2Diag;
+        if (!Diag::Active()) {
+            return;
+        }
+        auto& diag = Diag::Diagnostics::Get();
+        diag.Touch('c', diag_code, outcome, diag_groups, diag_threads, 0, 0);
+        if (const u64 key = diag.ProgramKey(diag_code); diag.Inspecting(key)) {
+            for (u32 slot = 0; slot < NumConstBuffers; ++slot) {
+                const auto& buffer = launch_description.const_buffer_config[slot];
+                std::vector<u32> words(std::min<u32>(buffer.size.Value(), 0x2000) / 4);
+                if ((launch_description.const_buffer_enable_mask.Value() >> slot) & 1 && !words.empty() &&
+                    memory_manager.IsFullyMappedRange(buffer.Address(), words.size() * 4)) {
+                    memory_manager.ReadBlockUnsafe(buffer.Address(), words.data(), words.size() * 4);
+                    diag.Observe(key, slot, words);
+                }
+            }
+        }
+        if (Diag::CountersEnabled()) {
+            diag.Note(true, diag_code, 0, outcome, diag_groups, diag_threads, detail);
+        }
+        if (diag.Capturing()) {
+            diag.Row(fmt::format("{}\tdispatch\t{:#x}\t0x0\t{}\t{}\t{}\t0\t0x0\t0\t0\t0x0\t0\t0\t0x0\tgrid={}x{}x{} block={}x{}x{}\t{:016x}\t0000000000000000",
+                                 diag.NextSeq(), diag_code, outcome, diag_threads, diag_groups,
+                                 launch_description.grid_dim_x.Value(), launch_description.grid_dim_y.Value(),
+                                 launch_description.grid_dim_z.Value(), launch_description.block_dim_x.Value(),
+                                 launch_description.block_dim_y.Value(), launch_description.block_dim_z.Value(),
+                                 diag.ProgramKey(diag_code)));
+        }
+    };
+    if (!launch_description.block_dim_x || !launch_description.block_dim_y || !launch_description.block_dim_z) {
+        diag_note("dropped", "zero block dimension");
         return false;
+    }
+    if (VideoCommon::Nx2Diag::Ablates() &&
+        VideoCommon::Nx2Diag::Diagnostics::Get().Ablated('c', diag_code)) {
+        diag_note("ablated");
+        return false;
+    }
     // Fortune's Weave's DLSS evaluation runs from its first pass to the pass that writes the
     // upscaled image. Its inputs are kept from the first pass for a replacement upscale.
     if (RememberDlssMotionVectors()) {
@@ -577,10 +631,155 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
         }
         dlss_chain.pending.insert(program);
     }
+    // Ocarina of Time's movie network: a pass that reads one colour image and stores none
+    // retains its colour and opens a skip window; the pass that stores an image upscaling it is
+    // replaced by a plain copy and closes it. Emulating the network's matrix multiplies costs
+    // seconds per frame on Pascal-class GPUs. The gameplay network is left alone: its pair
+    // (+0xc0 -> +0xd0) carries the tonemap, and a plain copy of it leaves the frame flat and far
+    // too bright. The Fire Emblem / Fortune's Weave chain machinery is untouched.
+    static const bool network_replace = [] {
+        const char* value = std::getenv("EDEN_NX2_UPSCALE_REPLACE");
+        return value == nullptr || std::string_view{value} != "0";
+    }();
+    if (network_replace && !dlss_chain.active &&
+        (launch_description.const_buffer_enable_mask & 1)) {
+        const auto& cbuf = launch_description.const_buffer_config[0];
+        const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
+        const auto image = [&](u32 offset) -> std::optional<Texture::TICEntry> {
+            if (offset + sizeof(u32) > cbuf.size.Value()) return std::nullopt;
+            const u32 handle = memory_manager.Read<u32>(cbuf_address + offset);
+            if (handle == 0 || (handle & 0xfffff) > regs.tic.limit) return std::nullopt;
+            return GetTICEntry(handle & 0xfffff);
+        };
+        const auto upscale_pair = [](const std::optional<Texture::TICEntry>& from,
+                                     const std::optional<Texture::TICEntry>& to,
+                                     bool same_format) {
+            if (!from || !to || (same_format && from->format != to->format) ||
+                from->Address() == 0 || to->Address() == 0 ||
+                from->Address() == to->Address() || !from->IsBlockLinear() ||
+                !to->IsBlockLinear())
+                return false;
+            const u64 from_width = from->Width(), from_height = from->Height();
+            const u64 to_width = to->Width(), to_height = to->Height();
+            const u64 cross_a = to_width * from_height, cross_b = to_height * from_width;
+            return from_width >= 64 && to_width > from_width && to_width <= from_width * 4 &&
+                   (cross_a > cross_b ? cross_a - cross_b : cross_b - cross_a) * 32 <= cross_a;
+        };
+        const auto [reads, stores] = NativeImageHandles(regs.code_loc.Address());
+        std::optional<Texture::TICEntry> replacement_input;
+        std::optional<Texture::TICEntry> replacement_output;
+        if (native_upscale_input && !stores.empty()) {
+            if (const auto store = FindNativeUpscaleOutput(native_upscale_input, stores, image,
+                                                           upscale_pair)) {
+                replacement_input = native_upscale_input;
+                replacement_output = image(*store);
+            }
+        }
+        bool skipping{};
+        if (reads.size() == 1 && stores.empty() && reads.front() == 0x58) {
+            // Ocarina's movie network reads its colour at +0x58; anchoring the window there
+            // keeps gameplay compute untouched (a window opened on any one-read pass made the
+            // world black).
+            RememberNativeUpscaleInput();
+            if (native_upscale_input) {
+                network_skip_remaining = 32;
+                skipping = true;
+            }
+        } else if (!replacement_input && network_skip_remaining > 0) {
+            --network_skip_remaining;
+            skipping = true;
+        }
+        if (replacement_input && replacement_output) {
+            const auto surface = [](const Texture::TICEntry& tic)
+                -> std::optional<Fermi2D::Surface> {
+                using RTFormat = Tegra::RenderTargetFormat;
+                Fermi2D::Surface result{};
+                switch (tic.format) {
+                case Texture::TextureFormat::B10G11R11:
+                    result.format = RTFormat::B10G11R11_FLOAT;
+                    break;
+                case Texture::TextureFormat::R16G16B16A16:
+                    result.format = RTFormat::R16G16B16A16_FLOAT;
+                    break;
+                case Texture::TextureFormat::A8B8G8R8:
+                    result.format = RTFormat::A8B8G8R8_UNORM;
+                    break;
+                case Texture::TextureFormat::A2B10G10R10:
+                    result.format = RTFormat::A2B10G10R10_UNORM;
+                    break;
+                default:
+                    return std::nullopt;
+                }
+                if (tic.Address() == 0 || !tic.IsBlockLinear()) {
+                    return std::nullopt;
+                }
+                result.linear = Fermi2D::MemoryLayout::BlockLinear;
+                result.block_width.Assign(tic.block_width);
+                result.block_height.Assign(tic.block_height);
+                result.block_depth.Assign(tic.block_depth);
+                result.depth = 1;
+                result.width = tic.Width();
+                result.height = tic.Height();
+                result.addr_upper = static_cast<u32>(tic.Address() >> 32);
+                result.addr_lower = static_cast<u32>(tic.Address());
+                return result;
+            };
+            const auto source = surface(*replacement_input);
+            const auto dest = surface(*replacement_output);
+            if (source && dest) {
+                // Does the program decode sRGB itself? (Ocarina's movie network does.)
+                const bool decodes_srgb = [&] {
+                    const GPUVAddr program = regs.code_loc.Address();
+                    std::array<u32, 0x400> block{};
+                    bool threshold = false, exponent = false;
+                    for (u64 offset = 0; offset < 0x20000 && !(threshold && exponent);
+                         offset += sizeof(block)) {
+                        if (!memory_manager.IsFullyMappedRange(program + offset, sizeof(block)))
+                            break;
+                        memory_manager.ReadBlock(program + offset, block.data(), sizeof(block));
+                        for (size_t word = 0; word < block.size(); word += 4) {
+                            const u32 opcode = block[word] & 0xfff;
+                            threshold |= opcode == 0x434 && block[word + 1] == 0x292d292d;
+                            exponent |= opcode == 0x832 && block[word + 1] == 0x40cc40cc;
+                        }
+                    }
+                    return threshold && exponent;
+                }();
+                const Fermi2D::Config config{
+                    .operation = decodes_srgb ? Fermi2D::Operation::SrcCopySrgbToLinear
+                                              : Fermi2D::Operation::SrcCopy,
+                    .filter = Fermi2D::Filter::Bilinear,
+                    .must_accelerate = true,
+                    .dst_x0 = 0,
+                    .dst_y0 = 0,
+                    .dst_x1 = static_cast<s32>(replacement_output->Width()),
+                    .dst_y1 = static_cast<s32>(replacement_output->Height()),
+                    .src_x0 = 0,
+                    .src_y0 = 0,
+                    .src_x1 = static_cast<s32>(replacement_input->Width()),
+                    .src_y1 = static_cast<s32>(replacement_input->Height()),
+                };
+                const bool done = rasterizer->AccelerateSurfaceCopy(*source, *dest, config);
+                LOG_INFO(HW_GPU,
+                         "Native network pass {:#x} replaced by input copy {}->{} ({}): {}",
+                         regs.code_loc.Address(), replacement_input->Address(),
+                         replacement_output->Address(), decodes_srgb ? "sRGB" : "plain", done);
+                native_upscale_input.reset();
+                network_skip_remaining = 0;
+                return true;
+            }
+        }
+        if (skipping) {
+            return true;
+        }
+    }
+
     bool dispatched = true;
     try {
         rasterizer->DispatchCompute();
+        diag_note("ok");
     } catch (const Shader::Exception& error) {
+        diag_note("failed", error.what());
         static std::unordered_set<std::string> logged;
         if (logged.insert(error.what()).second) {
             LOG_ERROR(HW_GPU, "Native compute shader rejected: {}", error.what());
@@ -592,8 +791,15 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
                    std::string_view::npos) {
             DescribeNativeResources(qmd);
             // The console runs this on tensor cores; stand in with a plain upscale of its input.
-            return UpscaleInsteadOfNativeProgram();
+            if (UpscaleInsteadOfNativeProgram()) {
+                return true;
+            }
+            FollowPhotoUpscale();
+            return UpscaleFromConstBuffers();
         }
+    }
+    if (dispatched && !dlss_chain.active && photo_upscale.window_left != 0) {
+        UpscaleFromConstBuffers();
     }
     if (output_pass) {
         return FinishDlssEvaluation() || dispatched;
@@ -646,11 +852,23 @@ bool KeplerCompute::EmulatesNativeTensorPrograms() const {
                GameDlssBlocker() == VideoCore::GameDlssReason::None;
     }
     // Donkey Kong Bananza's programs are emulated: rejected, they write nothing and the screen is
-    // purple from its mode select on. Other titles keep the upscale stand-in (emulating title 4's
-    // network takes the host driver minutes to compile). Chosen per title, not per dispatch: the
-    // shader cache keeps the result of a program's first dispatch.
+    // purple from its mode select on. Ocarina of Time's end-of-frame network is emulated in the
+    // compact form (UsesCompactTensorPrograms). Other titles keep the upscale stand-in (emulating
+    // title 4's network takes the host driver minutes to compile). Chosen per title, not per
+    // dispatch: the shader cache keeps the result of a program's first dispatch.
     constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
-    return Settings::GetCurrentProgramID() == DonkeyKongBananzaProgramId;
+    return Settings::GetCurrentProgramID() == DonkeyKongBananzaProgramId ||
+           UsesCompactTensorPrograms();
+}
+
+bool KeplerCompute::UsesCompactTensorPrograms() const {
+    // Ocarina of Time draws its final image through an 11-program network after the tonemap. The
+    // stand-in blits the network's input instead, which leaves the frame flat and far too bright
+    // (Kokiri Forest median luma ~0.29 against ~0.10 with the network). The compact form calls a
+    // helper that shuffles across 32 lanes, so it needs compute shaders created 32 threads wide.
+    constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
+    return !dlss_chain.active && Settings::GetCurrentProgramID() == OcarinaOfTimeProgramId &&
+           rasterizer->SupportsGameDlssNetwork();
 }
 
 // Checks the network's output against its input (on the GPU; the result arrives a few frames
@@ -894,7 +1112,64 @@ bool KeplerCompute::RememberDlssMotionVectors() {
 // the input colour through cbuf0+0x328 and writes the DLSS output through cbuf0+0x348 (B10G11R11;
 // 720p to 1440p docked). Blit one to the other with bilinear filtering when both are plain 2D
 // images of the same format and the output is larger: title 4's slots first, then Fortune's
-// Weave's, else the first two handles in cbuf0+0x80..0x11c that form such a pair.
+// Weave's, else the first two handles in cbuf0+0x80..0x11c that form such a pair. Star Fox's
+// known 1600x900 RGBA16F -> 1920x1080 RGB10A2 pair also needs format conversion.
+// The cbuf0 byte offsets of the texture handles a native program reads (TEX, TLD, TLD4, TXD) and
+// the surface handles it stores to (SUST.P), from its code up to the first unconditional EXIT.
+std::pair<std::vector<u32>, std::vector<u32>> KeplerCompute::NativeImageHandles(GPUVAddr program) {
+    static std::unordered_map<GPUVAddr, std::pair<std::vector<u32>, std::vector<u32>>> cache;
+    if (const auto it = cache.find(program); it != cache.end()) {
+        return it->second;
+    }
+    std::pair<std::vector<u32>, std::vector<u32>> handles;
+    const auto add = [](std::vector<u32>& list, u32 offset) {
+        if (std::find(list.begin(), list.end(), offset) == list.end()) list.push_back(offset);
+    };
+    std::array<u32, 0x400> block{};
+    bool exited = false;
+    for (u64 offset = 0; offset < 0x40000 && !exited; offset += sizeof(block)) {
+        if (!memory_manager.IsFullyMappedRange(program + offset, sizeof(block))) break;
+        memory_manager.ReadBlock(program + offset, block.data(), sizeof(block));
+        for (size_t word = 0; word < block.size() && !exited; word += 4) {
+            const u32 opcode = block[word] & 0xfff;
+            const u32 binding = (block[word + 1] >> 22) & 0x1f;
+            const u32 handle = ((block[word + 1] >> 8) & 0x3fff) * 4;
+            switch (opcode) {
+            case 0xb60: case 0xb63: case 0xb66: case 0xb6d:
+                if (binding == 0) add(handles.first, handle);
+                break;
+            case 0xb9b:
+                if (binding == 0) add(handles.second, handle);
+                break;
+            case 0x94d: // EXIT, unconditional when guarded by PT
+                exited = ((block[word] >> 12) & 0xf) == 7;
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    return cache.emplace(program, std::move(handles)).first->second;
+}
+
+void KeplerCompute::RememberNativeUpscaleInput() {
+    const auto [reads, stores] = NativeImageHandles(regs.code_loc.Address());
+    // An image-fed matrix pass writes its intermediate results to buffers. Retain its colour
+    // input: the final pass's sampled image is another intermediate that a skipped network never
+    // produced (Ocarina's movie network reads its colour at +0x58).
+    if (reads.size() != 1 || !stores.empty()) return;
+    const auto& cbuf = launch_description.const_buffer_config[0];
+    if (reads.front() + sizeof(u32) > cbuf.size.Value()) return;
+    const GPUVAddr address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
+    const u32 handle = memory_manager.Read<u32>(address + reads.front());
+    if (handle == 0 || (handle & 0xfffff) > regs.tic.limit) return;
+    const auto input = GetTICEntry(handle & 0xfffff);
+    if (input.Address() != 0 && input.IsBlockLinear() && input.Width() >= 64 &&
+        input.Height() >= 64) {
+        native_upscale_input = input;
+    }
+}
+
 bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     const auto& cbuf = launch_description.const_buffer_config[0];
     const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
@@ -903,20 +1178,58 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         if (tic_index > regs.tic.limit) return std::nullopt;
         return GetTICEntry(tic_index);
     };
+    // An upscale keeps the aspect ratio and scales by at most 4: anything else (a 4x4 lookup
+    // table, a 120x67 luminance image) is another image the program happens to use.
     const auto upscale_pair = [](const std::optional<Texture::TICEntry>& from,
-                                 const std::optional<Texture::TICEntry>& to) {
-        return from && to && from->format == to->format && from->Address() != 0 &&
-               to->Address() != 0 && to->Width() > from->Width() && from->IsBlockLinear() &&
-               to->IsBlockLinear();
+                                 const std::optional<Texture::TICEntry>& to, bool same_format = true) {
+        if (!from || !to || (same_format && from->format != to->format) || from->Address() == 0 ||
+            to->Address() == 0 || from->Address() == to->Address() || !from->IsBlockLinear() ||
+            !to->IsBlockLinear())
+            return false;
+        const u64 from_width = from->Width(), from_height = from->Height();
+        const u64 to_width = to->Width(), to_height = to->Height();
+        const u64 cross_a = to_width * from_height, cross_b = to_height * from_width;
+        return from_width >= 64 && to_width > from_width && to_width <= from_width * 4 &&
+               (cross_a > cross_b ? cross_a - cross_b : cross_b - cross_a) * 32 <= cross_a;
     };
     std::optional<Texture::TICEntry> input = image(0x90), output = image(0xa0);
+    const bool starfox_conversion = Settings::GetCurrentProgramID() == 0x0400E88025B1A000ULL &&
+        input && output && input->format == Texture::TextureFormat::R16G16B16A16 &&
+        output->format == Texture::TextureFormat::A2B10G10R10 &&
+        input->Width() == 1600 && input->Height() == 900 &&
+        output->Width() == 1920 && output->Height() == 1080;
+    bool have_pair = upscale_pair(input, output, !starfox_conversion);
     bool fortunes_weave = false;
-    if (!upscale_pair(input, output)) {
+    if (!have_pair) {
         input = image(0x328);
         output = image(0x348);
         fortunes_weave = upscale_pair(input, output);
+        have_pair = fortunes_weave;
     }
-    if (!upscale_pair(input, output)) {
+    if (!have_pair) {
+        // The images the program itself uses: textures it reads and the surface it stores to
+        // through cbuf0 handles (Ocarina of Time's gameplay network reads +0xc0, writes +0xd0).
+        // The input is the largest read image that the output upscales, the output's format first.
+        const auto [reads, stores] = NativeImageHandles(regs.code_loc.Address());
+        input.reset();
+        output.reset();
+        for (const u32 store : stores) {
+            const auto to = image(store);
+            for (const bool same_format : {true, false}) {
+                for (const u32 read : reads) {
+                    const auto from = image(read);
+                    if (upscale_pair(from, to, same_format) &&
+                        (!input || u64{from->Width()} * from->Height() > u64{input->Width()} * input->Height())) {
+                        input = from;
+                        output = to;
+                    }
+                }
+                if (input) break;
+            }
+            if (input) break;
+        }
+    }
+    if (!have_pair && !upscale_pair(input, output, false)) {
         input.reset();
         output.reset();
         for (u32 first = 0x80; first < 0x120 && !input; first += 4) {
@@ -925,7 +1238,7 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             for (u32 second = first + 4; from && second < 0x120; second += 4) {
                 if (memory_manager.Read<u32>(cbuf_address + second) == 0) continue;
                 const auto to = image(second);
-                if (upscale_pair(from, to)) {
+                if (to && to->Width() >= 1024 && upscale_pair(from, to)) {
                     input = from;
                     output = to;
                     break;
@@ -933,20 +1246,39 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             }
         }
     }
-    if (!input || !output)
+    const auto skip = [&](std::string_view reason) {
+        static std::unordered_set<GPUVAddr> reported;
+        if (reported.insert(regs.code_loc.Address()).second && reported.size() <= 64) {
+            LOG_INFO(HW_GPU, "Upscale fallback for program {:#x} skipped: {}", regs.code_loc.Address(),
+                     reason);
+        }
         return false;
+    };
+    if (!input || !output)
+        return skip("no input/output image pair in the program's handles or cbuf0+0x80..0x11c");
     using RTFormat = Tegra::RenderTargetFormat;
-    RTFormat format{};
-    switch (input->format) {
-    case Texture::TextureFormat::A2B10G10R10: format = RTFormat::A2B10G10R10_UNORM; break;
-    case Texture::TextureFormat::A8B8G8R8: format = RTFormat::A8B8G8R8_UNORM; break;
-    case Texture::TextureFormat::B10G11R11: format = RTFormat::B10G11R11_FLOAT; break;
-    case Texture::TextureFormat::R16G16B16A16: format = RTFormat::R16G16B16A16_FLOAT; break;
-    default: return false;
+    const auto blit_format = [](const Texture::TICEntry& tic) -> std::optional<RTFormat> {
+        switch (tic.format) {
+        case Texture::TextureFormat::A2B10G10R10: return RTFormat::A2B10G10R10_UNORM;
+        case Texture::TextureFormat::A8B8G8R8:
+            return tic.r_type == Texture::ComponentType::UNORM && tic.srgb_conversion
+                       ? RTFormat::A8B8G8R8_SRGB
+                       : RTFormat::A8B8G8R8_UNORM;
+        case Texture::TextureFormat::B10G11R11: return RTFormat::B10G11R11_FLOAT;
+        case Texture::TextureFormat::R16G16B16A16: return RTFormat::R16G16B16A16_FLOAT;
+        default: return std::nullopt;
+        }
+    };
+    // E5B9G9R9 (Ocarina of Time's gameplay frame) has no 2D surface format: the blit reads it as a
+    // 32-bit placeholder surface and the texture cache samples it as E5B9G9R9.
+    const bool shared_exponent_input = input->format == Texture::TextureFormat::E5B9G9R9;
+    if ((!blit_format(*input) && !shared_exponent_input) || !blit_format(*output)) {
+        return skip(fmt::format("formats {} -> {}", static_cast<u32>(input->format.Value()),
+                                static_cast<u32>(output->format.Value())));
     }
     const auto surface = [&](const Texture::TICEntry& tic) {
         Fermi2D::Surface result{};
-        result.format = format;
+        result.format = blit_format(tic).value_or(RTFormat::B10G11R11_FLOAT);
         result.linear = Fermi2D::MemoryLayout::BlockLinear;
         result.block_width.Assign(tic.block_width);
         result.block_height.Assign(tic.block_height);
@@ -1042,6 +1374,9 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         }
     }
     auto source = surface(*input);
+    if (shared_exponent_input) {
+        source.format = RTFormat::B10G11R11_FLOAT; // same size per texel, replaced below
+    }
     // EDEN_NX2_UPSCALE_SOURCE=<gpu address>: blit from another same-sized image (debug aid).
     if (static const u64 override_source = [] {
             const char* value = std::getenv("EDEN_NX2_UPSCALE_SOURCE");
@@ -1071,8 +1406,12 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
                                                      dlss_depth ? &*dlss_depth : nullptr,
                                                      dlss_jitter, {1.0f, 1.0f});
     };
+    if (shared_exponent_input) {
+        VideoCommon::g_blit_source_format = VideoCore::Surface::PixelFormat::E5B9G9R9_FLOAT;
+    }
     const bool done = upscale_temporally() ||
                       rasterizer->AccelerateSurfaceCopy(source, surface(*output), config);
+    VideoCommon::g_blit_source_format.reset();
     if (static u32 checked{}; checked++ == sample_at) {
         const u64 size = u64{output->Width()} * output->Height() * 4;
         if (const auto device = memory_manager.GpuToCpuAddress(output->Address())) {
@@ -1095,16 +1434,187 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 30U;
     }();
     if (static u32 count{}; ++count == trace_at) g_nx2_trace_draws_after_upscale = 40;
-    static u32 logged{};
-    if (logged++ < 4) {
-        LOG_INFO(HW_GPU, "Upscale fallback {:#x} {}x{} block {}/{}/{} -> {:#x} {}x{} block {}/{}/{} levels {}: {}",
-                 input->Address(), input->Width(), input->Height(), input->block_width.Value(),
+    // Once per program and image pair (gameplay brings programs and targets the title has not).
+    static std::set<std::tuple<GPUVAddr, GPUVAddr, GPUVAddr>> logged;
+    if (logged.emplace(program, input->Address(), output->Address()).second && logged.size() <= 64) {
+        LOG_INFO(HW_GPU, "Upscale fallback {:#x}: {:#x} {}x{} block {}/{}/{} -> {:#x} {}x{} block {}/{}/{} levels {}: {}",
+                 program, input->Address(), input->Width(), input->Height(), input->block_width.Value(),
                  input->block_height.Value(), input->block_depth.Value(), output->Address(),
                  output->Width(), output->Height(), output->block_width.Value(),
                  output->block_height.Value(), output->block_depth.Value(), output->max_mip_level.Value(),
                  done ? "blitted" : "not accelerated");
     }
     return done;
+}
+
+bool KeplerCompute::ReadConstBufferWords(u32 slot, std::vector<u32>& words) const {
+    words.clear();
+    const auto& cbuf = launch_description.const_buffer_config[slot];
+    const GPUVAddr address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
+    const u32 size = (std::min)(static_cast<u32>(cbuf.size.Value()), 0x2000U);
+    if (address == 0 || size < sizeof(u32) || !memory_manager.IsFullyMappedRange(address, size)) {
+        return false;
+    }
+    words.resize(size / sizeof(u32));
+    memory_manager.ReadBlockUnsafe(address, words.data(), words.size() * sizeof(u32));
+    return true;
+}
+
+namespace {
+bool PhotoUpscaleEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_PHOTO_UPSCALE");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
+std::optional<Tegra::RenderTargetFormat> ColorRenderFormat(Texture::TextureFormat format) {
+    using RTFormat = Tegra::RenderTargetFormat;
+    switch (format) {
+    case Texture::TextureFormat::A2B10G10R10: return RTFormat::A2B10G10R10_UNORM;
+    case Texture::TextureFormat::A8B8G8R8: return RTFormat::A8B8G8R8_UNORM;
+    case Texture::TextureFormat::B10G11R11: return RTFormat::B10G11R11_FLOAT;
+    case Texture::TextureFormat::R16G16B16A16: return RTFormat::R16G16B16A16_FLOAT;
+    default: return std::nullopt;
+    }
+}
+
+Fermi2D::Surface BlockLinearSurface(const Texture::TICEntry& tic, Tegra::RenderTargetFormat format) {
+    Fermi2D::Surface result{};
+    result.format = format;
+    result.linear = Fermi2D::MemoryLayout::BlockLinear;
+    result.block_width.Assign(tic.block_width);
+    result.block_height.Assign(tic.block_height);
+    result.block_depth.Assign(tic.block_depth);
+    result.depth = 1;
+    result.width = tic.Width();
+    result.height = tic.Height();
+    result.addr_upper = static_cast<u32>(tic.Address() >> 32);
+    result.addr_lower = static_cast<u32>(tic.Address());
+    return result;
+}
+
+constexpr u32 PHOTO_UPSCALE_WATCH_DISPATCHES = 64;
+} // Anonymous namespace
+
+// Mario Kart World docked draws its photo mode at 2560x1440 and upscales it to 3840x2160 with a
+// network of tensor-core passes. Without it the 4K image stays empty and only the UI drawn over it
+// shows. The first rejected pass of an evaluation starts a window of dispatches in which a pass
+// with both images in its constant buffers has its result replaced by a blit of one to the other.
+void KeplerCompute::FollowPhotoUpscale() {
+    if (PhotoUpscaleEnabled() && photo_upscale.window_left == 0) {
+        photo_upscale.window_left = PHOTO_UPSCALE_WATCH_DISPATCHES;
+        ++photo_upscale.evaluations;
+    }
+}
+
+bool KeplerCompute::UpscaleFromConstBuffers() {
+    auto& watch = photo_upscale;
+    if (!PhotoUpscaleEnabled() || watch.window_left == 0) {
+        return false;
+    }
+    const GPUVAddr program = regs.code_loc.Address();
+    // Once the pass that has both images is known, only it is looked at, at the same places; until
+    // then every constant buffer is searched, for a few evaluations.
+    const bool known = watch.output_program != 0;
+    if ((known && program != watch.output_program) || (!known && watch.evaluations > 6)) {
+        return false;
+    }
+    --watch.window_left;
+    struct Image {
+        Texture::TICEntry tic;
+        u32 slot;
+        u32 offset;
+    };
+    std::vector<Image> images;
+    std::vector<u32> words;
+    const auto add = [&](u32 slot, u32 offset, u32 word) {
+        const u32 tic_index = word & 0xfffff;
+        if (word == 0 || tic_index == 0 || tic_index > regs.tic.limit) {
+            return;
+        }
+        const auto tic = GetTICEntry(tic_index);
+        const bool plain_2d = tic.texture_type == Texture::TextureType::Texture2D ||
+                              tic.texture_type == Texture::TextureType::Texture2DNoMipmap;
+        if (!plain_2d || tic.Address() == 0 || !tic.IsBlockLinear() || tic.Width() < 1280 ||
+            !ColorRenderFormat(tic.format) ||
+            std::ranges::any_of(images, [&](const auto& image) {
+                return image.tic.Address() == tic.Address();
+            })) {
+            return;
+        }
+        images.push_back({tic, slot, offset});
+    };
+    if (known) {
+        if (ReadConstBufferWords(watch.slot, words)) {
+            for (const u32 offset : {watch.input_offset, watch.output_offset}) {
+                if (offset / sizeof(u32) < words.size()) {
+                    add(watch.slot, offset, words[offset / sizeof(u32)]);
+                }
+            }
+        }
+    } else {
+        std::unordered_set<u32> tried;
+        for (u32 slot = 0; slot < NumConstBuffers; ++slot) {
+            if (!ReadConstBufferWords(slot, words)) {
+                continue;
+            }
+            for (u32 i = 0; i < words.size(); ++i) {
+                if (tried.insert(words[i]).second) {
+                    add(slot, i * sizeof(u32), words[i]);
+                }
+            }
+        }
+    }
+    for (const auto& from : images) {
+        for (const auto& to : images) {
+            // The same picture at 1.5 times the size (2560x1440 to 3840x2160).
+            if (to.tic.Width() * 2 != from.tic.Width() * 3 ||
+                to.tic.Height() * 2 != from.tic.Height() * 3) {
+                continue;
+            }
+            const Fermi2D::Config config{
+                .operation = Fermi2D::Operation::SrcCopy,
+                .filter = Fermi2D::Filter::Bilinear,
+                .must_accelerate = true,
+                .dst_x0 = 0,
+                .dst_y0 = 0,
+                .dst_x1 = static_cast<s32>(to.tic.Width()),
+                .dst_y1 = static_cast<s32>(to.tic.Height()),
+                .src_x0 = 0,
+                .src_y0 = 0,
+                .src_x1 = static_cast<s32>(from.tic.Width()),
+                .src_y1 = static_cast<s32>(from.tic.Height()),
+            };
+            const bool done = rasterizer->AccelerateSurfaceCopy(
+                BlockLinearSurface(from.tic, *ColorRenderFormat(from.tic.format)),
+                BlockLinearSurface(to.tic, *ColorRenderFormat(to.tic.format)), config);
+            if (from.tic.Address() != watch.last_input || to.tic.Address() != watch.last_output) {
+                watch.last_input = from.tic.Address();
+                watch.last_output = to.tic.Address();
+                LOG_INFO(HW_GPU,
+                         "Photo upscale: program {:#x} cbuf{}+{:#x} {:#x} {}x{} format {:#x} "
+                         "-> cbuf{}+{:#x} {:#x} {}x{} format {:#x}: {}",
+                         program, from.slot, from.offset,
+                         from.tic.Address(), from.tic.Width(), from.tic.Height(),
+                         static_cast<u32>(from.tic.format.Value()), to.slot, to.offset,
+                         to.tic.Address(), to.tic.Width(), to.tic.Height(),
+                         static_cast<u32>(to.tic.format.Value()), done ? "blitted" : "not accelerated");
+            }
+            if (done) {
+                if (!known && from.slot == to.slot) {
+                    watch.output_program = program;
+                    watch.slot = from.slot;
+                    watch.input_offset = from.offset;
+                    watch.output_offset = to.offset;
+                }
+                watch.window_left = 0;
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 void KeplerCompute::ProcessLaunch() {
@@ -1158,6 +1668,18 @@ KeplerCompute::FrontState& KeplerCompute::Front(VideoCommon::GpuSplit& split) {
         front_macros = true;
     }
     return *front;
+}
+
+// As Maxwell3D::ReleaseFront: the split stopped, the engine runs its macros again.
+void KeplerCompute::ReleaseFront() {
+    native_executing_macro = front->executing_macro;
+    native_parameters = std::move(front->parameters);
+    native_compute_uploaded = front->compute_uploaded;
+    native_bind_pointer = front->bind_pointer;
+    native_macro = front->macro;
+    front.reset();
+    front_macros = false;
+    LOG_INFO(HW_GPU, "GPU thread split stopped: compute macros back on the engine");
 }
 
 void KeplerCompute::FrontApply(FrontState& fs, u32 method, u32 argument) {

@@ -25,6 +25,7 @@ public:
     ~IHardwareOpusDecoderManager() override;
 
 private:
+    void OpenHwacodClient(HLERequestContext& ctx);
     Result OpenHardwareOpusDecoder(Out<SharedPointer<IHardwareOpusDecoder>> out_decoder,
                                    OpusParameters params, u32 tmem_size,
                                    InCopyHandle<Kernel::KTransferMemory> tmem_handle);
