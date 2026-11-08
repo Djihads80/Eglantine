@@ -6,11 +6,16 @@
 
 #pragma once
 
+#include <optional>
 #include <vector>
 
 #include <sirit/sirit.h>
 
 #include "common/common_types.h"
+
+namespace Shader {
+struct Profile;
+}
 
 namespace Shader::IR {
 enum class Attribute : u64;
@@ -644,5 +649,8 @@ Id EmitDPdxCoarse(EmitContext& ctx, Id op_a);
 Id EmitDPdyCoarse(EmitContext& ctx, Id op_a);
 
 void PatchCooperativeHmma(std::vector<u32>& code, const CooperativeHmmaTypes& types);
+/// Appends the shared memory of the 16x16x16 HMMA path to a program that runs it, and returns the
+/// word where it starts.
+std::optional<u32> ReserveCooperativeHmmaScratch(const Profile& profile, IR::Program& program);
 
 } // namespace Shader::Backend::SPIRV

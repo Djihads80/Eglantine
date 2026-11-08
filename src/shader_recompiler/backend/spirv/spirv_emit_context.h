@@ -376,6 +376,10 @@ public:
 
     std::array<Id, 2> software_matrix_functions{};
     std::optional<CooperativeHmmaTypes> cooperative_hmma; ///< Set when a program lowers HMMA to it
+    /// Set when HMMA runs on 16x16x16 matrices: each 32-lane subgroup owns 384 words of shared
+    /// memory from this word (A, B and C/D tiles of 16x16 fp16, 128 words each).
+    std::optional<u32> tensor_scratch_word;
+    Id tensor_subgroup_id{};
     std::vector<Id> interfaces;
     std::vector<std::pair<u32, spv::Op>> opcode_rewrites;
 
