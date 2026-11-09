@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "common/common_types.h"
+#include "common/settings.h"
 
 namespace Tegra {
 
@@ -72,6 +73,44 @@ inline bool Nx2NeedsBufferDownloads() {
         return !g_nx2_cpu_read_traps.load(std::memory_order_relaxed);
     default:
         return false;
+    }
+}
+
+// Per-title defaults of a few switches. An explicit environment variable always wins; each is
+// read the first time it is needed, never at namespace scope (Android applies env.txt in
+// Core::System::Load, after the library's statics). The title is the program the core loaded
+// (Settings::GetCurrentProgramID, set in Load before the GPU, its thread and the disk shader
+// cache exist), not g_nx2_program_id, which is set later, at the game's first GPU
+// characteristics query (the disk cache's shaders are translated before that).
+inline constexpr u64 Nx2MarioKartWorldProgramId = 0x0400C3F00006E000ULL;
+inline constexpr u64 Nx2OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
+
+[[nodiscard]] inline u64 Nx2DefaultsProgramId() {
+    return Settings::GetCurrentProgramID();
+}
+
+/// The GPU thread split's mode (GpuSplit::MaybeStart): '0' off, '1' engine methods on a second
+/// thread, '2' that with the macros left on the first. EDEN_NX2_SPLIT=<mode> overrides the
+/// title's default: '2' for Mario Kart World (Odin 3: ~42 fps vs ~38 off) and for titles not
+/// listed; on Android '0' for Ocarina of Time (Odin 3: '2' is slower and stutters, 16-17 fps vs
+/// ~20 off; '1' gains nothing). The PC keeps '2' for it (~44-56 fps in Kokiri Forest).
+[[nodiscard]] inline char Nx2SplitMode() {
+    static const int forced = [] {
+        const char* const value = std::getenv("EDEN_NX2_SPLIT");
+        return value != nullptr ? int{value[0]} : -1;
+    }();
+    if (forced >= 0) {
+        return static_cast<char>(forced);
+    }
+    switch (Nx2DefaultsProgramId()) {
+    case Nx2MarioKartWorldProgramId:
+        return '2';
+#ifdef __ANDROID__
+    case Nx2OcarinaOfTimeProgramId:
+        return '0';
+#endif
+    default:
+        return '2';
     }
 }
 

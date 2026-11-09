@@ -205,13 +205,29 @@ void GpuSplit::CheckOwner(const char* where) {
 
 GpuSplit GpuSplit::instance;
 
+namespace {
+std::atomic<u64> split_logged_program{~u64{0}};
+} // Anonymous namespace
+
 void GpuSplit::MaybeStart(Core::System& system_) {
-    static const char mode = [] {
-        const char* value = std::getenv("EDEN_NX2_SPLIT");
-        return value != nullptr ? value[0] : '2';
-    }();
+    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+        return;
+    }
+    // The mode is per title (Tegra::Nx2SplitMode: EDEN_NX2_SPLIT, else the title's default). The
+    // title is known here: the core sets it as it loads the program, before this thread exists,
+    // and this goes on only once the game talks to the GPU as a Switch 2 one (g_nx2_ampere). The
+    // back thread is made below, after that.
+    const char mode = Tegra::Nx2SplitMode();
+    // Once per title: which mode applies.
+    if (const u64 program = Tegra::Nx2DefaultsProgramId();
+        split_logged_program.load(std::memory_order_relaxed) != program &&
+        split_logged_program.exchange(program, std::memory_order_relaxed) != program) {
+        LOG_INFO(HW_GPU, "GPU thread split for program {:016X}: mode {} ({})", program,
+                 mode == '1' || mode == '2' ? static_cast<int>(mode - '0') : 0,
+                 std::getenv("EDEN_NX2_SPLIT") != nullptr ? "EDEN_NX2_SPLIT" : "title default");
+    }
     const bool wanted = mode == '1' || mode == '2';
-    if (!wanted || !Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+    if (!wanted) {
         return;
     }
     // The front reads command lists straight from guest memory; a read that flushes the caches

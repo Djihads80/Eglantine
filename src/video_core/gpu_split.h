@@ -85,8 +85,9 @@ public:
     /// Hang report (any thread, racy reads): ring positions and the flags the two sides wait on.
     [[nodiscard]] std::string Nx2DebugState() const;
 
-    /// Starts the back thread once the split is wanted (EDEN_NX2_SPLIT=1, a Switch 2 title,
-    /// commands read without cache flushes). Called by the front between commands.
+    /// Starts the back thread once the split is wanted (Tegra::Nx2SplitMode: EDEN_NX2_SPLIT or
+    /// the title's default), for a Switch 2 title whose commands are read without cache flushes.
+    /// Called by the front between commands.
     void MaybeStart(Core::System& system);
     void Stop();
 
