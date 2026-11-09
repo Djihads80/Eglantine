@@ -1535,6 +1535,14 @@ void MainWindow::ConnectWidgetEvents() {
 
     connect(game_list, &GameList::OpenPerGameGeneralRequested, this,
             &MainWindow::OnGameListOpenPerGameProperties);
+    connect(game_list, &GameList::ResetRecommendedSettingsPromptRequested, this,
+            [this](u64 program_id) {
+                UISettings::values.skipped_recommended_settings.erase(program_id);
+                asked_recommended_settings.erase(program_id);
+                const bool players_were_global = Settings::values.players.UsingGlobal();
+                config->SaveAllValues();
+                Settings::values.players.SetGlobal(players_were_global);
+            });
     connect(game_list, &GameList::LinkToRyujinxRequested, this, &MainWindow::OnLinkToRyujinx);
 
     connect(this, &MainWindow::UpdateInstallProgress, this, &MainWindow::IncrementInstallProgress);
