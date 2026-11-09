@@ -33,6 +33,10 @@
 
 #include "main_window.h"
 
+#ifdef YUZU_CRASH_DUMPS
+#include "yuzu/breakpad.h"
+#endif
+
 #ifdef _WIN32
 #include <QScreen>
 

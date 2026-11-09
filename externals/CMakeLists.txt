@@ -326,6 +326,18 @@ endif()
 # TODO(crueter): Breakpad needs additional fetches
 # https://github.com/google/breakpad/blob/main/DEPS
 # https://github.com/microsoft/vcpkg/blob/master/ports/breakpad/CMakeLists.txt
+# On Linux, prefer the system client library (google-breakpad package) over the download below.
+if (YUZU_CRASH_DUMPS AND LINUX AND NOT TARGET libbreakpad_client)
+    find_package(PkgConfig QUIET)
+    if (PkgConfig_FOUND)
+        pkg_check_modules(BREAKPAD_CLIENT IMPORTED_TARGET breakpad-client)
+    endif()
+    if (BREAKPAD_CLIENT_FOUND)
+        add_library(libbreakpad_client INTERFACE)
+        target_link_libraries(libbreakpad_client INTERFACE PkgConfig::BREAKPAD_CLIENT)
+    endif()
+endif()
+
 if (YUZU_CRASH_DUMPS AND NOT TARGET libbreakpad_client)
     set(BREAKPAD_WIN32_DEFINES
         NOMINMAX
