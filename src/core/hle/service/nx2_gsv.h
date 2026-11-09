@@ -62,6 +62,7 @@
 #include "video_core/nx2.h"
 #include "video_core/nx2_job_stats.h"
 #include "video_core/nx2_hazard.h"
+#include "video_core/nx2_timeline.h"
 #include "video_core/nx2_knobs.h"
 #include "video_core/textures/decoders.h"
 #include "core/hle/service/hle_ipc.h"
@@ -1816,6 +1817,27 @@ private:
         m_previous_fence_id = ~w[22];
         m_previous_fence_value = w[24];
         const auto waited = std::chrono::steady_clock::now();
+        if (VideoCommon::Nx2Timeline::Enabled()) {
+            const u64 now = VideoCommon::Nx2Timeline::Now();
+            const u64 entered_ns =
+                now - static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                           waited - entered)
+                                           .count());
+            m_timeline.OnPresent(entered_ns, now, [](u64 frames, double lists, double words,
+                                                     double frame, double guest_first,
+                                                     double last_submit, double lag_front,
+                                                     double lag_back, double wake, double waited_ms,
+                                                     double front_busy, double back_busy) {
+                LOG_INFO(Service,
+                         "nx2 timeline ({} frames): frame {:.2f} ms; {:.1f} lists, {:.0f} entries; "
+                         "first submit {:.2f} ms after the previous present, last {:.2f} ms before "
+                         "this one; front done {:+.2f} ms and back done {:+.2f} ms vs the present; "
+                         "fence wake {:.2f} ms after the back; waited {:.2f} ms; front busy "
+                         "{:.2f} ms, back busy {:.2f} ms",
+                         frames, frame, lists, words, guest_first, last_submit, lag_front, lag_back,
+                         wake, waited_ms, front_busy, back_busy);
+            });
+        }
         Composite(w[5], ~w[22], w[24], w[7]);
         const auto composited = std::chrono::steady_clock::now();
         PaceToVblank(w[12]);
@@ -1873,6 +1895,7 @@ private:
         u32 presents{}, ran_ahead{};
         std::chrono::steady_clock::time_point last_present{};
     } m_stats{};
+    VideoCommon::Nx2Timeline::FrameStats m_timeline;
     u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)
     u32 m_previous_fence_value{};
 

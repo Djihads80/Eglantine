@@ -20,6 +20,7 @@
 #include "video_core/gpu_split.h"
 #include "video_core/nx2_hazard.h"
 #include "video_core/nx2_job_stats.h"
+#include "video_core/nx2_timeline.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/renderer_base.h"
@@ -103,7 +104,12 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                             VideoCommon::Nx2Hazard::SetListEpoch(epoch);
                         });
                     }
+                    const u64 timeline_seq = submit_list->timeline_seq;
                     scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
+                    if (timeline_seq != 0) {
+                        VideoCommon::Nx2Timeline::OnFront(timeline_seq);
+                        split.Defer([timeline_seq] { VideoCommon::Nx2Timeline::OnBack(timeline_seq); });
+                    }
                 } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
                     split.Defer([gpu = &system.GPU()] { gpu->TickWork(); });
                 } else if (auto* run = std::get_if<RunCommand>(&next.data)) {
@@ -136,7 +142,10 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
             if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
                 Profile::Scope scope{Profile::Zone::Push};
                 VideoCommon::Nx2Hazard::SetListEpoch(submit_list->epoch);
+                const u64 timeline_seq = submit_list->timeline_seq;
                 scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
+                VideoCommon::Nx2Timeline::OnFront(timeline_seq);
+                VideoCommon::Nx2Timeline::OnBack(timeline_seq);
             } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
                 Profile::Scope scope{Profile::Zone::Tick};
                 system.GPU().TickWork();
