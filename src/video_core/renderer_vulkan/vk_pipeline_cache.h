@@ -160,6 +160,7 @@ private:
         std::unique_ptr<GraphicsPipeline> pipeline; ///< Null when the build failed
         GraphicsEnvironmentArray envs;              ///< For the disk cache
         std::chrono::steady_clock::duration time{};
+        std::chrono::steady_clock::duration latency{}; ///< Queued to finished
     };
 
     [[nodiscard]] bool CanTranslateAsynchronously() const;
@@ -173,7 +174,8 @@ private:
 
     /// Runs on a translation worker.
     void TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& key,
-                                   GraphicsEnvironmentArray envs, std::promise<void> done);
+                                   GraphicsEnvironmentArray envs, std::promise<void> done,
+                                   std::chrono::steady_clock::time_point queued_at);
 
     /// Moves the pipelines the workers finished into graphics_cache (GPU thread).
     void AdoptTranslatedGraphicsPipelines();

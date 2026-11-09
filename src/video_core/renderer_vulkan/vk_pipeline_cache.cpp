@@ -425,13 +425,21 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                            Common::ThreadPlacement::Background) {
     if (use_asynchronous_shaders && AsyncTranslationAllowed() &&
         !device.HasBrokenParallelShaderCompiling()) {
-        // Half the driver compile workers: their compiles are queued from these threads.
-        num_translation_threads = std::max<size_t>(1, GetTotalPipelineWorkers() / 2);
+        // EDEN_NX2_TRANSLATION_THREADS overrides the count (1 to 32).
+        if (const char* const threads = std::getenv("EDEN_NX2_TRANSLATION_THREADS")) {
+            num_translation_threads =
+                std::clamp<size_t>(static_cast<size_t>(std::strtoull(threads, nullptr, 10)), 1, 32);
+        } else {
+            // As many as the driver compile workers. Both run below normal priority, so a burst
+            // of new pipelines takes idle cores without slowing the emulated CPU and GPU threads.
+            num_translation_threads = GetTotalPipelineWorkers();
+        }
         translation_wait = MillisecondsFromEnv("EDEN_NX2_ASYNC_TRANSLATION_WAIT_MS", 2.0);
         translation_frame_budget = MillisecondsFromEnv("EDEN_NX2_ASYNC_TRANSLATION_FRAME_MS", 4.0);
         translation_frame_left = translation_frame_budget;
-        translation_workers = std::make_unique<Common::ThreadWorker>(
-            num_translation_threads, "VkPipelineTranslator");
+        translation_workers.reset(new Common::ThreadWorker(num_translation_threads,
+                                                           "VkPipelineTranslator", {},
+                                                           Common::ThreadPlacement::Background));
         LOG_INFO(Render_Vulkan,
                  "Native graphics pipelines translate on {} threads (wait {:.1f} ms per pipeline, "
                  "{:.1f} ms per frame)",
@@ -1782,10 +1790,13 @@ struct TranslationReport {
     u32 ready_in_time{};
     u32 skipped{};
     u32 adopted{};
+    size_t peak_queued{};
     size_t copied_bytes{};
     Duration preparation{};
     Duration waited{};
     Duration worker{};
+    Duration latency{}; ///< Queued to finished, summed over adopted pipelines
+    Duration max_latency{};
     std::chrono::steady_clock::time_point window{std::chrono::steady_clock::now()};
 
     void Log() {
@@ -1798,9 +1809,11 @@ struct TranslationReport {
             LOG_INFO(Render_Vulkan,
                      "Async translation in the last 10 s: {} queued ({} KiB copied, {:.1f} ms "
                      "preparing), {} ready in time, {} draws skipped, {} not detached; {:.1f} ms "
-                     "waited; {} adopted, {:.1f} ms on workers",
+                     "waited; {} adopted, {:.1f} ms on workers, latency {:.1f} ms mean {:.1f} ms "
+                     "max, peak {} queued",
                      queued, copied_bytes / 1024, ms(preparation), ready_in_time, skipped,
-                     not_detached, ms(waited), adopted, ms(worker));
+                     not_detached, ms(waited), adopted, ms(worker),
+                     adopted != 0 ? ms(latency) / adopted : 0.0, ms(max_latency), peak_queued);
         }
         *this = TranslationReport{};
     }
@@ -1832,9 +1845,10 @@ std::optional<std::shared_future<void>> PipelineCache::QueueGraphicsTranslation(
     std::promise<void> promise;
     std::shared_future<void> done{promise.get_future().share()};
     translating_graphics.emplace(graphics_key, done);
+    report.peak_queued = std::max(report.peak_queued, translating_graphics.size());
     translation_workers->QueueWork([this, key = graphics_key, envs = std::move(environments.envs),
-                                    promise = std::move(promise)]() mutable {
-        TranslateGraphicsPipeline(key, std::move(envs), std::move(promise));
+                                    promise = std::move(promise), queued_at = begin]() mutable {
+        TranslateGraphicsPipeline(key, std::move(envs), std::move(promise), queued_at);
     });
     ++report.queued;
     report.copied_bytes += copied;
@@ -1870,7 +1884,8 @@ bool PipelineCache::WaitForGraphicsTranslation(const std::shared_future<void>& d
 
 void PipelineCache::TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& key,
                                               GraphicsEnvironmentArray envs,
-                                              std::promise<void> done) {
+                                              std::promise<void> done,
+                                              std::chrono::steady_clock::time_point queued_at) {
     const auto begin = std::chrono::steady_clock::now();
     std::unique_ptr<GraphicsPipeline> pipeline;
     {
@@ -1895,6 +1910,7 @@ void PipelineCache::TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& ke
             .pipeline = std::move(pipeline),
             .envs = std::move(envs),
             .time = std::chrono::steady_clock::now() - begin,
+            .latency = std::chrono::steady_clock::now() - queued_at,
         });
         num_translated.fetch_add(1, std::memory_order_release);
     }
@@ -1913,6 +1929,8 @@ void PipelineCache::AdoptTranslatedGraphicsPipelines() {
         translating_graphics.erase(translated.key);
         ++report.adopted;
         report.worker += translated.time;
+        report.latency += translated.latency;
+        report.max_latency = std::max(report.max_latency, translated.latency);
         const bool is_mesh{translated.pipeline && translated.pipeline->IsMeshPipeline()};
         const bool built{static_cast<bool>(translated.pipeline)};
         const auto [it, inserted]{graphics_cache.try_emplace(translated.key)};
