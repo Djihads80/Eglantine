@@ -7,6 +7,8 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
+#include <string>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
@@ -510,6 +512,43 @@ void BufferCache<P>::BindHostGeometryBuffers(bool is_indexed) {
 
 template <class P>
 void BufferCache<P>::BindHostStageBuffers(size_t stage) {
+    // EDEN_NX2_BIND_STATS=1 (diagnostic): how often a stage's buffer bindings are exactly the
+    // previous draw's, which a "skip unchanged bindings" change would exploit.
+    static const bool bind_stats = std::getenv("EDEN_NX2_BIND_STATS") != nullptr;
+    if (bind_stats) [[unlikely]] {
+        static std::array<u64, NUM_STAGES> last_signature{};
+        static std::array<u64, NUM_STAGES> binds{}, repeats{}, uniform_count{}, storage_count{};
+        static u64 total_binds{};
+        const auto mix = [](u64 hash, u64 value) {
+            return (hash ^ value) * 0x100000001b3ULL;
+        };
+        u64 hash = 0xcbf29ce484222325ULL;
+        ForEachEnabledBit(channel_state->enabled_uniform_buffer_masks[stage], [&](u32 index) {
+            const Binding& binding = channel_state->uniform_buffers[stage][index];
+            hash = mix(mix(mix(hash, index), binding.device_addr), binding.size);
+            ++uniform_count[stage];
+        });
+        ForEachEnabledBit(channel_state->enabled_storage_buffers[stage], [&](u32 index) {
+            const Binding& binding = channel_state->storage_buffers[stage][index];
+            hash = mix(mix(mix(hash, 64 + index), binding.device_addr), binding.size);
+            ++storage_count[stage];
+        });
+        ++binds[stage];
+        repeats[stage] += hash == last_signature[stage] ? 1 : 0;
+        last_signature[stage] = hash;
+        if (++total_binds % 500000 == 0) {
+            std::string line;
+            for (size_t i = 0; i < NUM_STAGES; ++i) {
+                if (binds[i] != 0) {
+                    line += fmt::format(" stage {}: {:.0f}% unchanged of {} ({:.1f} uniform, {:.1f} storage buffers each);",
+                                        i, 100.0 * static_cast<double>(repeats[i]) / static_cast<double>(binds[i]),
+                                        binds[i], static_cast<double>(uniform_count[i]) / static_cast<double>(binds[i]),
+                                        static_cast<double>(storage_count[i]) / static_cast<double>(binds[i]));
+                }
+            }
+            LOG_INFO(HW_GPU, "nx2 bind stats:{}", line);
+        }
+    }
     BindHostGraphicsUniformBuffers(stage);
     if (channel_state->enabled_storage_buffers[stage] != 0) {
         BindHostGraphicsStorageBuffers(stage);
@@ -2334,6 +2373,39 @@ void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
 
 template <class P>
 bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size) {
+    // EDEN_NX2_BIND_STATS=1: how many syncs have nothing to upload.
+    static const bool sync_stats = std::getenv("EDEN_NX2_BIND_STATS") != nullptr;
+    static std::atomic<u64> sync_total{0}, sync_uploading{0}, sync_idle_cycles{0}, sync_all_cycles{0};
+    static const u64 first_cycles = __builtin_ia32_rdtsc();
+    static const auto first_time = std::chrono::steady_clock::now();
+    const u64 sync_start = sync_stats ? __builtin_ia32_rdtsc() : 0;
+    const auto note_sync = [&](bool uploaded) {
+        if (!sync_stats) {
+            return;
+        }
+        const u64 cycles = __builtin_ia32_rdtsc() - sync_start;
+        sync_all_cycles.fetch_add(cycles, std::memory_order_relaxed);
+        if (!uploaded) {
+            sync_idle_cycles.fetch_add(cycles, std::memory_order_relaxed);
+        }
+        sync_uploading.fetch_add(uploaded ? 1 : 0, std::memory_order_relaxed);
+        if (const u64 n = sync_total.fetch_add(1, std::memory_order_relaxed) + 1; n % 500000 == 0) {
+            const double ns = static_cast<double>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() -
+                                                                     first_time)
+                    .count());
+            const double cycles_per_ns = static_cast<double>(__builtin_ia32_rdtsc() - first_cycles) / ns;
+            const u64 idle_syncs = n - sync_uploading.load();
+            LOG_INFO(HW_GPU,
+                     "nx2 sync stats: {} buffer syncs, {:.1f}% had something to upload; a sync with nothing to upload "
+                     "takes {:.0f} ns, one that uploads {:.0f} ns; all syncs = {:.0f} ms per second of run time",
+                     n, 100.0 * static_cast<double>(sync_uploading.load()) / static_cast<double>(n),
+                     static_cast<double>(sync_idle_cycles.load()) / static_cast<double>(std::max<u64>(idle_syncs, 1)) / cycles_per_ns,
+                     static_cast<double>(sync_all_cycles.load() - sync_idle_cycles.load()) / static_cast<double>(std::max<u64>(sync_uploading.load(), 1)) / cycles_per_ns,
+                     static_cast<double>(sync_all_cycles.load()) / cycles_per_ns / ns * 1000.0);
+        }
+    };
+
 #ifdef __ANDROID__
     const bool use_optimized_vertex_buffers = Settings::values.use_optimized_vertex_buffers.GetValue();
 #else
@@ -2365,8 +2437,10 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
             add_upload(upload_start, device_addr_out + range_size);
         });
         if (total_size_bytes == 0) {
+            note_sync(false);
             return true;
         }
+        note_sync(true);
         const std::span<BufferCopy> copies_span(upload_copies.data(), upload_copies.size());
         UploadMemory(buffer, total_size_bytes, largest_copy, copies_span);
         // Mapped uploads carry their own barriers (or run in the upload command buffer, which
