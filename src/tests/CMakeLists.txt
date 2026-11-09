@@ -17,6 +17,7 @@ add_executable(tests
     common/ring_buffer.cpp
     common/scratch_buffer.cpp
     common/slot_vector.cpp
+    common/sparse_large_vector.cpp
     common/undefined_fix.cpp
     common/unique_function.cpp
     common/zstd_compression.cpp
@@ -46,6 +47,7 @@ add_executable(tests
     video_core/ampere_vote.cpp
     video_core/shader_attributes.cpp
     video_core/indirect_reset.cpp
+    video_core/stale_pages.cpp
     input_common/calibration_configuration_job.cpp
 )
 

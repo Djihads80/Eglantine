@@ -64,6 +64,8 @@ constexpr u32 NUM_GRAPHICS_UNIFORM_BUFFERS = 18;
 constexpr u32 NUM_COMPUTE_UNIFORM_BUFFERS = 8;
 // Native compute shaders bind up to 18 global memory ranges; the enable masks are 32 bits wide.
 constexpr u32 NUM_STORAGE_BUFFERS = 32;
+// Compute programs can take pointer table entries beyond 32 bindings (Shader::Info::MAX_SSBOS).
+constexpr u32 NUM_COMPUTE_STORAGE_BUFFERS = 64;
 constexpr u32 NUM_TEXTURE_BUFFERS = 32;
 constexpr u32 NUM_STAGES = 5;
 
@@ -143,7 +145,7 @@ public:
     Binding indirect_buffer_binding;
 
     std::array<Binding, NUM_COMPUTE_UNIFORM_BUFFERS> compute_uniform_buffers;
-    std::array<Binding, NUM_STORAGE_BUFFERS> compute_storage_buffers;
+    std::array<Binding, NUM_COMPUTE_STORAGE_BUFFERS> compute_storage_buffers;
     std::array<TextureBufferBinding, NUM_TEXTURE_BUFFERS> compute_texture_buffers;
 
     std::array<u32, NUM_STAGES> enabled_uniform_buffer_masks{};
@@ -154,8 +156,8 @@ public:
 
     std::array<u32, NUM_STAGES> enabled_storage_buffers{};
     std::array<u32, NUM_STAGES> written_storage_buffers{};
-    u32 enabled_compute_storage_buffers = 0;
-    u32 written_compute_storage_buffers = 0;
+    u64 enabled_compute_storage_buffers = 0;
+    u64 written_compute_storage_buffers = 0;
 
     u32 total_graphics_storage_buffers = 0;
     u32 total_compute_storage_buffers = 0;
@@ -385,11 +387,14 @@ public:
     void Nx2FinishDispatchSig(u64 writer);
     /// True when it recorded copies, which the GPU completes at `tick` (the caller submits).
     bool Nx2CopyListPages(u64 tick);
-    enum class Nx2ListRead { Unknown, Copied, Synced };
+    enum class Nx2ListRead { Unknown, Copied, Synced, Pending };
     /// Front thread: Synced when guest memory holds the page `device_addr` lies in (flushed and
     /// written by no GPU work since), else Copied with `out` filled from the copy of its last
     /// write once the GPU is done with it. Unknown otherwise: the caller drains and flushes.
-    Nx2ListRead Nx2ReadListCopy(DAddr device_addr, std::span<u8> out);
+    /// With `pending_tick`, a copy the GPU has not finished returns Pending and sets the tick
+    /// instead of waiting for it.
+    Nx2ListRead Nx2ReadListCopy(DAddr device_addr, std::span<u8> out,
+                                u64* pending_tick = nullptr);
     /// EDEN_NX2_GPU_DIRTY_GEN, without the split: reads `out` from the memory of the buffer holding
     /// it, when the GPU can be read directly and is done with the last write to its page.
     bool Nx2ReadListHost(DAddr device_addr, std::span<u8> out);
@@ -432,8 +437,8 @@ public:
     std::unordered_set<DAddr> native_indirect_uniforms_this_frame;
 
 private:
-    template <typename Func>
-    static void ForEachEnabledBit(u32 enabled_mask, Func&& func) {
+    template <typename Mask, typename Func>
+    static void ForEachEnabledBit(Mask enabled_mask, Func&& func) {
         for (u32 index = 0; enabled_mask != 0; ++index, enabled_mask >>= 1) {
             const int disabled_bits = std::countr_zero(enabled_mask);
             index += disabled_bits;

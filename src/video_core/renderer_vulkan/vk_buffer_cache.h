@@ -143,6 +143,8 @@ public:
     /// A GPU-written command list's copy is read (BufferCache::Nx2ReadListCopy): counted, and
     /// how the waits for them went is logged every 10 s.
     void NoteListCopyRead();
+    /// A read found the copy not done and suspended its channel instead of waiting (counted).
+    void NoteListCopyPending();
 
     void Finish();
 

@@ -277,6 +277,7 @@ add_library(video_core STATIC
     texture_cache/image_view_info.h
     texture_cache/render_targets.h
     texture_cache/samples_helper.h
+    texture_cache/stale_pages.h
     texture_cache/texture_cache.cpp
     texture_cache/texture_cache.h
     texture_cache/texture_cache_base.h

@@ -1498,16 +1498,31 @@ void RasterizerVulkan::SubmitNx2ListCopies() {
 }
 
 VideoCore::RasterizerInterface::GpuWrittenList RasterizerVulkan::ReadGpuWrittenCommandList(
-    DAddr addr, std::span<u8> out) {
+    DAddr addr, std::span<u8> out, u64* pending_tick) {
     // No cache lock: the front only reads the copies, under their own lock.
-    switch (buffer_cache.Nx2ReadListCopy(addr, out)) {
+    switch (buffer_cache.Nx2ReadListCopy(addr, out, pending_tick)) {
     case BufferCache::Nx2ListRead::Copied:
         return GpuWrittenList::Copied;
     case BufferCache::Nx2ListRead::Synced:
         return GpuWrittenList::Synced;
+    case BufferCache::Nx2ListRead::Pending:
+        return GpuWrittenList::Pending;
     default:
         return GpuWrittenList::Unknown;
     }
+}
+
+bool RasterizerVulkan::IsGpuTickDone(u64 tick) {
+    if (scheduler.IsFree(tick)) {
+        return true;
+    }
+    // A deferred submission (Scheduler::DeferFlush) is only made by the split's back: ask it to
+    // submit, or the tick never completes while the front polls.
+    if (!scheduler.IsSubmitted(tick) && VideoCommon::GpuSplit::Get().Active()) {
+        VideoCommon::GpuSplit::Get().RequestIdleHook();
+    }
+    scheduler.GetMasterSemaphore().Refresh();
+    return scheduler.IsFree(tick);
 }
 
 void RasterizerVulkan::NoteGpuWrittenCommandListSynced(DAddr page) {

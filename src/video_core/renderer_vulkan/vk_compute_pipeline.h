@@ -79,6 +79,12 @@ public:
         return nx2_views;
     }
 
+    /// Native constant buffer pointer slots taken as storage buffers, and the ones left out
+    /// because they held null when this pipeline was built (rebuilt once one is filled).
+    std::vector<u64> pointer_slots;
+    std::vector<u64> null_pointer_slots;
+    u32 pointer_rebuilds{};
+
     struct SampledImage {
         u32 tic;
         VideoCommon::ImageViewId id;
