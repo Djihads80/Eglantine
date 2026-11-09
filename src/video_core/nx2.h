@@ -114,6 +114,23 @@ inline constexpr u64 Nx2OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
     }
 }
 
+/// How long the GPU thread sleeps between polls of channels suspended on a semaphore the CPU
+/// releases (gpu_thread.cpp, #446), in microseconds. EDEN_NX2_PENDING_SLEEP_US=<us> (> 0)
+/// overrides the title's default: 50 us for Ocarina of Time, which waits there ~330 times a
+/// second while its present waits for the work behind them (~17 ms a frame in Kokiri village
+/// with 1 ms sleeps, ~1 ms with 50 us); 1 ms elsewhere (50 us cost Mario Kart World ~1 fps on
+/// the Odin 3).
+[[nodiscard]] inline long Nx2PendingSleepUs() {
+    static const long forced = [] {
+        const char* const value = std::getenv("EDEN_NX2_PENDING_SLEEP_US");
+        return value != nullptr ? std::strtol(value, nullptr, 10) : 0L;
+    }();
+    if (forced > 0) {
+        return forced;
+    }
+    return Nx2DefaultsProgramId() == Nx2OcarinaOfTimeProgramId ? 50L : 1000L;
+}
+
 // Device pages the GPU has written through the buffer cache (shader stores, copies), ever. Title 1
 // runs command lists the GPU writes each frame (20-byte entries its culling fills in); read
 // without a flush they are stale and the draws behind them (trees) go missing. The bits never

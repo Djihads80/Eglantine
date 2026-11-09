@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <thread>
@@ -13,6 +14,7 @@
 #endif
 
 #include "common/assert.h"
+#include "common/logging.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/thread.h"
@@ -43,6 +45,23 @@ void SignalCommand(SynchState& state, u64 fence, bool block) {
     }
 }
 
+// The sleep between polls of suspended channels (Tegra::Nx2PendingSleepUs), asked each time:
+// it is the running title's (read after env.txt and after the title is known, never at load).
+std::chrono::microseconds PendingSleep() {
+    const long us = Tegra::Nx2PendingSleepUs();
+    // Once per title: which poll applies.
+    static std::atomic<u64> logged{~u64{0}};
+    if (const u64 program = Tegra::Nx2DefaultsProgramId();
+        logged.load(std::memory_order_relaxed) != program &&
+        logged.exchange(program, std::memory_order_relaxed) != program) {
+        LOG_INFO(HW_GPU, "Suspended channels for program {:016X}: polled every {} us ({})",
+                 program, us,
+                 std::getenv("EDEN_NX2_PENDING_SLEEP_US") != nullptr ? "EDEN_NX2_PENDING_SLEEP_US"
+                                                                     : "title default");
+    }
+    return std::chrono::microseconds{us};
+}
+
 } // Anonymous namespace
 
 ThreadManager::ThreadManager(Core::System& system_)
@@ -57,7 +76,8 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
         Common::SetCurrentThreadName("GPU");
         VideoCommon::GpuSplit::MarkGpuThread();
 #ifdef __linux__
-        // The pending-channel polls below sleep 50 us; the default timer slack adds up to 50 more.
+        // The pending-channel polls below sleep as little as 50 us (Tegra::Nx2PendingSleepUs);
+        // the default timer slack adds up to 50 more.
         prctl(PR_SET_TIMERSLACK, 1UL, 0, 0, 0);
 #endif
         Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
@@ -81,23 +101,15 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 }
                 if (!state.queue.TryPop(next)) {
                     // The CPU usually releases the semaphore soon after: poll for half a
-                    // millisecond, then in short sleeps. Ocarina of Time waits here ~330 times a
-                    // second and its present waits for the work behind them: with 1 ms sleeps the
-                    // present waited ~17 ms a frame in Kokiri village, with 50 us ~1 ms. A channel
-                    // still waiting after 2 s (menus, loading) goes back to 1 ms sleeps.
+                    // millisecond, then in sleeps of the title's length (Tegra::Nx2PendingSleepUs:
+                    // 50 us for Ocarina of Time, 1 ms elsewhere). A channel still waiting after
+                    // 2 s (menus, loading) goes back to 1 ms sleeps.
                     Profile::Scope scope{Profile::Zone::PendingSleep};
                     const auto waited = std::chrono::steady_clock::now() - last_progress;
                     if (waited < std::chrono::microseconds{500}) {
                         std::this_thread::yield();
                     } else if (waited < std::chrono::seconds{2}) {
-                        // EDEN_NX2_PENDING_SLEEP_US=<us> (A/B; 1000 is the old poll). Read the
-                        // first time a channel waits, after env.txt.
-                        static const std::chrono::microseconds pending_sleep{[] {
-                            const char* value = std::getenv("EDEN_NX2_PENDING_SLEEP_US");
-                            const long us = value != nullptr ? std::strtol(value, nullptr, 10) : 50L;
-                            return us > 0 ? us : 50L;
-                        }()};
-                        std::this_thread::sleep_for(pending_sleep);
+                        std::this_thread::sleep_for(PendingSleep());
                     } else {
                         std::this_thread::sleep_for(std::chrono::milliseconds{1});
                     }
