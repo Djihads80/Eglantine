@@ -226,7 +226,7 @@ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu
         }
         DownloadMemory(page_begin, page_end - page_begin);
     }
-    memory_tracker.MarkRegionAsCpuModified(device_addr, size);
+    memory_tracker.MarkRegionAsCpuModified(device_addr, size, true);
     MarkVertexBuffersStale(device_addr, size);
 }
 
@@ -1448,8 +1448,16 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                                ((device_addr + mapped_size) & Core::DEVICE_PAGEMASK);
             }
             if (mapped_size != 0) {
-                memory_tracker.MarkRegionAsCpuModified(device_addr,
-                                                       (std::min<u64>)(mapped_size, size));
+                const u64 bank_size = (std::min<u64>)(mapped_size, size);
+                if (HotPages::Enabled() && HotPages::KeepBankProtection()) {
+                    // EDEN_NX2_HOT_PAGES: upload the bank again but keep it write-protected, so
+                    // its upload doesn't protect it again (an unprotect and a protect per page a
+                    // frame on the back thread). A CPU write to it still faults as before.
+                    memory_tracker.MarkRegionForUpload(device_addr, bank_size);
+                    hot_bank_pages += Common::DivCeil(bank_size, Core::DEVICE_PAGESIZE);
+                } else {
+                    memory_tracker.MarkRegionAsCpuModified(device_addr, bank_size);
+                }
             }
         }
     }
@@ -3044,7 +3052,7 @@ void BufferCache<P>::TickHotPages() {
     struct Totals {
         u64 protects, protect_pages, unprotects, faults, compares, unchanged, uploads, promoted,
             demoted, refused, blocked, capped;
-        u64 frames;
+        u64 frames, bank_pages;
     };
     static auto last_time = std::chrono::steady_clock::now();
     static Totals last{};
@@ -3079,6 +3087,7 @@ void BufferCache<P>::TickHotPages() {
         stats.blocked,
         stats.capped,
         frames,
+        hot_bank_pages,
     };
     const auto rate = [seconds](u64 now_value, u64 last_value) {
         return static_cast<double>(now_value - last_value) / seconds;
@@ -3089,7 +3098,7 @@ void BufferCache<P>::TickHotPages() {
              "Hot pages: {} hot (+{} -{} in {:.1f} s, {} refused, {:.0f} GPU-written candidates "
              "a frame, {} capped) | protects {:.0f}/s ({:.0f} pages/s), unprotects {:.0f}/s, "
              "write faults {:.0f}/s | hot syncs {:.0f}/s, {:.1f}% unchanged, extra upload {:.0f} "
-             "KiB/s",
+             "KiB/s | bank re-uploads kept protected {:.0f} pages/s",
              memory_tracker.HotPageCount(), totals.promoted - last.promoted,
              totals.demoted - last.demoted, seconds, totals.refused - last.refused,
              static_cast<double>(totals.blocked - last.blocked) / static_cast<double>(ticks),
@@ -3100,7 +3109,8 @@ void BufferCache<P>::TickHotPages() {
                                  static_cast<double>(compares)
                            : 0.0,
              rate(totals.uploads, last.uploads) * static_cast<double>(Core::DEVICE_PAGESIZE) /
-                 1024.0);
+                 1024.0,
+             rate(totals.bank_pages, last.bank_pages));
     last = totals;
     last_time = now;
 }

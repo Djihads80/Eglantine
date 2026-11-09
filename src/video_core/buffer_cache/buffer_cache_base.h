@@ -638,6 +638,7 @@ private:
     boost::container::small_vector<BufferCopy, 4> upload_copies;
     std::vector<std::pair<DAddr, const u8*>> hot_uploads; ///< EDEN_NX2_HOT_PAGES
     std::vector<BufferCopy> hot_copies;
+    u64 hot_bank_pages = 0; ///< bank re-uploads that kept their write protection
 
     /// Ranges SynchronizeBuffer left with nothing to upload, at their region's CPU write
     /// generation (direct mapped by address and size).

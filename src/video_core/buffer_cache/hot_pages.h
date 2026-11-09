@@ -14,6 +14,8 @@
 // - Pages the GPU writes (storage buffers, copies, transform feedback), Switch 2 GPU-written and
 //   command list pages never turn hot.
 // - EDEN_NX2_HOT_PAGES_MAX caps the hot pages (default 4096, 16 MiB of shadow copies).
+// - Native uniform bank re-uploads (once a frame) keep their pages write-protected instead of
+//   unprotecting them to force the upload (EDEN_NX2_HOT_BANKS=0: as before).
 
 #include <array>
 #include <atomic>
@@ -43,6 +45,17 @@ namespace VideoCommon::HotPages {
         return static_cast<u32>(parsed < 1 ? 1 : (parsed > 4 ? 4 : parsed));
     }();
     return frames;
+}
+
+/// EDEN_NX2_HOT_BANKS=0: native uniform bank re-uploads (EDEN_NX2_BANK_REUPLOAD) unprotect and
+/// re-protect their pages every frame as before. By default, with hot pages on, they keep their
+/// write protection.
+[[nodiscard]] inline bool KeepBankProtection() noexcept {
+    static const bool keep = [] {
+        const char* const value = std::getenv("EDEN_NX2_HOT_BANKS");
+        return value == nullptr || value[0] != '0';
+    }();
+    return keep;
 }
 
 [[nodiscard]] inline size_t MaxPages() noexcept {

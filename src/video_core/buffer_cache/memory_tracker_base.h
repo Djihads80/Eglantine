@@ -79,13 +79,22 @@ public:
         });
     }
 
-    /// Mark region as CPU modified, notifying the device_tracker about this change
-    void MarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 query_size) {
-        IteratePages<true>(dirty_cpu_addr, query_size, [this](Manager* manager, u64 offset, size_t size) {
-            manager->ChangeRegionState(Type::CPU, true, manager->cpu_addr + offset, size);
+    /// Mark region as CPU modified, notifying the device_tracker about this change. `write`: a
+    /// CPU write did it (EDEN_NX2_HOT_PAGES history), not a buffer going away or a forced upload.
+    void MarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 query_size, bool write = false) {
+        IteratePages<true>(dirty_cpu_addr, query_size, [this, write](Manager* manager, u64 offset, size_t size) {
+            manager->ChangeRegionState(Type::CPU, true, manager->cpu_addr + offset, size, write);
             if (manager->hot_activity) {
                 NoteHotActivity(manager);
             }
+        });
+    }
+
+    /// Uploads the range again on its next synchronization, keeping its write protection (a
+    /// forced re-upload, EDEN_NX2_HOT_PAGES bank re-uploads).
+    void MarkRegionForUpload(VAddr dirty_cpu_addr, u64 query_size) {
+        IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
+            manager->MarkForUpload(manager->cpu_addr + offset, size);
         });
     }
 
@@ -530,7 +539,7 @@ private:
                 manager->ChangeRegionState(Type::CPU, false, page, BYTES_PER_PAGE);
                 const u8* const guest = GuestPage(page);
                 if (guest == nullptr || std::memcmp(guest, shadow, BYTES_PER_PAGE) != 0) {
-                    manager->ChangeRegionState(Type::CPU, true, page, BYTES_PER_PAGE);
+                    manager->ChangeRegionState(Type::CPU, true, page, BYTES_PER_PAGE, true);
                 }
             }
             shadows.Release(page);

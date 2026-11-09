@@ -144,7 +144,9 @@ struct WordManager {
     /// @param enable        If enabling or disabling
     /// @param dirty_addr    Base address to mark or unmark as modified
     /// @param size          Size in bytes to mark or unmark as modified
-    void ChangeRegionState(Type type, bool enable, u64 dirty_addr, u64 size) noexcept {
+    /// @param write         EDEN_NX2_HOT_PAGES: a CPU write marks the range (feeds the hot history)
+    void ChangeRegionState(Type type, bool enable, u64 dirty_addr, u64 size,
+                           bool write = false) noexcept {
         if (enable && type == Type::CPU) {
             ++cpu_generation;
         }
@@ -159,7 +161,7 @@ struct WordManager {
                 if (enable) {
                     // Write faults feed the hot page history. A write noticed on a hot page means
                     // its GPU copy may no longer match the shadow (new buffer, host write).
-                    const u64 faulted = mask & ~untracked_words[index];
+                    const u64 faulted = write ? mask & ~untracked_words[index] : 0;
                     if (faulted != 0) {
                         Span(Type::Faulted)[index] |= faulted;
                         hot_activity = true;
@@ -196,6 +198,20 @@ struct WordManager {
         if (!ranges.empty()) {
             ApplyCollectedRanges(ranges, (!enable) ? 1 : -1);
         }
+    }
+
+    /// Marks pages CPU-dirty for one more upload without changing their write tracking: a
+    /// write-protected page stays protected (its upload then doesn't protect it again).
+    void MarkForUpload(u64 dirty_addr, u64 size) noexcept {
+        ++cpu_generation;
+        IterateWords(dirty_addr - cpu_addr, size, [&](size_t index, u64 mask) {
+            const u64 before_cpu = CpuWord(index);
+            const u64 before_untracked = UntrackedWord(index);
+            CpuWord(index) |= mask;
+            Span(Type::CachedCPU)[index] &= ~mask;
+            Span(Type::HotValid)[index] &= ~mask;
+            NoteUploadWord(before_cpu, before_untracked, CpuWord(index), UntrackedWord(index));
+        });
     }
 
     /// @brief Loop over each page in the given range.
