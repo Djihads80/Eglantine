@@ -143,6 +143,10 @@ void GpuSplit::MaybeStart(Core::System& system_) {
 #ifdef ARCHITECTURE_x86_64
     // Front macros run compiled (macro_turing_jit.h) only.
     const char* jit = std::getenv("EDEN_NX2_MME_JIT");
+    ++starts;
+    if (const char* runs = std::getenv("EDEN_NX2_MACRO_RUNS"); runs != nullptr && runs[0] == '0') {
+        macro_runs = false;
+    }
     front_macros = mode == '2' && (jit == nullptr || jit[0] != '0');
 #endif
     LOG_INFO(HW_GPU, "GPU thread split: engine methods run on a second thread{}",
@@ -171,6 +175,7 @@ void GpuSplit::Stop() {
     publish_every = PublishEvery;
     front_engine = nullptr;
     back_engine = nullptr;
+    open_run = nullptr;
     front_macros = false;
     published.store(0, std::memory_order_relaxed);
     consumed.store(0, std::memory_order_relaxed);
@@ -211,6 +216,8 @@ void GpuSplit::WaitForSpace(size_t words) {
 }
 
 void GpuSplit::Publish() {
+    // The back may read anything published: no more appends to the open run.
+    open_run = nullptr;
     if (published_local == write_position) {
         return;
     }
@@ -430,6 +437,19 @@ size_t GpuSplit::Execute(const u64* entry) {
         engine->CallMultiMethod(*system, method, reinterpret_cast<const u32*>(entry + data),
                                 amount, static_cast<u32>(entry[1]));
         return data + (amount + 1) / 2;
+    }
+    case Kind::Run: {
+        const size_t count = static_cast<size_t>((head >> 8) & 0xffffff);
+        const u64* const writes = entry + 1;
+        auto* const engine = back_engine;
+        Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+        // Only Method entries feed the sink: one check covers the run.
+        engine->ConsumeSink(*system);
+        for (size_t i = 0; i < count; ++i) {
+            engine->CallMethod(*system, static_cast<u32>((writes[i] >> 8) & 0xffff),
+                               static_cast<u32>(writes[i] >> 32), true);
+        }
+        return 1 + count;
     }
     case Kind::Call: {
         const size_t payload = static_cast<size_t>((head >> 8) & 0xffffff);

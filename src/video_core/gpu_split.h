@@ -41,6 +41,10 @@ public:
     [[nodiscard]] bool Active() const {
         return active;
     }
+    /// How often the split started: state the front copied during an earlier start is stale.
+    [[nodiscard]] u32 Starts() const {
+        return starts;
+    }
     /// Whether the front runs the engines' macros (EDEN_NX2_SPLIT=2).
     [[nodiscard]] bool FrontMacros() const {
         return front_macros;
@@ -98,12 +102,43 @@ public:
     void MultiMethod(Tegra::Engines::EngineInterface* engine, u32 method, const u32* words,
                      u32 amount, u32 methods_pending, const GPUVAddr* segment);
     /// A write made by a macro: CallMethod without the method sink, as the engines' macros do.
+    /// Consecutive macro writes to one engine go into one Run entry, which the back loops over
+    /// instead of dispatching an entry per write. A run stays open only until something else is
+    /// written or the ring is published, so the order does not change.
     void MacroWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument) {
         SelectEngine(engine);
-        u64* const entry = Reserve(1);
-        entry[0] = static_cast<u64>(Kind::Method) | IsLast | Direct | (u64{method & 0xffff} << 8) |
-                   (u64{argument} << 32);
-        Commit(1);
+        const u64 word = (u64{method & 0xffff} << 8) | (u64{argument} << 32);
+        if (!macro_runs) [[unlikely]] {
+            u64* const single = Reserve(2);
+            single[0] = static_cast<u64>(Kind::Run) | (u64{1} << 8);
+            single[1] = word;
+            Commit(2);
+            return;
+        }
+        if (open_run != nullptr && open_run_end == write_position &&
+            ((open_run[0] >> 8) & 0xffffff) < MaxRunWrites) {
+            u64* const next = Reserve(1);
+            // Reserve may have wrapped or published (closing the run): append only right after
+            // the run's last word.
+            if (open_run != nullptr && next == open_run + 1 + ((open_run[0] >> 8) & 0xffffff)) {
+                *next = word;
+                open_run[0] += u64{1} << 8;
+                Commit(1);
+                if (open_run != nullptr) {
+                    open_run_end = write_position;
+                }
+                return;
+            }
+            open_run = nullptr;
+        }
+        u64* const entry = Reserve(2);
+        entry[0] = static_cast<u64>(Kind::Run) | (u64{1} << 8);
+        entry[1] = word;
+        open_run = entry;
+        Commit(2);
+        if (open_run != nullptr) {
+            open_run_end = write_position;
+        }
     }
 
     /// Runs `func` on the back after everything sent before it. Must be trivially copyable.
@@ -186,7 +221,9 @@ private:
         Method, ///< Bits 8-23 method, 32-63 argument; flags IsLast, HasSegment (word 1)
         Multi,  ///< Bits 8-23 method, 32-63 amount; word 1 methods pending, [segment], words
         Call,   ///< Bits 8-31 payload size in words; word 1 thunk, then the payload
+        Run,    ///< Bits 8-31 count; then count macro writes (bits 8-23 method, 32-63 argument)
     };
+    static constexpr u64 MaxRunWrites = (u64{1} << 24) - 1;
     static constexpr u64 IsLast = 1 << 4;
     static constexpr u64 HasSegment = 1 << 5;
     static constexpr u64 Direct = 1 << 6; ///< Method: call it even if not executable (macros)
@@ -230,6 +267,8 @@ private:
 
     Core::System* system{};
     bool active{};
+    u32 starts{};
+    bool macro_runs{true}; ///< EDEN_NX2_MACRO_RUNS=0: one entry per macro write
     bool front_macros{};
     std::unique_ptr<u64[]> ring;
 
@@ -242,6 +281,9 @@ private:
     /// Words between publishes: small right after a drain, while the back has nothing to do.
     size_t publish_every{PublishEvery};
     Tegra::Engines::EngineInterface* front_engine{};
+    /// The Run entry MacroWrite appends to (unpublished, nothing written after it), or null.
+    u64* open_run{};
+    u64 open_run_end{};
 
     // Back side.
     Tegra::Engines::EngineInterface* back_engine{};
