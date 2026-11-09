@@ -25,6 +25,7 @@
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/guest_memory.h"
+#include "video_core/nx2_draw_stats.h"
 #include "video_core/nx2_hazard.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/texture_cache/image_view_base.h"
@@ -629,7 +630,9 @@ SamplerId TextureCache<P>::GetSamplerId(u32 index, bool compute) {
         LOG_TRACE(HW_GPU, "Invalid sampler index={}", index);
         return NULL_SAMPLER_ID;
     }
+    VideoCommon::Nx2DrawStats::Timer probe{VideoCommon::Nx2DrawStats::Site::SamplerLookup};
     auto const [descriptor, is_new] = table.Read(*gpu_memory, index);
+    probe.hit = !is_new;
     if (is_new) {
         auto const id = FindSampler(descriptor, compute);
         table.bound_ids[index] = id;
@@ -867,7 +870,9 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
         LOG_TRACE(HW_GPU, "Invalid image view index={}", index);
         return NULL_IMAGE_VIEW_ID;
     }
+    VideoCommon::Nx2DrawStats::Timer probe{VideoCommon::Nx2DrawStats::Site::ImageViewLookup};
     auto const [descriptor, is_new] = table.Read(*gpu_memory, index);
+    probe.hit = !is_new;
     if (is_new) {
         if (IsValidEntry(*gpu_memory, descriptor)) {
             const auto [pair, is_new_tc] = channel_state->image_views.try_emplace(descriptor);

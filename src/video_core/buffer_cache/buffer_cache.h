@@ -23,6 +23,7 @@
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_draw_stats.h"
 #include "video_core/nx2_hazard.h"
 #include "video_core/nx2_knobs.h"
 #include "video_core/nx2_profile.h"
@@ -515,6 +516,7 @@ void BufferCache<P>::BindHostStageBuffers(size_t stage) {
     // EDEN_NX2_BIND_STATS=1 (diagnostic): how often a stage's buffer bindings are exactly the
     // previous draw's, which a "skip unchanged bindings" change would exploit.
     static const bool bind_stats = std::getenv("EDEN_NX2_BIND_STATS") != nullptr;
+    bool stage_repeated = false;
     if (bind_stats) [[unlikely]] {
         static std::array<u64, NUM_STAGES> last_signature{};
         static std::array<u64, NUM_STAGES> binds{}, repeats{}, uniform_count{}, storage_count{};
@@ -534,7 +536,8 @@ void BufferCache<P>::BindHostStageBuffers(size_t stage) {
             ++storage_count[stage];
         });
         ++binds[stage];
-        repeats[stage] += hash == last_signature[stage] ? 1 : 0;
+        stage_repeated = hash == last_signature[stage];
+        repeats[stage] += stage_repeated ? 1 : 0;
         last_signature[stage] = hash;
         if (++total_binds % 500000 == 0) {
             std::string line;
@@ -549,11 +552,19 @@ void BufferCache<P>::BindHostStageBuffers(size_t stage) {
             LOG_INFO(HW_GPU, "nx2 bind stats:{}", line);
         }
     }
-    BindHostGraphicsUniformBuffers(stage);
+    {
+        VideoCommon::Nx2DrawStats::Timer probe{VideoCommon::Nx2DrawStats::Site::StageBindUniform};
+        probe.hit = stage_repeated;
+        BindHostGraphicsUniformBuffers(stage);
+    }
     if (channel_state->enabled_storage_buffers[stage] != 0) {
+        VideoCommon::Nx2DrawStats::Timer probe{VideoCommon::Nx2DrawStats::Site::StageBindStorage};
+        probe.hit = stage_repeated;
         BindHostGraphicsStorageBuffers(stage);
     }
     if (channel_state->enabled_texture_buffers[stage] != 0) {
+        VideoCommon::Nx2DrawStats::Timer probe{VideoCommon::Nx2DrawStats::Site::StageBindTexture};
+        probe.hit = stage_repeated;
         BindHostGraphicsTextureBuffers(stage);
     }
 }
@@ -1259,6 +1270,22 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     const Binding& binding = channel_state->uniform_buffers[stage][index];
     const DAddr device_addr = binding.device_addr;
     const u32 size = (std::min)(binding.size, (*channel_state->uniform_buffer_sizes)[stage][index]);
+    // EDEN_NX2_BIND_STATS: bind cost by size class, and whether the bytes equal this slot's
+    // previous bind (what extending the stream reuse to larger buffers could exploit).
+    bool uniform_same = false;
+    if (VideoCommon::Nx2DrawStats::HashContents() && size != 0) [[unlikely]] {
+        static thread_local std::vector<u8> scratch;
+        scratch.resize((std::min)(size, u32{0x10000}));
+        device_memory.ReadBlockUnsafe(device_addr, scratch.data(), scratch.size());
+        const u64 key = (u64{static_cast<u32>(stage)} << 40) ^ (u64{index} << 32) ^ size;
+        uniform_same = VideoCommon::Nx2DrawStats::SameAsLast(
+            key, VideoCommon::Nx2DrawStats::HashBytes(scratch.data(), scratch.size()));
+    }
+    VideoCommon::Nx2DrawStats::Timer uniform_probe{
+        size <= 4096 ? VideoCommon::Nx2DrawStats::Site::UniformSmall
+        : size < 0x10000 ? VideoCommon::Nx2DrawStats::Site::UniformMedium
+                         : VideoCommon::Nx2DrawStats::Site::UniformBank};
+    uniform_probe.hit = uniform_same;
     Buffer& buffer = slot_buffers[binding.buffer_id];
     TouchBuffer(buffer, binding.buffer_id);
     const bool has_host_buffer = binding.buffer_id != NULL_BUFFER_ID;
@@ -1728,6 +1755,7 @@ void BufferCache<P>::DoUpdateComputeBuffers() {
 
 template <class P>
 void BufferCache<P>::UpdateIndexBuffer() {
+    const VideoCommon::Nx2DrawStats::FindCaller find_caller{VideoCommon::Nx2DrawStats::Site::FindBufferIndex};
     // We have to check for the dirty flags and index count
     // The index count is currently changed without updating the dirty flags
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
@@ -1774,6 +1802,7 @@ void BufferCache<P>::UpdateIndexBuffer() {
 
 template <class P>
 void BufferCache<P>::UpdateVertexBuffers() {
+    const VideoCommon::Nx2DrawStats::FindCaller find_caller{VideoCommon::Nx2DrawStats::Site::FindBufferVertex};
     auto& flags = maxwell3d->dirty.flags;
     if (!maxwell3d->dirty.flags[Dirty::VertexBuffers]) {
         return;
@@ -1844,6 +1873,7 @@ void BufferCache<P>::UpdateDrawIndirect() {
 
 template <class P>
 void BufferCache<P>::UpdateUniformBuffers(size_t stage) {
+    const VideoCommon::Nx2DrawStats::FindCaller find_caller{VideoCommon::Nx2DrawStats::Site::FindBufferUniform};
     if (channel_state->enabled_uniform_buffer_masks[stage] == 0) [[likely]] {
         return;
     }
@@ -1864,6 +1894,7 @@ void BufferCache<P>::UpdateUniformBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::UpdateStorageBuffers(size_t stage) {
+    const VideoCommon::Nx2DrawStats::FindCaller find_caller{VideoCommon::Nx2DrawStats::Site::FindBufferStorage};
     if (channel_state->enabled_storage_buffers[stage] == 0) [[likely]] {
         return;
     }
@@ -1879,6 +1910,7 @@ void BufferCache<P>::UpdateStorageBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::UpdateTextureBuffers(size_t stage) {
+    const VideoCommon::Nx2DrawStats::FindCaller find_caller{VideoCommon::Nx2DrawStats::Site::FindBufferTexture};
     if (channel_state->enabled_texture_buffers[stage] == 0) [[likely]] {
         return;
     }
@@ -2167,6 +2199,7 @@ void BufferCache<P>::Nx2NoteListHostWrite(DAddr device_addr, u64 size) {
 
 template <class P>
 BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible) {
+    VideoCommon::Nx2DrawStats::Timer probe{VideoCommon::Nx2DrawStats::t_find_site};
     const u64 page = device_addr >> CACHING_PAGEBITS;
     if (device_addr == 0 || page >= page_table.size()) {
         return NULL_BUFFER_ID;
@@ -2186,6 +2219,7 @@ BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_com
                 }
             }
             if (usable) {
+                probe.hit = true;
                 return buffer_id;
             }
         }

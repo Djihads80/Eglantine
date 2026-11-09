@@ -45,6 +45,7 @@
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
+#include "video_core/nx2_draw_stats.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
@@ -529,7 +530,10 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         report_failure(no_mesh ? "EDEN_NX2_NO_MESH" : "no VK_EXT_mesh_shader");
         return;
     }
+    VideoCommon::Nx2DrawStats::OnDraw();
+    VideoCommon::Nx2DrawStats::LockTimer lock_probe{VideoCommon::Nx2DrawStats::Site::LockPrepareDraw};
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+    lock_probe.Acquired();
     // update engine as channel may be different.
     pipeline->SetEngine(maxwell3d, gpu_memory);
     const u32 repack_dirty = buffer_cache_runtime.SetVertexRepackLayout(
@@ -1531,13 +1535,17 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
         return;
     }
     {
+        VideoCommon::Nx2DrawStats::LockTimer lock_probe{VideoCommon::Nx2DrawStats::Site::LockInvalidation};
         std::scoped_lock lock{texture_cache.mutex};
+        lock_probe.Acquired();
         for (const auto& [addr, size] : sequences) {
             texture_cache.WriteMemory(addr, size);
         }
     }
     {
+        VideoCommon::Nx2DrawStats::LockTimer lock_probe{VideoCommon::Nx2DrawStats::Site::LockInvalidation};
         std::scoped_lock lock{buffer_cache.mutex};
+        lock_probe.Acquired();
         for (const auto& [addr, size] : sequences) {
             buffer_cache.WriteMemory(addr, size);
         }
@@ -1551,7 +1559,9 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
 bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
     DEBUG_ASSERT(addr != 0 || size != 0);
     {
+        VideoCommon::Nx2DrawStats::LockTimer lock_probe{VideoCommon::Nx2DrawStats::Site::LockCpuWrite};
         std::scoped_lock lock{buffer_cache.mutex};
+        lock_probe.Acquired();
         if (buffer_cache.OnCPUWrite(addr, size)) {
             return true;
         }
@@ -1875,7 +1885,9 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
     // fencing thread and CPU write traps holding one of them most of the time.
     bool uploaded;
     {
+        VideoCommon::Nx2DrawStats::LockTimer lock_probe{VideoCommon::Nx2DrawStats::Site::LockInlineMemory};
         std::scoped_lock lock{buffer_cache.mutex};
+        lock_probe.Acquired();
         // Guest memory has the words now: a command list copy of the page no longer does.
         buffer_cache.Nx2NoteListHostWrite(*cpu_addr, copy_size);
         uploaded = buffer_cache.InlineMemory(*cpu_addr, copy_size, memory);

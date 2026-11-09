@@ -20,6 +20,7 @@
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_frame_dump.h"
+#include "video_core/nx2_draw_stats.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -447,7 +448,12 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                     return TexturePair(raw, via_header_index);
                 }
             }
-            return TexturePair(gpu_memory->Read<u32>(addr), via_header_index);
+            VideoCommon::Nx2DrawStats::Timer handle_probe{VideoCommon::Nx2DrawStats::Site::HandleRead};
+            const u32 raw_handle = gpu_memory->Read<u32>(addr);
+            if (VideoCommon::Nx2DrawStats::Enabled()) [[unlikely]] {
+                handle_probe.hit = VideoCommon::Nx2DrawStats::SameAsLast(addr, raw_handle);
+            }
+            return TexturePair(raw_handle, via_header_index);
         }};
         const auto add_image{[&](const auto& desc, bool blacklist) LAMBDA_FORCEINLINE {
             for (u32 index = 0; index < desc.count; ++index) {
