@@ -39,6 +39,7 @@
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/shader_cache.h"
+#include "video_core/stage_cache.h"
 
 namespace Core {
 class System;
@@ -238,6 +239,7 @@ private:
 
     Shader::Profile profile;
     Shader::HostTranslateInfo host_info;
+    VideoCommon::StageCache stage_cache;
 
     std::filesystem::path pipeline_cache_filename;
     /// Task and mesh pipelines, with the mesh state they are translated with.
