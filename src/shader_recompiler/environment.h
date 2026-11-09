@@ -81,6 +81,11 @@ public:
     /// raw 8-byte arguments in constant buffers, without the NVN descriptor layout.
     [[nodiscard]] virtual bool IsNativeProgram() const { return false; }
 
+    /// Whether a compute program may bind up to Info::MAX_SSBOS storage buffers (pointer table
+    /// entries past 32), else Info::MAX_GRAPHICS_SSBOS. The emulator's environments ask the
+    /// running title's default and EDEN_NX2_WIDE_COMPUTE_SSBOS (Tegra::Nx2WideComputeSsbos).
+    [[nodiscard]] virtual bool WideComputeStorageBuffers() const { return true; }
+
     /// Native programs: whether the 8-byte constant at (index, offset) is a mapped GPU address.
     /// Native argument tables mix pointers with scalars (sizes, strides).
     [[nodiscard]] virtual bool IsCbufStorageBufferPointer(u32, u32) { return true; }

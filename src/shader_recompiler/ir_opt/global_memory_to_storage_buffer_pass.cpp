@@ -1645,11 +1645,9 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
     // entries still fit when the program's own pointers take most of 32. Ocarina of Time's foliage
     // list builder has 29 of its own: the table entries of its last two sections (Hyrule Field
     // grass) did not fit, read zeros and the grass list stayed empty.
-    // EDEN_NX2_WIDE_COMPUTE_SSBOS=0 restores the 32-binding limit.
-    static const bool wide_compute = [] {
-        const char* const value = std::getenv("EDEN_NX2_WIDE_COMPUTE_SSBOS");
-        return !(value && value[0] == '0');
-    }();
+    // Per title (Environment::WideComputeStorageBuffers): off for Ocarina of Time on Android,
+    // where it brings back big white leaf flashes; EDEN_NX2_WIDE_COMPUTE_SSBOS=0/1 overrides it.
+    const bool wide_compute = env.WideComputeStorageBuffers();
     const size_t max_ssbos{env.ShaderStage() == Stage::Compute && wide_compute
                                ? Info::MAX_SSBOS
                                : Info::MAX_GRAPHICS_SSBOS};

@@ -313,7 +313,8 @@ struct Info {
     static constexpr size_t MAX_INDIRECT_CBUFS{14};
     static constexpr size_t MAX_CBUFS{18};
     /// Compute programs can bind up to MAX_SSBOS storage buffers; graphics programs and compute
-    /// programs with EDEN_NX2_WIDE_COMPUTE_SSBOS=0 keep the old limit of MAX_GRAPHICS_SSBOS.
+    /// programs whose environment says no (Environment::WideComputeStorageBuffers: Ocarina of
+    /// Time on Android, EDEN_NX2_WIDE_COMPUTE_SSBOS=0) keep the old limit of MAX_GRAPHICS_SSBOS.
     static constexpr size_t MAX_SSBOS{64};
     static constexpr size_t MAX_GRAPHICS_SSBOS{32};
 

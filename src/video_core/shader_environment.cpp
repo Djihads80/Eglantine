@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -39,6 +40,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/memory_manager.h"
 #include "video_core/mkw_wave_workaround.h"
+#include "video_core/nx2.h"
 #include "video_core/shader_environment.h"
 #include "video_core/texture_cache/format_lookup_table.h"
 #include "video_core/textures/texture.h"
@@ -194,6 +196,26 @@ u32 GenericEnvironment::TranslateProgramAddress(u32 address) const {
 
 bool GenericEnvironment::IsNativeProgram() const {
     return native_source_size != 0 || Shader::Ampere::HasNativeAddressMap(code);
+}
+
+// Tegra::Nx2WideComputeSsbos, logged once per title.
+static bool WideComputeSsbos() {
+    const bool wide = Tegra::Nx2WideComputeSsbos();
+    static std::atomic<u64> logged{~u64{0}};
+    if (const u64 program = Tegra::Nx2DefaultsProgramId();
+        logged.load(std::memory_order_relaxed) != program &&
+        logged.exchange(program, std::memory_order_relaxed) != program) {
+        LOG_INFO(Shader, "Compute programs of program {:016X} bind up to {} storage buffers ({})",
+                 program, wide ? Shader::Info::MAX_SSBOS : Shader::Info::MAX_GRAPHICS_SSBOS,
+                 std::getenv("EDEN_NX2_WIDE_COMPUTE_SSBOS") != nullptr
+                     ? "EDEN_NX2_WIDE_COMPUTE_SSBOS"
+                     : "title default");
+    }
+    return wide;
+}
+
+bool GenericEnvironment::WideComputeStorageBuffers() const {
+    return WideComputeSsbos();
 }
 
 bool GenericEnvironment::IsCbufStorageBufferPointer(u32 index, u32 offset) {
@@ -1120,6 +1142,12 @@ u32 FileEnvironment::TranslateProgramAddress(u32 address) const {
 
 bool FileEnvironment::IsNativeProgram() const {
     return Shader::Ampere::HasNativeAddressMap(code);
+}
+
+// The disk cache's shaders are translated at boot, before g_nx2_program_id is set: the title
+// comes from the core (Tegra::Nx2DefaultsProgramId).
+bool FileEnvironment::WideComputeStorageBuffers() const {
+    return WideComputeSsbos();
 }
 
 bool FileEnvironment::IsCbufStorageBufferPointer(u32 index, u32 offset) {

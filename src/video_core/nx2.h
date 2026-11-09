@@ -131,6 +131,26 @@ inline constexpr u64 Nx2OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
     return Nx2DefaultsProgramId() == Nx2OcarinaOfTimeProgramId ? 50L : 1000L;
 }
 
+/// Whether compute programs may bind up to 64 storage buffers (Shader::Info::MAX_SSBOS) instead
+/// of 32 (global_memory_to_storage_buffer_pass.cpp, de4ed9: Ocarina of Time's Hyrule Field
+/// grass lists). EDEN_NX2_WIDE_COMPUTE_SSBOS=0/1 overrides the title's default: on, except for
+/// Ocarina of Time on Android, where it brings back the big white leaf flashes at the Kokiri
+/// ladder (Odin 3: 3-5 in 60 s vs 0).
+[[nodiscard]] inline bool Nx2WideComputeSsbos() {
+    static const int forced = [] {
+        const char* const value = std::getenv("EDEN_NX2_WIDE_COMPUTE_SSBOS");
+        return value != nullptr && value[0] != '\0' ? int{value[0] != '0'} : -1;
+    }();
+    if (forced >= 0) {
+        return forced != 0;
+    }
+#ifdef __ANDROID__
+    return Nx2DefaultsProgramId() != Nx2OcarinaOfTimeProgramId;
+#else
+    return true;
+#endif
+}
+
 // Device pages the GPU has written through the buffer cache (shader stores, copies), ever. Title 1
 // runs command lists the GPU writes each frame (20-byte entries its culling fills in); read
 // without a flush they are stale and the draws behind them (trees) go missing. The bits never
