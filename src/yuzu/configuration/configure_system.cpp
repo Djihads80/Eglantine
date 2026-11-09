@@ -78,12 +78,19 @@ ConfigureSystem::ConfigureSystem(Core::System& system_,
         if (!checkbox_rtc->isChecked()) {
             return;
         }
-        auto offset = date_rtc_offset->value();
-        offset += date_rtc->dateTime().toSecsSinceEpoch() - previous_time;
-        previous_time = date_rtc->dateTime().toSecsSinceEpoch();
+        const auto now_s = std::chrono::duration_cast<std::chrono::seconds>(
+                               std::chrono::system_clock::now().time_since_epoch())
+                               .count();
+        const auto selected_s = date_rtc->dateTime().toSecsSinceEpoch();
+        const auto offset = static_cast<int>(selected_s - now_s);
+        previous_time = selected_s;
+        QSignalBlocker blocker(date_rtc_offset);
         date_rtc_offset->setValue(offset);
     };
-    const auto update_rtc_date = [this](int _) { UpdateRtcTime(); };
+    const auto update_rtc_date = [this](int _) {
+        QSignalBlocker blocker(date_rtc);
+        UpdateRtcTime();
+    };
 
     connect(combo_language, qOverload<int>(&QComboBox::currentIndexChanged), this, locale_check);
     connect(combo_region, qOverload<int>(&QComboBox::currentIndexChanged), this, locale_check);
@@ -166,6 +173,7 @@ void ConfigureSystem::Setup(const ConfigurationShared::Builder& builder) {
 
         if (setting->Id() == Settings::values.custom_rtc_offset.Id()) {
             date_rtc_offset = widget->spinbox;
+            widget->setVisible(false);
         }
 
         switch (setting->GetCategory()) {
