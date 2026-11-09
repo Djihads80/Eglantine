@@ -56,6 +56,10 @@ enum class Zone : u32 {
     Method,       ///< Engine method calls (what a split GPU thread's back half would run)
     SplitDrain,   ///< Split GPU thread: the front waits for the back (gpu_split.h)
     SplitWait,    ///< Split GPU thread: the back waits for work
+    WritesCheck,  ///< Front: does this method write memory (NoteWriter bookkeeping)
+    FrontWrite,   ///< Front: one register write (shadow RAM, same-value filter, queueing)
+    FrontQueue,   ///< Front: handing a method or run to the back's queue
+    CommandRead,  ///< Front: reading command words from guest memory
     Count,
 };
 
@@ -66,7 +70,8 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "sync descriptors", "read handles", "fill image views", "texture buffers", "update buffers",
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
-    "fence skipped", "method", "split drain", "split wait",
+    "fence skipped", "method", "split drain", "split wait", "writes check", "front write",
+    "front queue", "command read",
 };
 
 // On from startup with EDEN_NX2_GPU_PROFILE; the MCP server can toggle it. Enabled() runs several
@@ -126,7 +131,7 @@ inline u64 Now() {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 8> counters{}; ///< See Counter
+    std::array<u64, 10> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
     u32 generation{};
@@ -177,6 +182,8 @@ enum class Counter : u32 {
     SameValueWrites, ///< Of MethodWrites: the register already held the value
     AcquireChecks,  ///< Semaphore acquires evaluated
     AcquireWaits,   ///< Of AcquireChecks: not met yet (the channel waits)
+    DmaReadsDrained, ///< MME DMA reads that waited for the split's back (Maxwell3D::FrontDmaRead)
+    DmaReadsSkipped, ///< MME DMA reads served without waiting for the back
 };
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
@@ -245,7 +252,8 @@ inline void Report(const char* thread_name = "GPU thread") {
             counter_names{"download_bytes",  "download_copies",
                           "mme_dma_read_bytes", "download_bytes_on_dma_pages",
                           "method_writes",   "same_value_writes",
-                          "acquire_checks",  "acquire_waits"};
+                          "acquire_checks",  "acquire_waits",
+                          "dma_reads_drained", "dma_reads_skipped"};
         const double per_s = 1e9 / static_cast<double>(window);
         Snapshot snap{.thread = thread_name, .when_ns = now, .window_ns = window};
         for (size_t i = 0; i < data.exclusive_ns.size(); ++i) {

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cstdlib>
 #include <thread>
 
@@ -163,6 +165,7 @@ void GpuSplit::Stop() {
     ring.reset();
     write_position = 0;
     last_writer_position = 0;
+    last_sync_position = 0;
     published_local = 0;
     consumed_cache = 0;
     publish_every = PublishEvery;
@@ -220,9 +223,63 @@ void GpuSplit::Publish() {
     }
 }
 
-void GpuSplit::Drain() {
+namespace {
+// EDEN_NX2_DRAIN_SITES=1: per call site, the drains that had to wait, with their time. Front only.
+struct DrainSiteStats {
+    static constexpr size_t Count = static_cast<size_t>(GpuSplit::DrainSite::Count);
+    const bool enabled = std::getenv("EDEN_NX2_DRAIN_SITES") != nullptr;
+    std::array<u64, Count> calls{};
+    std::array<u64, Count> waited{};
+    std::array<u64, Count> ns{};
+    std::chrono::steady_clock::time_point window_start = std::chrono::steady_clock::now();
+
+    void Note(GpuSplit::DrainSite site, bool did_wait, u64 elapsed_ns) {
+        const size_t i = static_cast<size_t>(site);
+        ++calls[i];
+        waited[i] += did_wait ? 1 : 0;
+        ns[i] += elapsed_ns;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - window_start < std::chrono::seconds{10}) {
+            return;
+        }
+        static constexpr std::array<const char*, Count> names{
+            "other",         "puller release", "puller acquire check", "puller acquire poll",
+            "puller acquire", "puller fences", "macro dma read",      "cmd list flush",
+            "gpu map/unmap", "compute front",  "verify",              "writers cmd list",
+            "writers cmd read"};
+        const double seconds = std::chrono::duration<double>(now - window_start).count();
+        std::string line;
+        for (size_t k = 0; k < Count; ++k) {
+            if (calls[k] != 0) {
+                line += fmt::format(" {}: {:.0f}/s calls, {:.0f}/s waited, {:.0f} ms/s;", names[k],
+                                    calls[k] / seconds, waited[k] / seconds,
+                                    1e-6 * static_cast<double>(ns[k]) / seconds);
+            }
+        }
+        LOG_INFO(HW_GPU, "split drain sites, last {:.0f} s:{}", seconds, line);
+        calls.fill(0);
+        waited.fill(0);
+        ns.fill(0);
+        window_start = now;
+    }
+};
+DrainSiteStats drain_site_stats;
+} // namespace
+
+void GpuSplit::Drain(DrainSite site) {
+    const auto stats_start = drain_site_stats.enabled ? std::chrono::steady_clock::now()
+                                                      : std::chrono::steady_clock::time_point{};
+    const auto note = [&](bool did_wait) {
+        if (drain_site_stats.enabled) {
+            drain_site_stats.Note(site, did_wait,
+                                  static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                       std::chrono::steady_clock::now() - stats_start)
+                                                       .count()));
+        }
+    };
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache == write_position && BackQuiet()) {
+        note(false);
         return;
     }
     Publish();
@@ -235,6 +292,7 @@ void GpuSplit::Drain() {
         if (consumed_cache == write_position) {
             if (BackQuiet()) {
                 publish_every = 8;
+                note(true);
                 return;
             }
             if (!hook_asked) {
@@ -250,18 +308,36 @@ void GpuSplit::Drain() {
     }
 }
 
-bool GpuSplit::WaitForWriters() {
-    const u64 target = std::min(last_writer_position, write_position);
+bool GpuSplit::WaitForWriters(DrainSite site) {
+    return WaitFor(std::min(last_writer_position, write_position), site);
+}
+
+bool GpuSplit::WaitForSyncedWriters(DrainSite site) {
+    return WaitFor(std::min({last_writer_position, last_sync_position, write_position}), site);
+}
+
+bool GpuSplit::WaitFor(u64 target, DrainSite site) {
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache >= target) {
+        if (drain_site_stats.enabled) {
+            drain_site_stats.Note(site, false, 0);
+        }
         return false;
     }
+    const auto stats_start = std::chrono::steady_clock::now();
     wait_target.store(target, std::memory_order_seq_cst);
     Publish();
     for (u32 spins = 0;; ++spins) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (consumed_cache >= target) {
             wait_target.store(~u64{0}, std::memory_order_relaxed);
+            if (drain_site_stats.enabled) {
+                drain_site_stats.Note(
+                    site, true,
+                    static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::steady_clock::now() - stats_start)
+                                         .count()));
+            }
             return true;
         }
         if (spins < 16384) {

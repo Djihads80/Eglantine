@@ -62,6 +62,7 @@
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/nx2_debug_control.h"
 #include "video_core/nx2_diag.h"
+#include "video_core/nx2_knobs.h"
 #include "video_core/nx2_profile.h"
 
 namespace Vulkan {
@@ -1863,11 +1864,13 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
         return;
     }
     gpu_memory->WriteBlockUnsafe(address, memory.data(), copy_size);
-    // EDEN_NX2_INLINE_DEFER=0: invalidate every cache at once (for comparisons).
-    static const bool defer = [] {
+    // EDEN_NX2_INLINE_DEFER=0: invalidate every cache at once (for comparisons). Debug knob 3
+    // inverts it while the game runs.
+    static const bool defer_start = [] {
         const char* value = std::getenv("EDEN_NX2_INLINE_DEFER");
         return value == nullptr || value[0] != '0';
     }();
+    const bool defer = VideoCommon::Nx2Knob::Live(defer_start, VideoCommon::Nx2Knob::InlineDefer);
     // One cache at a time: holding both while waiting for either (std::lock) waited longer, the
     // fencing thread and CPU write traps holding one of them most of the time.
     bool uploaded;
@@ -2012,8 +2015,13 @@ void RasterizerVulkan::FlushWork() {
         }
         return static_cast<u32>(std::clamp(parsed, 32UL, 1'048'576UL));
     }();
+    // Debug knobs 5 and 6 pick 32 or 512 draws per submit while the game runs.
+    const u32 native_draws = Settings::GetDebugKnobAt(VideoCommon::Nx2Knob::FlushDraws32) ? 32U
+                             : Settings::GetDebugKnobAt(VideoCommon::Nx2Knob::FlushDraws512)
+                                 ? 512U
+                                 : native_flush_draws;
     const u32 draws_to_dispatch = Tegra::g_nx2_ampere.load(std::memory_order_relaxed)
-                                     ? native_flush_draws
+                                     ? native_draws
                                      : DRAWS_TO_DISPATCH;
     if (draw_counter < draws_to_dispatch) {
         scheduler.DispatchWork();

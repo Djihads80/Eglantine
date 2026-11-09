@@ -25,6 +25,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/query_cache/bank_base.h"
+#include "video_core/nx2_job_stats.h"
 #include "video_core/query_cache/query_base.h"
 #include "video_core/query_cache/query_cache_base.h"
 #include "video_core/query_cache/query_stream.h"
@@ -273,8 +274,20 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     u8* pointer = impl->device_memory.template GetPointer<u8>(cpu_addr);
     u8* pointer_timestamp = impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
     bool is_synced = (Settings::IsGPUFenceBehaviorDefault() ? !Settings::IsGPULevelHigh() : !Settings::IsGPUFenceBehaviorBalanced() && !Settings::IsGPUFenceBehaviorAccurate()) && is_fence;
+    // Without delayed fence operations only fence-flagged reports wait for the host GPU to write.
+    const bool delayed_release = is_fence && counter_type == QueryType::Payload &&
+                                 (Settings::IsGPUFenceBehaviorDefault()
+                                      ? !Settings::IsGPULevelHigh()
+                                      : !Settings::IsGPUFenceBehaviorBalanced() &&
+                                            !Settings::IsGPUFenceBehaviorAccurate());
     std::function<void()> operation([this, is_synced, streamer, query_base = query, query_location,
-                                     pointer, pointer_timestamp, cpu_addr] {
+                                     pointer, pointer_timestamp, cpu_addr, delayed_release,
+                                     payload] {
+        SCOPE_EXIT {
+            if (delayed_release) {
+                Tegra::Nx2SemaphoreWaiters::Get().OnDelayedReleaseDone(cpu_addr, payload);
+            }
+        };
         if (True(query_base->flags & QueryFlagBits::IsInvalidated)) {
             if (!is_synced) [[likely]] {
                 impl->pending_unregister.push_back(query_location);
@@ -305,6 +318,9 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         }
     });
     if (is_fence) {
+        if (delayed_release) {
+            Tegra::Nx2SemaphoreWaiters::Get().OnDelayedRelease(cpu_addr, payload);
+        }
         impl->rasterizer.SignalFence(std::move(operation));
     } else {
         if (!Settings::IsGPULevelHigh() && counter_type == QueryType::Payload) {
@@ -439,6 +455,7 @@ bool QueryCacheBase<Traits>::AccelerateHostConditionalRendering() {
 
     auto& regs = maxwell3d->regs;
     if (regs.render_enable_override != Maxwell::Regs::RenderEnable::Override::UseRenderEnable) {
+        VideoCommon::Nx2JobStats::CondNote(VideoCommon::Nx2JobStats::CondReason::Override);
         impl->runtime.EndHostConditionalRendering();
         return false;
     }
@@ -446,9 +463,11 @@ bool QueryCacheBase<Traits>::AccelerateHostConditionalRendering() {
     const GPUVAddr address = regs.render_enable.Address();
     switch (mode) {
     case ComparisonMode::True:
+        VideoCommon::Nx2JobStats::CondNote(VideoCommon::Nx2JobStats::CondReason::TrueFalse);
         impl->runtime.EndHostConditionalRendering();
         return false;
     case ComparisonMode::False:
+        VideoCommon::Nx2JobStats::CondNote(VideoCommon::Nx2JobStats::CondReason::TrueFalse);
         impl->runtime.EndHostConditionalRendering();
         return false;
     case ComparisonMode::Conditional: {

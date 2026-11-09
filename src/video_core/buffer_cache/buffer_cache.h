@@ -21,6 +21,7 @@
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_knobs.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/texture_cache/util.h"
 
@@ -1235,10 +1236,13 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     // (white flashes). EDEN_NX2_BANK_REUPLOAD: 0 off, 1 once per frame (the default), 2 every bind
     // of a 64 KiB bank, 3 every bind of any native bank. Every bind costs front-thread time without
     // removing the flashes the user still saw, so it is opt-in.
-    static const char bank_mode = [] {
+    static const char bank_mode_start = [] {
         const char* v = std::getenv("EDEN_NX2_BANK_REUPLOAD");
         return v != nullptr ? v[0] : '1';
     }();
+    // Debug knob 7 (debug_knobs) turns the re-upload off while the game runs.
+    const char bank_mode =
+        Settings::GetDebugKnobAt(VideoCommon::Nx2Knob::BankReupload) ? '0' : bank_mode_start;
     const bool native_bank = has_host_buffer && size != 0 && gpu_memory != nullptr &&
                              gpu_memory->UsesNativeTiling() &&
                              !memory_tracker.IsRegionGpuModified(device_addr, size);

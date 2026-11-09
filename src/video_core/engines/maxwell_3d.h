@@ -3396,6 +3396,9 @@ private:
                     bool is_last_call, bool from_macro);
     void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state);
     void FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& state, u32 method, u32 count);
+    /// Whether the native macro at `method` reads the six Compare words at an address and sets
+    /// render_enable.mode from them (found by a dry run, once per macro).
+    bool IsPredicateMacro(FrontState& state, u32 method);
     void FrontVerify(VideoCommon::GpuSplit& split, FrontState& state);
     void FinishFrontMacro(Core::System& system);
     std::unique_ptr<FrontState> front;

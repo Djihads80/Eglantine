@@ -13,6 +13,7 @@
 #include "common/container/unordered_map.h"
 #include <utility>
 #include <vector>
+#include "video_core/nx2_job_stats.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "common/bit_util.h"
 #include "common/common_types.h"
@@ -1486,7 +1487,10 @@ bool QueryCacheRuntime::HostConditionalRenderingCompareValue(VideoCommon::Lookup
 bool QueryCacheRuntime::HostConditionalRenderingCompareValues(VideoCommon::LookupData object_1,
                                                               VideoCommon::LookupData object_2,
                                                               bool qc_dirty, bool equal_check) {
+    using VideoCommon::Nx2JobStats::CondNote;
+    using VideoCommon::Nx2JobStats::CondReason;
     if (!impl->device.IsExtConditionalRendering()) {
+        CondNote(CondReason::NoExtension);
         return false;
     }
 
@@ -1515,12 +1519,22 @@ bool QueryCacheRuntime::HostConditionalRenderingCompareValues(VideoCommon::Looku
         }
     }
 
+    for (size_t i = 0; i < 2; i++) {
+        if (is_in_qc[i]) {
+            CondNote(CondReason::FoundQuery);
+        }
+        if (is_in_bc[i]) {
+            CondNote(CondReason::FoundBuffer);
+        }
+    }
     if (!is_in_ac[0] && !is_in_ac[1]) {
+        CondNote(CondReason::NoneTracked);
         EndHostConditionalRendering();
         return false;
     }
 
     if (!qc_dirty && !is_in_bc[0] && !is_in_bc[1]) {
+        CondNote(CondReason::NotDirty);
         EndHostConditionalRendering();
         return false;
     }

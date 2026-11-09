@@ -18,6 +18,7 @@
 #include "video_core/gpu.h"
 #include "video_core/gpu_thread.h"
 #include "video_core/gpu_split.h"
+#include "video_core/nx2_job_stats.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/renderer_base.h"
@@ -102,8 +103,10 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 } else if (auto* run = std::get_if<RunCommand>(&next.data)) {
                     if (run->before_later_reads) {
                         // GPU memory maps unmap caches (UnmapMemory downloads): the back's state.
+                        const VideoCommon::Nx2JobStats::Timer drain_timer{
+                            VideoCommon::Nx2JobStats::Kind::FrontDrain};
                         split.DeferFunction(std::move(run->func));
-                        split.Drain();
+                        split.Drain(VideoCommon::GpuSplit::DrainSite::MapUnmap);
                     } else {
                         split.DeferFunction(std::move(run->func));
                     }

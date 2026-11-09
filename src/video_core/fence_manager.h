@@ -25,6 +25,7 @@
 #include "video_core/gpu.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/syncpoint_manager.h"
+#include "video_core/nx2_knobs.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/rasterizer_interface.h"
 
@@ -270,7 +271,10 @@ private:
             }
             {
                 std::unique_lock lock(guard);
-                while (batch.size() < MaxBatch && !fences.empty() &&
+                // Debug knob 2 inverts EDEN_NX2_FENCE_BATCH while the game runs.
+                const size_t max_batch =
+                    Nx2Knob::Live(MaxBatch == 1, Nx2Knob::FenceBatch) ? size_t{1} : size_t{64};
+                while (batch.size() < max_batch && !fences.empty() &&
                        (fences.front()->IsStubbed() || IsFenceSignaled(fences.front()))) {
                     take_front();
                 }

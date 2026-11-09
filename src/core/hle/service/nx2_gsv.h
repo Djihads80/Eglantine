@@ -60,6 +60,8 @@
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/nx2_video_decoder.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_job_stats.h"
+#include "video_core/nx2_knobs.h"
 #include "video_core/textures/decoders.h"
 #include "core/hle/service/hle_ipc.h"
 #include "core/hle/service/ipc_helpers.h"
@@ -478,6 +480,7 @@ private:
 
     // Sub 101: (start u64, last u64, flags...) after CreateGpuAccessibleMemory's svc 0x80.
     void SubRegisterMemory(HLERequestContext& ctx) {
+        const VideoCommon::Nx2JobStats::Timer timer{VideoCommon::Nx2JobStats::Kind::Register};
         const auto* b = ctx.CommandBuffer();
         const u64 start = u64{b[2]} | (u64{b[3]} << 32);
         const u64 last = u64{b[4]} | (u64{b[5]} << 32);
@@ -515,6 +518,7 @@ private:
     // the job slot whose event (gpu TIPC 12) the SDK then waits on. Nothing runs here, so
     // complete it at once.
     void SubSubmitJob(HLERequestContext& ctx) {
+        const VideoCommon::Nx2JobStats::Timer timer{VideoCommon::Nx2JobStats::Kind::Map};
         const auto* cmd_buf = ctx.CommandBuffer();
         const u32 slot = cmd_buf[17];
         const u64 a = u64{cmd_buf[3]} | (u64{cmd_buf[4]} << 32);
@@ -554,6 +558,7 @@ private:
 
     // Sub 213: words 3-4 first GPU address, 5-6 last, job slot in word 8.
     void SubUnmapJob(HLERequestContext& ctx) {
+        const VideoCommon::Nx2JobStats::Timer timer{VideoCommon::Nx2JobStats::Kind::Unmap};
         const auto* w = ctx.CommandBuffer();
         const u64 first = u64{w[3]} | (u64{w[4]} << 32);
         const u64 last = u64{w[5]} | (u64{w[6]} << 32);
@@ -570,13 +575,23 @@ private:
     // console's graphics server completes unmap jobs behind the submitted work.
     void SignalAfterGpu(u32 slot) {
         auto* const event = EventFor(slot);
-        system.GPU().RunInOrder([this, event] { event->Signal(system.Kernel()); });
+        if (!VideoCommon::Nx2JobStats::Enabled()) {
+            system.GPU().RunInOrder([this, event] { event->Signal(system.Kernel()); });
+            return;
+        }
+        const auto queued = std::chrono::steady_clock::now();
+        system.GPU().RunInOrder([this, event, queued] {
+            VideoCommon::Nx2JobStats::Note(VideoCommon::Nx2JobStats::Kind::SignalWait,
+                                           std::chrono::steady_clock::now() - queued);
+            event->Signal(system.Kernel());
+        });
     }
 
     // Sub 102: word 2 is the memory handle 101 returned, word 3 the job slot. The game frees the
     // memory (svc 0x80 clears GPU access) and reuses it as ordinary heap right after, so nothing
     // on the GPU side may keep it: drop the mapping 101 made at its own address.
     void SubDestroyMemory(HLERequestContext& ctx) {
+        const VideoCommon::Nx2JobStats::Timer timer{VideoCommon::Nx2JobStats::Kind::Unmap};
         const auto* w = ctx.CommandBuffer();
         const u32 handle = w[2];
         if (const auto it = m_memory.find(handle); it != m_memory.end()) {
@@ -1753,7 +1768,11 @@ private:
         // the frame rendered with the next one's (one-frame white or overexposed flashes).
         constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
         constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
-        int frames_ahead = frames_ahead_setting;
+        // Debug knob 1 (debug_knobs) inverts EDEN_NX2_FRAMES_AHEAD=1 while the game runs.
+        const bool ahead_start = frames_ahead_setting == 1;
+        int frames_ahead = Settings::GetDebugKnobAt(1) != ahead_start
+                               ? 1
+                               : (ahead_start ? -1 : frames_ahead_setting);
         const u64 app_program_id = system.GetApplicationProcessProgramID();
         if (frames_ahead == -1 && (app_program_id == DonkeyKongBananzaProgramId ||
                                    app_program_id == OcarinaOfTimeProgramId)) {
@@ -1779,7 +1798,19 @@ private:
                 WaitForFrame(~w[22], w[24]);
             }
         } else if (frames_ahead == 0) {
-            WaitForFrame(~w[22], w[24]);
+            static const bool back_wait_start = [] {
+                const char* value = std::getenv("EDEN_NX2_BACK_WAIT");
+                return value != nullptr && value[0] == '1';
+            }();
+            if (VideoCommon::Nx2Knob::Live(back_wait_start, VideoCommon::Nx2Knob::BackWait)) {
+                // The GPU back thread has read the guest memory this frame's commands use and
+                // recorded them (what the guest must not overwrite yet), but the GPU may still be
+                // running them: wait for the frame before that, so it runs at most one behind.
+                WaitForBackThread();
+                WaitForFrame(m_previous_fence_id, m_previous_fence_value);
+            } else {
+                WaitForFrame(~w[22], w[24]);
+            }
         }
         m_previous_fence_id = ~w[22];
         m_previous_fence_value = w[24];
@@ -1910,6 +1941,26 @@ private:
     /// Waits until the fence is reached. With `unless_gpu_waits`, gives up after a few ms once a
     /// GPU channel was seen suspended on a semaphore (it may be one this thread releases later).
     /// Returns whether the fence was reached.
+    // Returns once the GPU thread, and the back thread behind it, ran everything queued so far.
+    void WaitForBackThread() {
+        struct Wake {
+            std::mutex mutex;
+            std::condition_variable cv;
+            bool done{};
+        };
+        auto wake = std::make_shared<Wake>();
+        system.GPU().RunInOrder([wake] {
+            {
+                std::scoped_lock lk{wake->mutex};
+                wake->done = true;
+            }
+            wake->cv.notify_all();
+        });
+        std::unique_lock lk{wake->mutex};
+        wake->cv.wait_for(lk, std::chrono::milliseconds{4000},
+                          [&] { return wake->done || !system.IsPoweredOn(); });
+    }
+
     bool WaitForFrame(u32 fence_id, u32 fence_value, bool unless_gpu_waits = false) {
         if (fence_id >= 192) {
             return true;

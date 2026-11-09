@@ -660,6 +660,17 @@ private:
         return gpu_memory == nullptr || !gpu_memory->UsesNativeTiling();
     }
 
+    /// EDEN_NX2_DOWNLOAD_SMALL=<bytes>: GPU writes up to this size are also copied back at the
+    /// next fence, not just trapped when read. With the guest running a frame ahead it can read a
+    /// small GPU result (an exposure value) before the trap is armed and get very old data.
+    static u64 SmallDownloadLimit() {
+        static const u64 limit = [] {
+            const char* value = std::getenv("EDEN_NX2_DOWNLOAD_SMALL");
+            return value != nullptr ? std::strtoull(value, nullptr, 0) : u64{0};
+        }();
+        return limit;
+    }
+
     /// Whether a GPU write to this range is copied back at the next fence. Ranges the guest CPU
     /// has read (Preflushable, set by the first reactive flush) always are: later reads skip the
     /// flush and rely on these downloads, e.g. collision meshes skinned by compute shaders.
@@ -692,7 +703,7 @@ private:
     /// of the rest. Queuing the whole range when any page of it was Preflushable copied whole
     /// written storage buffers (up to 8 MiB) back at every fence: ~5 GB/s in title 1's forest.
     void QueueGpuWrite(DAddr device_addr, u64 size) {
-        if (AsyncBufferDownloads()) {
+        if (AsyncBufferDownloads() || size <= SmallDownloadLimit()) {
             uncommitted_gpu_modified_ranges.Add(device_addr, size);
             return;
         }

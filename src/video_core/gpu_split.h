@@ -139,8 +139,25 @@ public:
 
     /// Makes what was sent visible to the back.
     void Publish();
-    /// Waits until the back executed everything sent so far.
-    void Drain();
+    /// Waits until the back executed everything sent so far. The site names the caller for
+    /// EDEN_NX2_DRAIN_SITES=1, which logs per site how many drains waited and for how long.
+    enum class DrainSite : u32 {
+        Other,
+        PullerRelease,
+        PullerAcquireCheck,
+        PullerAcquirePoll,
+        PullerAcquire,
+        PullerFences,
+        MacroDmaRead,
+        CmdListFlush,
+        MapUnmap,
+        ComputeFront,
+        Verify,
+        WritersCmdList,
+        WritersCmdRead,
+        Count,
+    };
+    void Drain(DrainSite site = DrainSite::Other);
 
     /// Compute or copy work was just sent: what can write GPU-written command lists.
     void NoteWriter() {
@@ -148,9 +165,21 @@ public:
     }
     /// Waits until the back executed the compute and copy work sent so far (not what came after).
     /// Returns whether any of it was still queued.
-    bool WaitForWriters();
+    bool WaitForWriters(DrainSite site = DrainSite::WritersCmdList);
+    /// A host-level wait was just sent (a syncpoint acquire, a host WFI, a GP entry with its sync
+    /// bit; semaphore acquires drain): the guest's GPU work before it is complete before the
+    /// commands after it are fetched.
+    void NoteSync() {
+        last_sync_position = write_position;
+    }
+    /// Waits until the back executed the compute and copy work sent before the last NoteSync,
+    /// the writers a command list fetched now is ordered after (the hardware fetches a list ahead
+    /// of the engines, so work sent after the last host-level wait is not). Returns whether any of
+    /// it was still queued.
+    bool WaitForSyncedWriters(DrainSite site = DrainSite::WritersCmdList);
 
 private:
+    bool WaitFor(u64 target, DrainSite site);
     enum class Kind : u64 {
         Wrap,   ///< The rest of the ring is unused: continue at its start
         Engine, ///< The engine the next methods go to: word 1
@@ -207,6 +236,7 @@ private:
     // Front side.
     u64 write_position{};
     u64 last_writer_position{};
+    u64 last_sync_position{};
     u64 published_local{};
     u64 consumed_cache{};
     /// Words between publishes: small right after a drain, while the back has nothing to do.
