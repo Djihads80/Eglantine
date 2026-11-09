@@ -107,7 +107,8 @@ std::vector<Feature> FeaturesFor(Platform platform) {
          QT_TR_NOOP("Native 64 KiB uniform banks are bound from the guest's own memory with no "
                     "copy and no re-upload (about 2% faster in Ocarina of Time on NVIDIA, no "
                     "visual change). Uses VK_EXT_external_memory_host; the emulator copies "
-                    "instead when the driver refuses."),
+                    "instead when the driver refuses. On by default with the NVIDIA proprietary "
+                    "driver on Linux; add EDEN_NX2_HOST_IMPORT=0 to turn it off there."),
          host_import_recommended, HostImportVerdict});
     if (platform == Platform::Nvidia) {
         features.push_back(

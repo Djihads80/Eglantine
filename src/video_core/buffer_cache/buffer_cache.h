@@ -1318,13 +1318,20 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     const bool native_bank = has_host_buffer && size != 0 && gpu_memory != nullptr &&
                              gpu_memory->UsesNativeTiling() &&
                              !memory_tracker.IsRegionGpuModified(device_addr, size);
-    // EDEN_NX2_HOST_IMPORT=1 (experimental): a native 64 KiB bank nothing on the GPU writes is read
+    // EDEN_NX2_HOST_IMPORT: a native 64 KiB bank nothing on the GPU writes is read
     // by the host GPU from the guest's own pages, with no copy and no re-upload. Debug knob 10
     // inverts it while the game runs.
     if constexpr (requires { runtime.TryBindImportedUniformBuffer(static_cast<const u8*>(nullptr), u32{}); }) {
-        static const bool import_start = [] {
-            const char* value = std::getenv("EDEN_NX2_HOST_IMPORT");
-            return value != nullptr && value[0] == '1';
+        // On by default for the NVIDIA proprietary driver on Linux; =1 / =0 force it on / off.
+        static const bool import_start = [this] {
+            const char* const value = std::getenv("EDEN_NX2_HOST_IMPORT");
+            if (value != nullptr) {
+                return value[0] == '1';
+            }
+            if constexpr (requires { runtime.HostImportByDefault(); }) {
+                return runtime.HostImportByDefault();
+            }
+            return false;
         }();
         if (native_bank && (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000 &&
             VideoCommon::Nx2Knob::Live(import_start, VideoCommon::Nx2Knob::HostImport)) {

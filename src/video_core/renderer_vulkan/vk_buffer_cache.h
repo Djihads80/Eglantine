@@ -191,6 +191,18 @@ public:
         return ref.mapped_span;
     }
 
+    /// Whether EDEN_NX2_HOST_IMPORT is on when it is not set: the NVIDIA proprietary driver on
+    /// Linux, where importing the guest memory was measured (RADV refuses the memfd backing,
+    /// and Windows and macOS are not verified). The emulator copies instead if an import fails.
+    [[nodiscard]] bool HostImportByDefault() const noexcept {
+#if defined(__linux__) && !defined(__ANDROID__)
+        return device.IsExtExternalMemoryHost() &&
+               device.GetDriverID() == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+#else
+        return false;
+#endif
+    }
+
     /// Binds the guest's own memory at `host_ptr` as a uniform buffer, with no copy (the host GPU
     /// reads the pages live). False when the memory cannot be imported or the offset does not
     /// meet the uniform buffer alignment; the caller then copies as usual.
