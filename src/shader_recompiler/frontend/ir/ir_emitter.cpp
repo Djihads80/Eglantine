@@ -1558,6 +1558,11 @@ U32U64 IREmitter::GlobalAtomicExchange(const U64& pointer_offset, const U32U64& 
     }
 }
 
+U32 IREmitter::GlobalAtomicCompareExchange(const U64& pointer_offset, const U32& comparator,
+                                           const U32& value) {
+    return Inst<U32>(Opcode::GlobalAtomicCompareExchange32, pointer_offset, comparator, value);
+}
+
 F32 IREmitter::GlobalAtomicF32Add(const U64& pointer_offset, const Value& value,
                                   const FpControl control) {
     return Inst<F32>(Opcode::GlobalAtomicAddF32, Flags{control}, pointer_offset, value);

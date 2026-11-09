@@ -35,6 +35,11 @@ public:
         return shader_storage_alignment;
     }
 
+    /// GL_MAX_SHADER_STORAGE_BLOCK_SIZE: the largest range of a storage buffer binding
+    u64 GetMaxShaderStorageBlockSize() const {
+        return max_shader_storage_block_size;
+    }
+
     u32 GetMaxVertexAttributes() const {
         return max_vertex_attributes;
     }
@@ -202,6 +207,7 @@ private:
     std::array<u32, Shader::MaxStageTypes> max_uniform_buffers{};
     size_t uniform_buffer_alignment{};
     size_t shader_storage_alignment{};
+    u64 max_shader_storage_block_size{};
     u32 max_vertex_attributes{};
     u32 max_varyings{};
     u32 max_compute_shared_memory_size{};

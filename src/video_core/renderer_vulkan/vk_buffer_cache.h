@@ -55,9 +55,7 @@ public:
         return buffer.Location();
     }
 
-    [[nodiscard]] bool IsRegionUsed(u64 offset, u64 size) const noexcept {
-        return tracker.IsUsed(offset, size);
-    }
+    [[nodiscard]] bool IsRegionUsed(u64 offset, u64 size) const noexcept;
 
     void MarkUsage(u64 offset, u64 size) noexcept;
 
@@ -137,6 +135,8 @@ public:
     u32 GetUniformBufferAlignment() const;
 
     u32 GetStorageBufferAlignment() const;
+
+    u64 GetMaxStorageBufferRange() const;
 
     [[nodiscard]] StagingBufferRef UploadStagingBuffer(size_t size);
 
@@ -311,6 +311,13 @@ private:
 
     bool limit_dynamic_storage_buffers = false;
     u32 max_dynamic_storage_buffers = (std::numeric_limits<u32>::max)();
+
+    /// The index buffer BindIndexBuffer recorded last, at scheduler recording epoch bound_index_epoch.
+    VkBuffer bound_index_buffer = VK_NULL_HANDLE;
+    VkDeviceSize bound_index_offset = 0;
+    VkIndexType bound_index_type = VK_INDEX_TYPE_UINT32;
+    u64 bound_index_epoch = 0;
+    bool bound_index_valid = false;
 };
 
 struct BufferCacheParams {

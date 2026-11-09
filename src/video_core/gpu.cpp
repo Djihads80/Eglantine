@@ -36,26 +36,16 @@
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_thread.h"
+#include "video_core/gpu_timestamp.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/syncpoint_manager.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/renderer_base.h"
 #include "video_core/shader_notify.h"
 
 namespace Tegra {
-
-namespace {
-constexpr u64 GpuClockMultiplier(Settings::GpuClock clock) {
-    switch (clock) {
-    case Settings::GpuClock::Boost:
-        return 256;
-    case Settings::GpuClock::Overclock:
-        return 512;
-    default:
-        return 1;
-    }
-}
-} // Anonymous namespace
 
 struct GPU::Impl {
     explicit Impl(Core::System& system_, bool is_async_, bool use_nvdec_)
@@ -117,7 +107,10 @@ struct GPU::Impl {
 
     /// Synchronizes CPU writes with Host GPU memory.
     void InvalidateGPUCache() {
-        std::vector<std::pair<DAddr, u64>> writes;
+        // Runs at every fence (~17k/s), on more than one thread: keep each thread's buffer.
+        thread_local std::vector<std::pair<DAddr, u64>> thread_writes;
+        auto& writes = thread_writes;
+        writes.clear();
         std::function<void(PAddr, size_t)> callback_writes(
             [&writes](PAddr address, size_t size) { writes.emplace_back(address, size); });
         system.GatherGPUDirtyMemory(callback_writes);
@@ -144,6 +137,7 @@ struct GPU::Impl {
         std::unique_lock lck{sync_request_mutex};
         const u64 fence = ++last_sync_fence;
         sync_requests.emplace_back(std::forward<Func>(action));
+        has_sync_requests.store(true, std::memory_order_release);
         return fence;
     }
 
@@ -165,8 +159,16 @@ struct GPU::Impl {
 
     /// Tick pending requests within the GPU.
     void TickWork() {
+        // Nx2Perf draw_preamble: the flag is set under the mutex with every enqueue and cleared
+        // under it only once the list is empty, so an empty list skips the mutex.
+        static const bool fast_check =
+            VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::DrawPreamble);
+        if (fast_check && !has_sync_requests.load(std::memory_order_acquire)) {
+            return;
+        }
         std::unique_lock lck{sync_request_mutex};
         while (!sync_requests.empty()) {
+            DEBUG_ASSERT(has_sync_requests.load(std::memory_order_relaxed));
             auto request = std::move(sync_requests.front());
             sync_requests.pop_front();
             sync_request_mutex.unlock();
@@ -175,14 +177,18 @@ struct GPU::Impl {
             sync_request_mutex.lock();
             sync_request_cv.notify_all();
         }
+        has_sync_requests.store(false, std::memory_order_relaxed);
     }
 
     [[nodiscard]] u64 GetTicks() const {
-        const u64 gpu_tick = system.CoreTiming().GetGPUTicks();
-        return gpu_tick / GpuClockMultiplier(Settings::values.gpu_clock.GetValue());
+        return ReadGpuTimestamp(system.CoreTiming(), g_nx2_ampere.load(std::memory_order_relaxed),
+                                Settings::values.gpu_clock.GetValue(),
+                                present_ns.load(std::memory_order_relaxed));
     }
 
     void RendererFrameEndNotify() {
+        present_ns.store(static_cast<u64>(system.CoreTiming().GetGlobalTimeNs().count()),
+                         std::memory_order_relaxed);
         system.GetPerfStats().EndGameFrame();
     }
 
@@ -393,7 +399,9 @@ struct GPU::Impl {
     std::condition_variable sync_cv;
 
     std::list<std::function<void()>> sync_requests;
+    std::atomic<bool> has_sync_requests{};
     std::atomic<u64> current_sync_fence{};
+    std::atomic<u64> present_ns{};
     u64 last_sync_fence{};
 
     // Maps queued by MapInOrder and not run yet, by the GPU addresses they change.

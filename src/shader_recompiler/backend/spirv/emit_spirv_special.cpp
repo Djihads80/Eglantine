@@ -126,11 +126,9 @@ void EmitPrologue(EmitContext& ctx) {
 
         if (Sirit::ValidId(ctx.clip_distances)) {
             for (u32 i = 0; i < ctx.profile.max_user_clip_distances; ++i) {
-                if (!clip_distance_written.test(i)) {
-                    const Id idx = ctx.Const(i);
-                    const Id element = ctx.OpAccessChain(ctx.output_f32, ctx.clip_distances, idx);
-                    ctx.OpStore(element, ctx.Const(0.0f));
-                }
+                const Id idx = ctx.Const(i);
+                const Id element = ctx.OpAccessChain(ctx.output_f32, ctx.clip_distances, idx);
+                ctx.OpStore(element, ctx.Const(0.0f));
             }
         }
     }

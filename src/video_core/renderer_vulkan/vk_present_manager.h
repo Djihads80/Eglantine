@@ -38,6 +38,9 @@ struct Frame {
     vk::Semaphore render_ready;
     vk::Fence present_done;
     bool storage_capable{};
+    bool is_generated{};
+    u32 generation_index{};
+    u32 generation_count{};
 };
 
 class PresentManager {
@@ -53,6 +56,9 @@ public:
 
     /// Returns the last used presentation frame
     Frame* GetRenderFrame();
+
+    /// Returns a free presentation frame if its present fence is already signaled, or nullptr
+    Frame* TryGetRenderFrame();
 
     /// Pushes a frame for presentation
     void Present(Frame* frame);
@@ -106,6 +112,8 @@ private:
     bool blit_supported;
     bool storage_supported;
     bool use_present_thread;
+    bool presenting_frame{};
+    bool wake_present_hold{};
     std::atomic<std::size_t> image_count{};
     std::atomic<std::size_t> swapchain_image_count{};
     std::atomic<VkFormat> swapchain_image_format{};

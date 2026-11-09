@@ -29,9 +29,13 @@ inline State& GetState() {
 // 7/8=QMD release slots observed, 9=PCAS request,
 // 10=DMA destination (value=source, flags=line bytes), 11=inline write.
 // Keep this opt-in and bounded.
-inline void TraceNativeQuery(u32 event, u64 asid, u64 gpu, u64 cpu, u32 type, u64 value, u32 flags) {
+inline bool NativeQueryTraceEnabled() {
     static const bool diagnostics = std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS") != nullptr;
-    if (!diagnostics) return;
+    return diagnostics;
+}
+
+inline void TraceNativeQuery(u32 event, u64 asid, u64 gpu, u64 cpu, u32 type, u64 value, u32 flags) {
+    if (!NativeQueryTraceEnabled()) return;
     auto& state = NativeQueryDiagnostics::GetState();
     const std::scoped_lock lock{state.mutex};
     if (state.records++ < 1000000 || event == 4 || event == 5) {

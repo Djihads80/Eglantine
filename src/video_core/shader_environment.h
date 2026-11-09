@@ -73,6 +73,14 @@ public:
     [[nodiscard]] bool IsCbufIndirectStorageBufferPointer(u32 index, u32 offset,
                                                           u32 indirect) override;
 
+    [[nodiscard]] std::vector<std::pair<u32, u32>> NullStoragePointerSlots() const override;
+
+    [[nodiscard]] std::vector<u64> MappedStoragePointerKeys() const override;
+
+    /// Answers the classification of these keys (see MappedStoragePointerKeys) as storage buffer
+    /// pointers, whatever the slots hold now; called before the program is translated
+    void KeepStoragePointers(std::span<const u64> keys);
+
     [[nodiscard]] std::optional<u64> Analyze();
 
     void SetCachedSize(size_t size_bytes);
@@ -100,13 +108,6 @@ public:
     /// with_mesh_state: also the mesh registers and pass-through header of task and mesh
     /// programs (only the mesh pipeline file carries them).
     void Serialize(std::ofstream& file, bool with_mesh_state = false) const;
-
-    /// Native programs: the constant buffer slots (index << 32 | offset) storage tracking took as
-    /// pointers, and the ones it left out because they held null when the program was translated.
-    void StoragePointerSlots(std::vector<u64>& pointers, std::vector<u64>& null_slots) const;
-
-    /// Takes these slots as pointers without reading them: a rebuild keeps its earlier buffers.
-    void SeedStoragePointers(std::span<const u64> slots);
 
     bool HasHLEMacroState() const override {
         return has_hle_engine_state;
@@ -228,9 +229,6 @@ public:
 
     void Deserialize(std::ifstream& file, bool with_mesh_state = false);
 
-    /// See GenericEnvironment::StoragePointerSlots.
-    void StoragePointerSlots(std::vector<u64>& pointers, std::vector<u64>& null_slots) const;
-
     [[nodiscard]] u64 ReadInstruction(u32 address) override;
 
     [[nodiscard]] u32 TranslateProgramAddress(u32 address) const override;
@@ -241,6 +239,10 @@ public:
 
     [[nodiscard]] bool IsCbufIndirectStorageBufferPointer(u32 index, u32 offset,
                                                           u32 indirect) override;
+
+    [[nodiscard]] std::vector<std::pair<u32, u32>> NullStoragePointerSlots() const override;
+
+    [[nodiscard]] std::vector<u64> MappedStoragePointerKeys() const override;
 
     [[nodiscard]] u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) override;
 

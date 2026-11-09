@@ -138,6 +138,16 @@ public:
         return fragment_has_color0_output;
     }
 
+    /// Color components of a render target the fragment shader writes, as VkColorComponentFlags
+    VkColorComponentFlags ColorOutputMask(size_t render_target) const noexcept {
+        return (color_output_mask >> (render_target * 4)) & 0xF;
+    }
+
+    /// Color components the fragment shader writes, 4 bits per render target
+    u32 ColorOutputMask() const noexcept {
+        return color_output_mask;
+    }
+
     bool UsesExtendedDynamicState() const noexcept {
         return key.state.extended_dynamic_state != 0;
     }
@@ -146,6 +156,9 @@ public:
     [[nodiscard]] bool IsMeshPipeline() const noexcept {
         return stage_infos[0].is_task || stage_infos[0].is_mesh;
     }
+    /// Whether any stage may write guest memory or images: storage buffer, global memory or
+    /// image stores and atomics (Nx2Perf MacroReadWriterSet; conservative).
+    [[nodiscard]] bool Nx2MayWriteMemory() const noexcept;
 
     /// Mesh pipeline drawn through the compute emulation (MeshEmulationSetup).
     [[nodiscard]] bool IsEmulatedMesh() const noexcept {
@@ -229,6 +242,10 @@ public:
         return last_use_frame;
     }
 
+    [[nodiscard]] const GraphicsPipelineCacheKey& Key() const noexcept {
+        return key;
+    }
+
     /// Forgets the transitions, which may point to pipelines the cache evicted.
     void ClearTransitions() noexcept {
         transition_keys.clear();
@@ -257,7 +274,7 @@ private:
     bool ConfigureImpl(bool is_indexed);
 
     bool ConfigureDraw(const RescalingPushConstant& rescaling,
-                       const RenderAreaPushConstant& render_are);
+                       const RenderAreaPushConstant& render_are, bool is_indexed);
 
     void MakePipeline(VkRenderPass render_pass);
 
@@ -290,6 +307,9 @@ private:
     std::vector<SampledImage> sampled_images;
     u32 num_textures{};
     bool fragment_has_color0_output{};
+    u32 color_output_mask{};
+    bool writes_storage{};
+    bool has_render_area_push_constants{};
 
     vk::DescriptorSetLayout descriptor_set_layout;
     DescriptorAllocator descriptor_allocator;
@@ -299,9 +319,12 @@ private:
 
     DescriptorBufferLayout descriptor_buffer_layout;
     std::vector<DescriptorUpdateEntry> last_descriptor_payload;
+    std::vector<u8> last_descriptor_bytes;
     VkDeviceSize last_descriptor_buffer_offset{};
     u32 last_descriptor_buffer_chunk{};
     u64 last_descriptor_buffer_generation{};
+    std::array<u32, 6> last_rescaling_words{};
+    bool has_pushed_rescaling{false};
 
     std::function<void()> build_task;
     std::atomic_bool build_claimed{false};

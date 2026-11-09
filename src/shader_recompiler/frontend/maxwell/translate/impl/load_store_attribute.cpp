@@ -109,22 +109,22 @@ void TranslatorVisitor::AST(u64 insn) {
         BitField<47, 2, Size> size;
     } const ast{insn};
 
-    if (ast.index_reg != IR::Reg::RZ) {
-        throw NotImplementedException("Indexed store");
-    }
-    const u64 offset{ast.absolute_offset.Value()};
+    const s64 offset{ast.index_reg == IR::Reg::RZ
+                         ? static_cast<s64>(ast.absolute_offset.Value())
+                         : ast.relative_offset.Value()};
     if (offset % 4 != 0) {
-        throw NotImplementedException("Unaligned absolute offset {}", offset);
+        throw NotImplementedException("Unaligned attribute offset {}", offset);
     }
     const IR::U32 vertex{X(ast.vertex_reg)};
     const u32 num_elements{NumElements(ast.size)};
     if (ast.index_reg == IR::Reg::RZ) {
+        const u64 base_offset{static_cast<u64>(offset) / 4};
         for (u32 element = 0; element < num_elements; ++element) {
             if (ast.patch != 0) {
-                const IR::Patch patch{offset / 4 + element};
+                const IR::Patch patch{base_offset + element};
                 ir.SetPatch(patch, F(ast.src_reg + static_cast<int>(element)));
             } else {
-                const IR::Attribute attr{offset / 4 + element};
+                const IR::Attribute attr{base_offset + element};
                 ir.SetAttribute(attr, F(ast.src_reg + static_cast<int>(element)), vertex);
             }
         }
@@ -134,7 +134,10 @@ void TranslatorVisitor::AST(u64 insn) {
         throw NotImplementedException("Indexed tessellation patch store");
     }
     HandleIndexed(*this, ast.index_reg, num_elements, [&](u32 element, IR::U32 final_offset) {
-        ir.SetAttributeIndexed(final_offset, F(ast.src_reg + static_cast<int>(element)), vertex);
+        const IR::U32 attr_offset{
+            offset == 0 ? final_offset
+                        : IR::U32{ir.IAdd(final_offset, ir.Imm32(static_cast<s32>(offset)))}};
+        ir.SetAttributeIndexed(attr_offset, F(ast.src_reg + static_cast<int>(element)), vertex);
     });
 }
 

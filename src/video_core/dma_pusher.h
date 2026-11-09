@@ -32,6 +32,10 @@ namespace Control {
 struct ChannelState;
 }
 
+namespace Engines {
+class Maxwell3D;
+}
+
 class GPU;
 class MemoryManager;
 
@@ -187,6 +191,8 @@ public:
     void BindRasterizer(VideoCore::RasterizerInterface* rasterizer);
 
 private:
+    static bool IsMemoryWriter(const Engines::EngineInterface& engine,
+                               Engines::EngineTypes type, u32 method);
     static constexpr u32 non_puller_methods = 0x40;
     static constexpr u32 max_subchannels = 8;
     bool Step();
@@ -199,6 +205,9 @@ private:
 
     void CallMethod(u32 argument);
     void CallMultiMethod(const u32* base_start, u32 num_methods);
+    bool FrontRun(std::span<const CommandHeader> commands, size_t word_offset, size_t& index);
+    void VerifyFrontRun(Engines::Maxwell3D& maxwell3d, std::span<const CommandHeader> commands,
+                        size_t word_offset, size_t& index);
     [[nodiscard]] bool WantsSegment() const;
     void ReportUnboundSubchannel();
     void WatchArgument(u32 method, u32 argument) const;

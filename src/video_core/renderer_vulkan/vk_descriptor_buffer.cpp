@@ -128,14 +128,4 @@ DescriptorBufferRing::Allocation DescriptorBufferRing::Allocate(Scheduler& sched
     };
 }
 
-VkDescriptorBufferBindingInfoEXT DescriptorBufferRing::BindingInfo(u32 chunk) const noexcept {
-    return VkDescriptorBufferBindingInfoEXT{
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
-        .pNext = nullptr,
-        .address = chunk_addresses[chunk],
-        .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
-                 VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT,
-    };
-}
-
 } // namespace Vulkan

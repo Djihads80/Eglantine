@@ -46,7 +46,15 @@ public:
 
     [[nodiscard]] Allocation Allocate(Scheduler& scheduler, VkDeviceSize size);
 
-    [[nodiscard]] VkDescriptorBufferBindingInfoEXT BindingInfo(u32 chunk) const noexcept;
+    [[nodiscard]] VkDescriptorBufferBindingInfoEXT BindingInfo(u32 chunk) const noexcept {
+        return VkDescriptorBufferBindingInfoEXT{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
+            .pNext = nullptr,
+            .address = chunk_addresses[chunk],
+            .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
+                     VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT,
+        };
+    }
 
     [[nodiscard]] bool IsValid() const noexcept {
         return !chunks.empty();

@@ -20,6 +20,7 @@
 #include "common/polyfill_thread.h"
 #include "common/settings.h"
 #include "video_core/gpu_split.h"
+#include "video_core/renderer_vulkan/fragment_barrier_state.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -67,6 +68,20 @@ public:
         return tick < master_semaphore->CurrentTick();
     }
 
+    /// Nx2Perf submit_while_waited: FlushWork counts its draws; only a submission (Flush,
+    /// Finish) resets the count, not a deferred FlushCommands.
+    void NoteDraw() noexcept {
+        ++draws_since_submit;
+    }
+    [[nodiscard]] u32 DrawsSinceSubmit() const noexcept {
+        return draws_since_submit;
+    }
+    /// Whether the host GPU has finished everything submitted so far (reads the semaphore).
+    [[nodiscard]] bool GpuCaughtUp() {
+        master_semaphore->Refresh();
+        return master_semaphore->KnownGpuTick() + 1 >= master_semaphore->CurrentTick();
+    }
+
     /// Waits for the worker thread to finish executing everything. After this function returns it's
     /// safe to touch worker resources.
     void WaitWorker();
@@ -88,7 +103,28 @@ public:
 
     /// Requests the current execution context to be able to execute operations only allowed outside
     /// of a renderpass.
-    void RequestOutsideRenderPassOperationContext();
+    void RequestOutsideRenderPassOperationContext() {
+        if (!state.renderpass && deferred_clear.framebuffer == nullptr) {
+            return;
+        }
+        EndRenderPass();
+    }
+
+    void DeferFragmentBarrier() {
+        fragment_barrier.Defer(state.renderpass != VK_NULL_HANDLE);
+    }
+
+    bool HasFragmentBarrier() const {
+        return fragment_barrier.Pending();
+    }
+
+    void NoteRenderPassStores() {
+        render_pass_has_stores = true;
+    }
+
+    bool RenderPassHasStores() const {
+        return render_pass_has_stores;
+    }
 
     /// A dispatch was recorded: the next render pass must see what it wrote.
     void NoteComputeWrites() {
@@ -101,7 +137,12 @@ public:
     }
 
     /// Update the pipeline to the current execution context.
-    bool UpdateGraphicsPipeline(GraphicsPipeline* pipeline);
+    bool UpdateGraphicsPipeline(GraphicsPipeline* pipeline) {
+        if (state.graphics_pipeline == pipeline && !state.needs_state_enable_refresh) [[likely]] {
+            return false;
+        }
+        return UpdateGraphicsPipelineImpl(pipeline);
+    }
 
     /// Worker thread only: whether the bound graphics pipeline failed to build, so the draws
     /// recorded after it must be dropped instead of reaching the driver without a pipeline.
@@ -113,10 +154,32 @@ public:
     }
 
     /// Update the rescaling state. Returns true if the state has to be updated.
-    bool UpdateRescaling(bool is_rescaling);
+    bool UpdateRescaling(bool is_rescaling) {
+        if (state.rescaling_defined && is_rescaling == state.is_rescaling) [[likely]] {
+            return false;
+        }
+        state.rescaling_defined = true;
+        state.is_rescaling = is_rescaling;
+        return true;
+    }
 
     /// Returns true when the descriptor buffer chunk has to be bound into the command buffer.
-    bool UpdateDescriptorBufferChunk(u32 descriptor_chunk);
+    bool UpdateDescriptorBufferChunk(u32 descriptor_chunk) {
+        if (state.descriptor_buffer_bound && descriptor_chunk == state.descriptor_buffer_chunk)
+            [[likely]] {
+            return false;
+        }
+        state.descriptor_buffer_bound = true;
+        state.descriptor_buffer_chunk = descriptor_chunk;
+        return true;
+    }
+
+    /// Marks the descriptor buffer as unbound (e.g. after vkCmdBindDescriptorSets on any bind
+    /// point, which Vulkan specifies unbinds all descriptor buffers across all bind points).
+    void InvalidateDescriptorBuffer() {
+        state.descriptor_buffer_bound = false;
+        state.rescaling_defined = false;
+    }
 
     /// Invalidates current command buffer state except for render passes
     void InvalidateState();
@@ -169,6 +232,12 @@ public:
     /// Returns the current command buffer tick.
     [[nodiscard]] u64 CurrentTick() const noexcept {
         return master_semaphore->CurrentTick();
+    }
+
+    /// Changes whenever recorded command buffer state may have been reset (InvalidateState, the
+    /// end of a render pass), so a binding recorded at the same epoch is still bound.
+    [[nodiscard]] u64 RecordingEpoch() const noexcept {
+        return recording_epoch;
     }
 
     /// Returns true when a tick has been triggered by the GPU.
@@ -332,6 +401,8 @@ private:
     void BeginRenderPassImpl(const Framebuffer* framebuffer, VkRenderPass renderpass,
                              const VkClearValue* clear_values, u32 clear_value_count);
 
+    bool UpdateGraphicsPipelineImpl(GraphicsPipeline* pipeline);
+
     /// If a deferred clear is pending.
     void RealizeDeferredClear();
 
@@ -353,6 +424,8 @@ private:
     StateTracker& state_tracker;
 
     std::unique_ptr<MasterSemaphore> master_semaphore;
+    FragmentBarrierState fragment_barrier;
+    bool render_pass_has_stores{};
     bool compute_writes_pending{};
     bool graphics_pipeline_missing{};
     std::unique_ptr<CommandPool> command_pool;
@@ -368,6 +441,8 @@ private:
     std::function<void()> on_submit;
 
     State state;
+    u64 recording_epoch = 0;
+    u32 draws_since_submit = 0;
 
     u32 num_renderpass_images = 0;
     std::array<VkImage, 9> renderpass_images{};

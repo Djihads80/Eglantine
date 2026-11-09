@@ -70,8 +70,21 @@ public:
         });
     }
 
+    /// Nx2Perf bind_memo: bumped whenever CPU-modified bits may be set (cpu) and whenever
+    /// GPU-modified bits change (gpu). A binding synced clean stays clean while cpu is unchanged.
+    [[nodiscard]] u64 CpuEpoch() const noexcept {
+        return cpu_epoch;
+    }
+    [[nodiscard]] u64 GpuEpoch() const noexcept {
+        return gpu_epoch;
+    }
+    void BumpGpuEpoch() noexcept {
+        ++gpu_epoch;
+    }
+
     /// Mark region as CPU modified, notifying the device_tracker about this change
     void MarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 query_size) {
+        ++cpu_epoch;
         IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
             manager->ChangeRegionState(Type::CPU, true, manager->cpu_addr + offset, size);
         });
@@ -86,6 +99,7 @@ public:
 
     /// Mark region as modified from the host GPU
     void MarkRegionAsGpuModified(VAddr dirty_cpu_addr, u64 query_size) noexcept {
+        ++gpu_epoch;
         IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
             manager->ChangeRegionState(Type::GPU, true, manager->cpu_addr + offset, size);
         });
@@ -100,6 +114,7 @@ public:
 
     /// Unmark region as modified from the host GPU
     void UnmarkRegionAsGpuModified(VAddr dirty_cpu_addr, u64 query_size) noexcept {
+        ++gpu_epoch;
         IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
             manager->ChangeRegionState(Type::GPU, false, manager->cpu_addr + offset, size);
         });
@@ -124,12 +139,14 @@ public:
 
     /// Flushes cached CPU writes, and notify the device_tracker about the deltas
     void FlushCachedWrites(VAddr query_cpu_addr, u64 query_size) noexcept {
+        ++cpu_epoch;
         IteratePages<false>(query_cpu_addr, query_size, [](Manager* manager, [[maybe_unused]] u64 offset, [[maybe_unused]] size_t size) {
             manager->FlushCachedWrites();
         });
     }
 
     void FlushCachedWrites() noexcept {
+        ++cpu_epoch;
         for (auto id : cached_pages) {
             top_tier[id]->FlushCachedWrites();
         }
@@ -147,6 +164,7 @@ public:
     /// Call 'func' for each GPU modified range and unmark those pages as GPU modified
     template <typename Func>
     void ForEachDownloadRange(VAddr query_cpu_range, u64 query_size, bool clear, Func&& func) {
+        gpu_epoch += clear ? 1 : 0;
         IteratePages<false>(query_cpu_range, query_size, [&func, clear](Manager* manager, u64 offset, size_t size) {
             manager->ForEachModifiedRange(Type::GPU, clear, manager->cpu_addr + offset, size, func);
         });
@@ -162,9 +180,39 @@ public:
 
     template <typename Func>
     void ForEachDownloadRangeAndClear(VAddr query_cpu_range, u64 query_size, Func&& func) {
+        ++gpu_epoch;
         IteratePages<false>(query_cpu_range, query_size, [&func](Manager* manager, u64 offset, size_t size) {
             manager->ForEachModifiedRange(Type::GPU, true, manager->cpu_addr + offset, size, func);
         });
+    }
+
+    /// ForEachUploadRange without the clean words (word_manager.h) at either end of each manager's
+    /// part of the range: they have nothing to find or change. A per-word form of PR #161's skip.
+    template <typename Func>
+    void ForEachDirtyUploadRange(VAddr query_cpu_range, u64 query_size, Func&& func) {
+        IteratePages<true>(query_cpu_range, query_size, [&func](Manager* manager, u64 offset, size_t size) {
+            const u64 dirty =
+                manager->DirtyWords(offset / BYTES_PER_WORD, (offset + size - 1) / BYTES_PER_WORD);
+            if (dirty == 0) {
+                return;
+            }
+            const u64 begin = (std::max<u64>)(offset, std::countr_zero(dirty) * BYTES_PER_WORD);
+            const u64 end =
+                (std::min<u64>)(offset + size, (64 - std::countl_zero(dirty)) * BYTES_PER_WORD);
+            manager->ForEachModifiedRange(Type::CPU, true, manager->cpu_addr + begin,
+                                          static_cast<s64>(end - begin), func);
+        });
+    }
+    /// Verify mode: true when the clean words of the managers over a range match a recount.
+    [[nodiscard]] bool CleanWordsHold(VAddr query_cpu_addr, u64 query_size) const noexcept {
+        const size_t first = query_cpu_addr >> HIGHER_PAGE_BITS;
+        const size_t last = (query_cpu_addr + (std::max<u64>)(query_size, 1) - 1) >> HIGHER_PAGE_BITS;
+        for (size_t page_index = first; page_index <= last; ++page_index) {
+            if (top_tier[page_index] && !top_tier[page_index]->CleanWordsHold()) {
+                return false;
+            }
+        }
+        return true;
     }
 
 private:
@@ -243,6 +291,7 @@ private:
     }
 
     void CreateRegion(std::size_t page_index) {
+        ++cpu_epoch; // A new manager starts with every page CPU-modified
         const VAddr base_cpu_addr = page_index << HIGHER_PAGE_BITS;
         top_tier[page_index] = GetNewManager(base_cpu_addr);
     }
@@ -267,6 +316,8 @@ private:
     std::deque<Manager*> free_managers;
     ::Common::unordered_set<u32> cached_pages;
     DeviceTracker* device_tracker = nullptr;
+    u64 cpu_epoch{};
+    u64 gpu_epoch{};
 };
 
 } // namespace VideoCommon

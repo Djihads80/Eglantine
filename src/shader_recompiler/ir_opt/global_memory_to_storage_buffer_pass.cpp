@@ -20,6 +20,7 @@
 
 #include "common/alignment.h"
 #include "shader_recompiler/environment.h"
+#include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
 #include "shader_recompiler/frontend/ir/breadth_first_search.h"
 #include "shader_recompiler/frontend/ir/ir_emitter.h"
@@ -80,6 +81,11 @@ struct StorageInfo {
     std::unordered_set<const IR::Inst*> native_dynamic;
     /// A native access with several candidate pointers was left global.
     bool native_runtime_bounds{};
+    /// Paired accesses bind the loaded pointers that compete with their pair; cleared when those
+    /// leave too few bindings.
+    bool bind_competing_loaded{true};
+    /// A paired access bound the loaded pointers that compete with its pair.
+    bool competing_loaded_bound{};
     /// Pointer table entries reached through a phi or select of table pointers, or through a
     /// table pointer read from a dynamically indexed constant buffer array. They are bound only
     /// in the bindings the program's other storage buffers leave free (table_budget).
@@ -87,6 +93,9 @@ struct StorageInfo {
     bool tables_seen{};
     size_t table_budget{};
     size_t table_used{};
+    /// The storage buffers the pass without table entries bound; bound again, they take nothing
+    /// from table_budget, which they were left out of.
+    StorageBufferSet counted;
     small_vector<StorageBufferAddr, 8> table_candidates;
 };
 
@@ -118,6 +127,7 @@ bool IsGlobalMemory(const IR::Inst& inst) {
     case IR::Opcode::GlobalAtomicOr32:
     case IR::Opcode::GlobalAtomicXor32:
     case IR::Opcode::GlobalAtomicExchange32:
+    case IR::Opcode::GlobalAtomicCompareExchange32:
     case IR::Opcode::GlobalAtomicIAdd64:
     case IR::Opcode::GlobalAtomicSMin64:
     case IR::Opcode::GlobalAtomicUMin64:
@@ -149,6 +159,24 @@ bool IsGlobalMemory(const IR::Inst& inst) {
     }
 }
 
+/// Returns true when the backend can pick a global access's buffer among the bound ones at run time
+bool IsRuntimeRoutable(const IR::Inst& inst) {
+    switch (inst.GetOpcode()) {
+    case IR::Opcode::LoadGlobal32:
+    case IR::Opcode::LoadGlobal64:
+    case IR::Opcode::LoadGlobal128:
+    case IR::Opcode::WriteGlobal32:
+    case IR::Opcode::WriteGlobal64:
+    case IR::Opcode::WriteGlobal128:
+    case IR::Opcode::GlobalAtomicIAdd32:
+    case IR::Opcode::GlobalAtomicUMax32:
+    case IR::Opcode::GlobalAtomicCompareExchange32:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /// Returns true when the instruction is a global memory instruction
 bool IsGlobalMemoryWrite(const IR::Inst& inst) {
     switch (inst.GetOpcode()) {
@@ -170,6 +198,7 @@ bool IsGlobalMemoryWrite(const IR::Inst& inst) {
     case IR::Opcode::GlobalAtomicOr32:
     case IR::Opcode::GlobalAtomicXor32:
     case IR::Opcode::GlobalAtomicExchange32:
+    case IR::Opcode::GlobalAtomicCompareExchange32:
     case IR::Opcode::GlobalAtomicIAdd64:
     case IR::Opcode::GlobalAtomicSMin64:
     case IR::Opcode::GlobalAtomicUMin64:
@@ -254,6 +283,8 @@ IR::Opcode GlobalToStorage(IR::Opcode opcode) {
         return IR::Opcode::StorageAtomicXor32;
     case IR::Opcode::GlobalAtomicExchange32:
         return IR::Opcode::StorageAtomicExchange32;
+    case IR::Opcode::GlobalAtomicCompareExchange32:
+        return IR::Opcode::StorageAtomicCompareExchange32;
     case IR::Opcode::GlobalAtomicIAdd64:
         return IR::Opcode::StorageAtomicIAdd64;
     case IR::Opcode::GlobalAtomicSMin64:
@@ -1335,8 +1366,10 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
         const auto& candidates{it->second};
         const bool has_loaded_pointer{std::ranges::any_of(
             candidates, [](const StorageBufferAddr& c) { return c.indirect != ~0U; })};
-        if (paired_found && !has_loaded_pointer) {
-            // No pointer loaded from memory competes with the paired one: keep the pair.
+        if (paired_found &&
+            (!has_loaded_pointer || !info.bind_competing_loaded || !IsRuntimeRoutable(inst))) {
+            // No pointer loaded from memory competes with the paired one, or the access cannot
+            // stay global: keep the pair.
         } else if (candidates.size() > 1 || paired_found ||
                    (!candidates.empty() && info.native_dynamic.contains(start))) {
             // Bind every candidate and keep the access global; the backend picks the buffer at
@@ -1344,6 +1377,7 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
             bool accepted{};
             if (paired_found) {
                 // The paired pointer is the other input of the select or phi; bind it too.
+                info.competing_loaded_bound = true;
                 info.set.insert(*storage_buffer);
                 if (IsGlobalMemoryWrite(inst)) {
                     info.writes.insert(*storage_buffer);
@@ -1354,11 +1388,13 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
                     info.table_candidates.end()) {
                     const StorageBufferAddr holder{.index = candidate.index,
                                                    .offset = candidate.offset};
+                    const auto takes_binding = [&info](const StorageBufferAddr& buffer) {
+                        return info.set.find(buffer) == info.set.end() &&
+                               !info.counted.contains(buffer);
+                    };
                     const size_t added{
-                        (info.set.find(candidate) == info.set.end() ? 1U : 0U) +
-                        (candidate.indirect != ~0U && info.set.find(holder) == info.set.end()
-                             ? 1U
-                             : 0U)};
+                        (takes_binding(candidate) ? 1U : 0U) +
+                        (candidate.indirect != ~0U && takes_binding(holder) ? 1U : 0U)};
                     if (info.table_used + added > info.table_budget) {
                         continue;
                     }
@@ -1491,6 +1527,15 @@ void ReplaceAtomic(IR::Block& block, IR::Inst& inst, const IR::U32& storage_inde
     inst.ReplaceUsesWith(value);
 }
 
+void ReplaceAtomicCompareExchange(IR::Block& block, IR::Inst& inst, const IR::U32& storage_index,
+                                  const IR::U32& offset) {
+    const IR::Opcode new_opcode{GlobalToStorage(inst.GetOpcode())};
+    const auto it{IR::Block::InstructionList::s_iterator_to(inst)};
+    const IR::Value value{&*block.PrependNewInst(
+        it, new_opcode, {storage_index, offset, inst.Arg(1), inst.Arg(2)})};
+    inst.ReplaceUsesWith(value);
+}
+
 /// Replace a global memory instruction with its storage buffer equivalent
 void Replace(IR::Block& block, IR::Inst& inst, const IR::U32& storage_index,
              const IR::U32& offset) {
@@ -1548,6 +1593,8 @@ void Replace(IR::Block& block, IR::Inst& inst, const IR::U32& storage_index,
     case IR::Opcode::GlobalAtomicMaxF16x2:
     case IR::Opcode::GlobalAtomicMaxF32x2:
         return ReplaceAtomic(block, inst, storage_index, offset);
+    case IR::Opcode::GlobalAtomicCompareExchange32:
+        return ReplaceAtomicCompareExchange(block, inst, storage_index, offset);
     default:
         throw InvalidArgument("Invalid global memory opcode {}", inst.GetOpcode());
     }
@@ -1563,8 +1610,18 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
     if (!has_global_memory) {
         return;
     }
+    // EDEN_NX2_WIDE_COMPUTE_SSBOS=0 restores the 32-binding limit for A/B testing.
+    static const bool wide_ssbos = [] {
+        const char* const value = std::getenv("EDEN_NX2_WIDE_COMPUTE_SSBOS");
+        return !(value && value[0] == '0');
+    }();
+    const size_t max_ssbos{
+        wide_ssbos ? StorageBufferLimit(host_info)
+                   : (std::min)(StorageBufferLimit(host_info), size_t{Info::MAX_GRAPHICS_SSBOS})};
     TrackingConditions conditions{program};
     StorageInfo info;
+    // Without 64-bit integers the backend cannot route global accesses among bound buffers.
+    info.bind_competing_loaded = host_info.support_int64;
     info.iterator_words = CollectIteratorWords(program);
     info.atomic_pointers = CollectAtomicPointers(program);
     const auto collect = [&] {
@@ -1579,31 +1636,36 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
         }
     };
     collect();
-    // Compute programs may bind up to Info::MAX_SSBOS (64) storage buffers, so pointer table
-    // entries still fit when the program's own pointers take most of 32. Ocarina of Time's foliage
-    // list builder has 29 of its own: the table entries of its last two sections (Hyrule Field
-    // grass) did not fit, read zeros and the grass list stayed empty.
-    // EDEN_NX2_WIDE_COMPUTE_SSBOS=0 restores the 32-binding limit.
-    static const bool wide_compute = [] {
-        const char* const value = std::getenv("EDEN_NX2_WIDE_COMPUTE_SSBOS");
-        return !(value && value[0] == '0');
-    }();
-    const size_t max_ssbos{env.ShaderStage() == Stage::Compute && wide_compute
-                               ? Info::MAX_SSBOS
-                               : Info::MAX_GRAPHICS_SSBOS};
+    if (info.competing_loaded_bound && info.set.size() > max_ssbos) {
+        // Not enough bindings for the loaded pointers that compete with paired ones: keep the
+        // pairs, as if no loaded pointer competed.
+        StorageInfo paired;
+        paired.iterator_words = std::move(info.iterator_words);
+        paired.atomic_pointers = std::move(info.atomic_pointers);
+        paired.bind_competing_loaded = false;
+        info = std::move(paired);
+        collect();
+    }
     if (info.tables_seen && info.set.size() < max_ssbos) {
         // Again with pointer table entries, in the bindings the first pass left free.
         StorageInfo with_tables;
-        with_tables.iterator_words = std::move(info.iterator_words);
-        with_tables.atomic_pointers = std::move(info.atomic_pointers);
+        with_tables.iterator_words = info.iterator_words;
+        with_tables.atomic_pointers = info.atomic_pointers;
+        with_tables.bind_competing_loaded = info.bind_competing_loaded;
         with_tables.tables_enabled = true;
         with_tables.table_budget = max_ssbos - info.set.size();
-        info = std::move(with_tables);
+        with_tables.counted = info.set;
+        std::swap(info, with_tables);
         collect();
+        if (info.set.size() > max_ssbos) {
+            // Never more storage buffers than a stage binds: without the table entries, then.
+            info = std::move(with_tables);
+        }
     }
     if (info.set.size() > max_ssbos) {
-        throw NotImplementedException("{} storage buffers, the limit is {}", info.set.size(),
-                                      max_ssbos);
+        // Binding only some of them would drop the accesses through the others.
+        throw NotImplementedException("Binding {} storage buffers to a stage that binds {}",
+                                      info.set.size(), max_ssbos);
     }
     program.info.native_global_bounds |= info.native_runtime_bounds;
     for (const StorageBufferAddr& storage_buffer : info.set) {
@@ -1627,7 +1689,18 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
     }
 }
 
-void JoinStorageInfo(Info& base, Info& source) {
+size_t StorageBufferLimit(const HostTranslateInfo& host_info) {
+    size_t limit{Info::MAX_SSBOS};
+    for (const u32 device_limit : {host_info.max_per_stage_descriptor_storage_buffers,
+                                   host_info.max_descriptor_set_storage_buffers}) {
+        if (device_limit != 0) {
+            limit = (std::min)(limit, size_t{device_limit});
+        }
+    }
+    return limit;
+}
+
+void JoinStorageInfo(Info& base, Info& source, size_t limit) {
     base.native_global_bounds |= source.native_global_bounds;
     auto& descriptors = base.storage_buffers_descriptors;
     for (auto& desc : source.storage_buffers_descriptors) {
@@ -1639,6 +1712,10 @@ void JoinStorageInfo(Info& base, Info& source) {
         if (it != descriptors.end()) {
             it->is_written |= desc.is_written;
             continue;
+        }
+        if (descriptors.size() >= limit) {
+            throw NotImplementedException("Binding {} storage buffers to a stage that binds {}",
+                                          descriptors.size() + 1, limit);
         }
         descriptors.push_back(desc);
     }

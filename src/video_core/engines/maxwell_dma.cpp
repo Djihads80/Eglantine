@@ -107,12 +107,21 @@ void MaxwellDMA::Launch() {
         }
 
         if (is_src_pitch && is_dst_pitch) {
-            for (u32 line = 0; line < regs.line_count; ++line) {
-                const GPUVAddr source_line =
-                    regs.offset_in + static_cast<size_t>(line) * regs.pitch_in;
-                const GPUVAddr dest_line =
-                    regs.offset_out + static_cast<size_t>(line) * regs.pitch_out;
-                memory_manager.CopyBlock(dest_line, source_line, regs.line_length_in);
+            if (regs.line_count == 1 ||
+                (regs.pitch_in >= 0 && regs.pitch_out >= 0 &&
+                 static_cast<u32>(regs.pitch_in) == regs.line_length_in &&
+                 static_cast<u32>(regs.pitch_out) == regs.line_length_in)) {
+                memory_manager.CopyBlock(
+                    regs.offset_out, regs.offset_in,
+                    static_cast<size_t>(regs.line_count) * regs.line_length_in);
+            } else {
+                for (u32 line = 0; line < regs.line_count; ++line) {
+                    const GPUVAddr source_line =
+                        regs.offset_in + static_cast<size_t>(line) * regs.pitch_in;
+                    const GPUVAddr dest_line =
+                        regs.offset_out + static_cast<size_t>(line) * regs.pitch_out;
+                    memory_manager.CopyBlock(dest_line, source_line, regs.line_length_in);
+                }
             }
         } else {
             if (!is_src_pitch && is_dst_pitch) {

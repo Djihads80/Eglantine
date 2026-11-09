@@ -8,6 +8,8 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstdio>
+#include <string>
+#include <vector>
 
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -23,40 +25,31 @@
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace Tegra {
 
-constexpr u32 MacroRegistersStart = 0xE00;
-constexpr u32 ComputeInline = 0x6D;
 
-namespace {
-// Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads. The
-// register writes that set them up only store a value: marking those too made every list fetch
-// after one wait for all the work queued before it (draws included).
-bool WritesMemory(Engines::EngineInterface* engine, Engines::EngineTypes type, u32 method,
-                  u32 count) {
+constexpr u32 MacroRegistersStart = 0xE00;
+
+// Compute dispatches, uploads and reports and DMA copies write the command lists
+// ReadGpuWrittenCommands reads. Plain native compute state (Frizti 99b3b49) does not.
+bool DmaPusher::IsMemoryWriter(const Engines::EngineInterface& engine, Engines::EngineTypes type,
+                               u32 method) {
+    if (method >= MacroRegistersStart) {
+        return type == Engines::EngineTypes::KeplerCompute ||
+               type == Engines::EngineTypes::MaxwellDMA;
+    }
     if (type == Engines::EngineTypes::KeplerCompute) {
-        const auto* const compute = static_cast<const Engines::KeplerCompute*>(engine);
-        for (u32 i = 0; i < count; ++i) {
-            if (compute->MayWriteMemory(method + i)) {
-                return true;
-            }
-        }
-        return false;
+        return static_cast<const Engines::KeplerCompute&>(engine).MayWriteMemory(method);
     }
     if (type == Engines::EngineTypes::MaxwellDMA) {
-        for (u32 i = 0; i < count; ++i) {
-            const u32 current = method + i;
-            if (current >= MacroRegistersStart ||
-                (current < engine->execution_mask.size() && engine->execution_mask[current])) {
-                return true;
-            }
-        }
+        return method < engine.execution_mask.size() && engine.execution_mask[method];
     }
     return false;
 }
-} // Anonymous namespace
+constexpr u32 ComputeInline = 0x6D;
 
 DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Control::ChannelState& channel_state_)
     : system{system_}
@@ -77,10 +70,13 @@ void DmaPusher::DispatchCalls() {
         }
     }
     if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
-        split.Defer([gpu = &system.GPU()] {
-            gpu->FlushCommands();
-            gpu->OnCommandListEnd();
-        });
+        // Submits and releases signaled fences: their writes belong to the entries that queued them.
+        split.Defer(
+            [gpu = &system.GPU()] {
+                gpu->FlushCommands();
+                gpu->OnCommandListEnd();
+            },
+            VideoCommon::GpuSplit::Effect::None);
         split.Publish();
         return;
     }
@@ -147,6 +143,15 @@ bool DmaPusher::Step() {
     }
 
     if (header.size > 0) {
+        if (header.sync && g_nx2_ampere.load(std::memory_order_relaxed)) {
+            VideoCommon::GpuSplit::Get().NoteSync();
+        }
+        // EDEN_NX2_FETCH_DRAIN=1: wait for the back before every entry, as before the split
+        // overlapped the two halves again.
+        static const bool fetch_drain = std::getenv("EDEN_NX2_FETCH_DRAIN") != nullptr;
+        if (fetch_drain && g_nx2_ampere.load(std::memory_order_relaxed)) {
+            VideoCommon::GpuSplit::Get().Drain(VideoCommon::DrainSite::FetchDrain);
+        }
         if (subchannels[dma_state.subchannel] && dma_state.method_count) {
             const auto engine = subchannel_type[dma_state.subchannel];
             const bool kepler_payload = engine == Engines::EngineTypes::KeplerCompute && dma_state.method == ComputeInline && dma_state.non_incrementing;
@@ -155,11 +160,20 @@ bool DmaPusher::Step() {
                 const size_t words = std::min<size_t>(dma_state.method_count, header.size);
                 auto* const engine_state = subchannels[dma_state.subchannel];
                 if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
-                    // The caches behind IsMemoryDirty belong to the split's back thread.
-                    split.Defer([engine_state, memory = &memory_manager, address = GPUVAddr{dma_state.dma_get},
-                                 bytes = words * sizeof(u32)] {
-                        engine_state->current_dirty = memory->IsMemoryDirty(address, bytes);
-                    });
+                    const bool front_3d_macro =
+                        macro_payload && split.FrontMacros() &&
+                        static_cast<Engines::Maxwell3D*>(engine_state)
+                            ->GetNativeMacroEngine()
+                            .native_turing;
+                    if (!front_3d_macro) {
+                        // The caches behind IsMemoryDirty belong to the split's back thread.
+                        split.Defer(
+                            [engine_state, memory = &memory_manager,
+                             address = GPUVAddr{dma_state.dma_get}, bytes = words * sizeof(u32)] {
+                                engine_state->current_dirty = memory->IsMemoryDirty(address, bytes);
+                            },
+                            VideoCommon::GpuSplit::Effect::None);
+                    }
                 } else {
                     engine_state->current_dirty = memory_manager.IsMemoryDirty(dma_state.dma_get, words * sizeof(u32));
                 }
@@ -215,7 +229,7 @@ bool DmaPusher::Step() {
         // safe read below would flush (with the split, the front can't tell: it reads memory
         // unflushed anyway). Entries on pages the GPU writes (culling) always take the flushing
         // read: their words at submit time are an older frame's.
-        const bool submitted = command_resume_offset == 0 &&
+        const bool submitted = command_resume_offset < header.size &&
                                dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
                                (command_list.snapshot_suspensions & 1) == 0 &&
                                command_list.snapshot_suspensions ==
@@ -226,7 +240,11 @@ bool DmaPusher::Step() {
                                !gpu_written &&
                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
                                                                           header.size * sizeof(u32)));
-        if (!submitted && dma_pushbuffer_subindex < command_list.submitted_offsets.size()) {
+        // Off by default: the check below reads memory and allocates for each entry it checks.
+        // EDEN_NX2_PERF_VERIFY=1 turns it on.
+        static const bool check_parsed_entries = VideoCommon::Nx2Perf::Verify();
+        if (check_parsed_entries && !submitted &&
+            dma_pushbuffer_subindex < command_list.submitted_offsets.size()) {
             // An entry parsed from memory instead of its submit-time copy is the way a command
             // ring the game already refilled gets read as this frame's commands (garbage methods,
             // unbound subchannels, render targets of absurd size). Count how often the words
@@ -282,8 +300,11 @@ bool DmaPusher::Step() {
                 command_list.submitted_words.data() +
                     command_list.submitted_offsets[dma_pushbuffer_subindex],
                 header.size};
-            RecordParsedEntry(header, commands);
-            command_resume_offset += ProcessCommands(commands, 0);
+            if (command_resume_offset == 0) {
+                RecordParsedEntry(header, commands);
+            }
+            command_resume_offset +=
+                ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
@@ -341,7 +362,7 @@ bool DmaPusher::Step() {
                 synced = true;
                 sync_cv.notify_all();
             });
-        });
+        }, VideoCommon::DrainSite::GpSyncFence);
     }
 
     return true;
@@ -353,15 +374,6 @@ static const u32 g_semaphore_watch = [] {
     const char* value = std::getenv("EDEN_NX2_SEM_WATCH");
     return value ? static_cast<u32>(std::strtoull(value, nullptr, 16)) : 0U;
 }();
-
-// LOCAL TEST (Zelda): EDEN_NX2_FRONT_BATCH=1 (see ProcessCommands).
-static bool FrontBatchEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("EDEN_NX2_FRONT_BATCH");
-        return value != nullptr && value[0] == '1';
-    }();
-    return enabled;
-}
 
 // EDEN_NX2_PB_CHECK also keeps the last parsed entries, for DumpCurrentEntry.
 static const bool g_record_parsed_entries = std::getenv("EDEN_NX2_PB_CHECK") != nullptr;
@@ -381,35 +393,13 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
             dma_state.is_last_call = true;
             index += max_write;
         } else if (dma_state.method_count) {
-            // LOCAL TEST (Zelda), EDEN_NX2_FRONT_BATCH=1: with the split's front running the 3D
-            // engine (FrontCallMethod), a run of incrementing register writes goes to it in one
-            // call instead of CallMethod's per-word dispatch (engine lookup, writer and effect
-            // checks, Front()). A 3D register write can't suspend the channel, so the acquire
-            // check after the run is enough.
             if (!dma_state.non_incrementing && !dma_increment_once &&
-                dma_state.method >= non_puller_methods && dma_state.method < MacroRegistersStart &&
-                g_semaphore_watch == 0 && FrontBatchEnabled()) {
-                auto& split = VideoCommon::GpuSplit::Get();
-                auto* const subchannel = subchannels[dma_state.subchannel];
-                if (subchannel != nullptr && split.Active() && split.FrontMacros() &&
-                    subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D) {
-                    auto* const maxwell3d = static_cast<Engines::Maxwell3D*>(subchannel);
-                    const size_t available =
-                        (std::min)({size_t{dma_state.method_count}, commands.size() - index,
-                                    size_t{MacroRegistersStart - dma_state.method}});
-                    if (maxwell3d->GetNativeMacroEngine().native_turing && available > 1) {
-                        const u32 count = static_cast<u32>(available);
-                        const bool ends = count == dma_state.method_count;
-                        dma_state.dma_word_offset = u64((word_offset + index + count - 1) * sizeof(u32));
-                        dma_state.is_last_call = ends;
-                        maxwell3d->FrontWriteRun(system, split, dma_state.method,
-                                                 &commands[index].argument, count, ends);
-                        dma_state.method += count;
-                        dma_state.method_count -= count;
-                        index += count;
-                        continue;
-                    }
+                dma_state.method >= non_puller_methods && dma_state.method_count > 1 &&
+                g_semaphore_watch == 0 && FrontRun(commands, word_offset, index)) {
+                if (puller.HasPendingAcquire()) {
+                    return index;
                 }
+                continue;
             }
             // Fast-path batching for consecutive non-execution methods in increasing mode
             if (!dma_state.non_incrementing && !dma_increment_once &&
@@ -485,6 +475,98 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
     return commands.size();
 }
 
+// Nx2Perf FrontRun: the rest of an incrementing 3D command below the macro range, all of it in
+// `commands`, written on the split front in one call (Maxwell3D::FrontCallMethodRun): the same
+// FrontCallMethod sequence CallMethod makes word by word, then the state that loop leaves.
+bool DmaPusher::FrontRun(std::span<const CommandHeader> commands, size_t word_offset,
+                         size_t& index) {
+    if (!VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FrontRun)) {
+        return false;
+    }
+    auto& split = VideoCommon::GpuSplit::Get();
+    const u32 method = dma_state.method;
+    const u32 count = dma_state.method_count;
+    if (!split.Active() || !split.FrontMacros() || count > commands.size() - index ||
+        method + count > MacroRegistersStart || puller.HasPendingAcquire() ||
+        subchannel_type[dma_state.subchannel] != Engines::EngineTypes::Maxwell3D) {
+        return false;
+    }
+    auto* const subchannel = subchannels[dma_state.subchannel];
+    if (subchannel == nullptr) {
+        return false;
+    }
+    auto* const maxwell3d = static_cast<Engines::Maxwell3D*>(subchannel);
+    if (!maxwell3d->GetNativeMacroEngine().native_turing) {
+        return false;
+    }
+    if (VideoCommon::Nx2Perf::Verify()) [[unlikely]] {
+        VerifyFrontRun(*maxwell3d, commands, word_offset, index);
+        return true;
+    }
+    maxwell3d->FrontCallMethodRun(system, split, method, &commands[index].argument, count, true,
+                                  count);
+    dma_state.dma_word_offset = u64((word_offset + index + count - 1) * sizeof(u32));
+    dma_state.is_last_call = true;
+    dma_state.method = method + count;
+    dma_state.method_count = 0;
+    index += count;
+    return true;
+}
+
+// EDEN_NX2_PERF_VERIFY: the words go through the per-word path (authoritative), and the writes
+// FrontCallMethod gets and the state left are compared with what FrontRun would have made.
+void DmaPusher::VerifyFrontRun(Engines::Maxwell3D& maxwell3d,
+                               std::span<const CommandHeader> commands, size_t word_offset,
+                               size_t& index) {
+    const u32 method = dma_state.method;
+    const u32 count = dma_state.method_count;
+    const size_t start = index;
+    thread_local std::vector<std::array<u32, 3>> expected;
+    thread_local std::vector<std::array<u32, 3>> recorded;
+    expected.clear();
+    recorded.clear();
+    for (u32 i = 0; i < count; ++i) {
+        expected.push_back({method + i, commands[start + i].argument, count - i <= 1 ? 1U : 0U});
+    }
+    maxwell3d.front_run_record = &recorded;
+    bool acquire = false;
+    for (u32 i = 0; i < count; ++i) {
+        const auto command_header = commands[index];
+        dma_state.dma_word_offset = u64((word_offset + index) * sizeof(u32));
+        dma_state.is_last_call = dma_state.method_count <= 1;
+        CallMethod(command_header.argument);
+        dma_state.method += !dma_state.non_incrementing ? 1 : 0;
+        dma_state.non_incrementing |= dma_increment_once;
+        dma_state.method_count--;
+        index++;
+        if (puller.HasPendingAcquire()) {
+            acquire = true; // ProcessCommands returns here, as it would have after this word
+            break;
+        }
+    }
+    maxwell3d.front_run_record = nullptr;
+    const bool state_ok = dma_state.method == method + count && dma_state.method_count == 0 &&
+                          dma_state.is_last_call && !dma_state.non_incrementing &&
+                          index == start + count &&
+                          dma_state.dma_word_offset ==
+                              u64((word_offset + start + count - 1) * sizeof(u32));
+    if (acquire || !state_ok || recorded != expected) {
+        static std::atomic<u32> reports{};
+        if (reports.fetch_add(1, std::memory_order_relaxed) < 64) {
+            size_t first = 0;
+            while (first < recorded.size() && first < expected.size() &&
+                   recorded[first] == expected[first]) {
+                ++first;
+            }
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf front: run method {:#x} count {}: {} of {} writes as expected "
+                      "(first difference at {}), state {}, acquire mid-run {}",
+                      method, count, recorded.size(), expected.size(), first,
+                      state_ok ? "same" : "differs", acquire);
+        }
+    }
+}
+
 // NVN on Switch 2 ends GPFIFO entries in the middle of a method's data and calls another command
 // buffer (e.g. a compute dispatch) before the entry that carries the rest, which starts right
 // where the first one ended. An entry starting anywhere else is such a call: run it with a clean
@@ -547,7 +629,8 @@ void DmaPusher::WatchArgument(u32 method, u32 argument) const {
 bool DmaPusher::WantsSegment() const {
     // Only macro parameters and compute uploads read the engine's current_dma_segment.
     const auto engine = subchannel_type[dma_state.subchannel];
-    return engine == Engines::EngineTypes::KeplerCompute ||
+    return (engine == Engines::EngineTypes::KeplerCompute &&
+            (dma_state.method == ComputeInline || dma_state.method >= MacroRegistersStart)) ||
            (engine == Engines::EngineTypes::Maxwell3D && dma_state.method >= MacroRegistersStart);
 }
 
@@ -569,9 +652,14 @@ void DmaPusher::CallMethod(u32 argument) {
             ReportUnboundSubchannel();
             return;
         }
-        const bool writer = split.Active() &&
-                            WritesMemory(subchannel, subchannel_type[dma_state.subchannel],
-                                         dma_state.method, 1);
+        // Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads.
+        const auto engine_type = subchannel_type[dma_state.subchannel];
+        const bool writer = IsMemoryWriter(*subchannel, engine_type, dma_state.method);
+        // Copies and blits are GPU work for the front's reads (GpuSplit::Effect).
+        const auto effect = engine_type == Engines::EngineTypes::MaxwellDMA ||
+                                    engine_type == Engines::EngineTypes::Fermi2D
+                                ? VideoCommon::GpuSplit::Effect::Gpu
+                                : VideoCommon::GpuSplit::Effect::Unknown;
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
@@ -579,6 +667,7 @@ void DmaPusher::CallMethod(u32 argument) {
         };
         if (split.Active()) {
             const GPUVAddr segment = dma_state.dma_get + dma_state.dma_word_offset;
+            const GPUVAddr* const opt_segment = WantsSegment() ? &segment : nullptr;
             if (split.FrontMacros()) {
                 const auto type = subchannel_type[dma_state.subchannel];
                 if (type == Engines::EngineTypes::Maxwell3D) {
@@ -592,13 +681,13 @@ void DmaPusher::CallMethod(u32 argument) {
                     auto* const compute = static_cast<Engines::KeplerCompute*>(subchannel);
                     if (compute->FrontRunsMacros()) {
                         compute->FrontCallMethod(system, split, dma_state.method, argument,
-                                                 dma_state.is_last_call, &segment);
+                                                 dma_state.is_last_call, opt_segment);
                         return;
                     }
                 }
             }
             split.Method(subchannel, dma_state.method, argument, dma_state.is_last_call,
-                         WantsSegment() ? &segment : nullptr);
+                         opt_segment, effect);
             return;
         }
         if (!subchannel->execution_mask[dma_state.method]) {
@@ -627,9 +716,14 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
             ReportUnboundSubchannel();
             return;
         }
-        const bool writer = split.Active() &&
-                            WritesMemory(subchannel, subchannel_type[dma_state.subchannel],
-                                         dma_state.method, dma_state.non_incrementing ? 1 : num_methods);
+        // Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads.
+        const auto engine_type = subchannel_type[dma_state.subchannel];
+        const bool writer = IsMemoryWriter(*subchannel, engine_type, dma_state.method);
+        // Copies and blits are GPU work for the front's reads (GpuSplit::Effect).
+        const auto effect = engine_type == Engines::EngineTypes::MaxwellDMA ||
+                                    engine_type == Engines::EngineTypes::Fermi2D
+                                ? VideoCommon::GpuSplit::Effect::Gpu
+                                : VideoCommon::GpuSplit::Effect::Unknown;
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
@@ -637,6 +731,7 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
         };
         if (split.Active()) {
             const GPUVAddr segment = dma_state.dma_get + dma_state.dma_word_offset;
+            const GPUVAddr* const opt_segment = WantsSegment() ? &segment : nullptr;
             if (split.FrontMacros()) {
                 const auto type = subchannel_type[dma_state.subchannel];
                 if (type == Engines::EngineTypes::Maxwell3D) {
@@ -650,13 +745,13 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
                     auto* const compute = static_cast<Engines::KeplerCompute*>(subchannel);
                     if (compute->FrontRunsMacros()) {
                         compute->FrontCallMultiMethod(system, split, dma_state.method, base_start,
-                                                      num_methods, dma_state.method_count, &segment);
+                                                      num_methods, dma_state.method_count, opt_segment);
                         return;
                     }
                 }
             }
             split.MultiMethod(subchannel, dma_state.method, base_start, num_methods,
-                              dma_state.method_count, WantsSegment() ? &segment : nullptr);
+                              dma_state.method_count, opt_segment, effect);
             return;
         }
         VideoCommon::Nx2Profile::Scope method_scope{VideoCommon::Nx2Profile::Zone::Method};
@@ -733,9 +828,11 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
     if (!written) {
         return false;
     }
-    if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+    auto& split = VideoCommon::GpuSplit::Get();
+    if (split.Active()) {
         split.WaitForWriters();
     }
+    bool past_sync = !split.Active();
     using GpuWrittenList = VideoCore::RasterizerInterface::GpuWrittenList;
     command_headers.resize_destructive(count);
     u8* const out = reinterpret_cast<u8*>(command_headers.data());
@@ -748,7 +845,12 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
         }
         GpuWrittenList where = GpuWrittenList::Synced;
         if (Tegra::Nx2IsGpuWritten(*device)) {
-            where = rasterizer->ReadGpuWrittenCommandList(*device, part);
+            where = rasterizer->ReadGpuWrittenCommandList(*device, part, past_sync);
+            if (where == GpuWrittenList::NeedsSync) {
+                split.WaitForSync();
+                past_sync = true;
+                where = rasterizer->ReadGpuWrittenCommandList(*device, part, true);
+            }
         }
         if (where == GpuWrittenList::Unknown) {
             return false;
@@ -773,7 +875,7 @@ void DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
     // The caches belong to the split's back: it first runs what the front queued (the dispatch
     // that writes these words among it). The whole pages are flushed: their next lists read
     // guest memory until GPU work writes them again.
-    VideoCommon::GpuSplit::Get().Drain();
+    VideoCommon::GpuSplit::Get().Drain(VideoCommon::DrainSite::ListFlush);
     const GPUVAddr first_page = address & ~GPUVAddr{0xfff};
     const GPUVAddr end_page = (address + size + 0xfff) & ~GPUVAddr{0xfff};
     if (memory_manager.IsMemoryDirty(first_page, end_page - first_page,
@@ -783,7 +885,8 @@ void DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
         VideoCommon::GpuSplit::Get().Run(
             [memory = &memory_manager, first_page, size = end_page - first_page] {
                 memory->FlushRegion(first_page, size, VideoCommon::CacheType::BufferCache);
-            });
+            },
+            VideoCommon::DrainSite::ListFlush);
     }
     if (rasterizer == nullptr) {
         return;

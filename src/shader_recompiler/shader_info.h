@@ -278,8 +278,8 @@ struct MeshInfo {
 struct Info {
     static constexpr size_t MAX_INDIRECT_CBUFS{14};
     static constexpr size_t MAX_CBUFS{18};
-    /// Compute programs can bind up to MAX_SSBOS storage buffers; graphics programs and compute
-    /// programs with EDEN_NX2_WIDE_COMPUTE_SSBOS=0 keep the old limit of MAX_GRAPHICS_SSBOS.
+    /// Stages can bind up to MAX_SSBOS storage buffers; EDEN_NX2_WIDE_COMPUTE_SSBOS=0 restores the
+    /// old limit of MAX_GRAPHICS_SSBOS.
     static constexpr size_t MAX_SSBOS{64};
     static constexpr size_t MAX_GRAPHICS_SSBOS{32};
 
@@ -306,6 +306,8 @@ struct Info {
     bool loads_indexed_attributes{};
 
     std::array<bool, 8> stores_frag_color{};
+    /// Components (bit 0 = R ... bit 3 = A) of each render target the fragment shader writes
+    std::array<u8, 8> frag_color_components{};
     bool stores_sample_mask{};
     bool stores_frag_depth{};
 
@@ -354,6 +356,10 @@ struct Info {
     bool uses_atomic_s32_max{};
     bool uses_int64_bit_atomics{};
     bool uses_global_memory{};
+    bool requires_coherent_global_memory{};
+    bool requires_coherent_image_memory{};
+    /// Set by the SPIR-V backend when HMMA runs on cooperative matrices, which need full subgroups
+    bool uses_cooperative_matrix{};
     /// Native global accesses whose pointer is chosen at run time: every storage buffer descriptor
     /// is a candidate and its bound length (not an NVN size word) limits the range.
     bool native_global_bounds{};
@@ -392,7 +398,7 @@ struct Info {
     [[nodiscard]] bool UsesWarpOps() const noexcept {
         return removed_conditional_barrier || uses_subgroup_vote || uses_subgroup_invocation_id ||
                uses_subgroup_shuffles || uses_subgroup_mask || uses_quad_shuffles ||
-               uses_fswzadd;
+               uses_fswzadd || uses_cooperative_matrix;
     }
 };
 

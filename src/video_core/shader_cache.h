@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include "video_core/page_filter.h"
 #include "common/container/unordered_map.h"
 #include <utility>
 #include <vector>
@@ -61,6 +62,9 @@ class ShaderCache : public VideoCommon::ChannelSetupCaches<VideoCommon::ChannelI
     };
 
 public:
+    /// Device pages this cache ever registered objects on (InnerInvalidation skips the rest).
+    VideoCommon::PageFilter page_filter;
+
     /// @brief Removes shaders inside a given region
     /// @note Checks for ranges
     /// @param addr Start address of the invalidation
@@ -116,6 +120,11 @@ protected:
 
     std::array<const ShaderInfo*, NUM_PROGRAMS> shader_infos{};
     bool last_shaders_valid = false;
+    /// Nx2Perf MacroReadWriterSet: Tegra::g_nx2_code_epoch read before shader_infos were last
+    /// resolved (0: they are not valid), and the device code range of each program (size 0: none).
+    u64 nx2_resolved_epoch{};
+    u64 nx2_resolved_map{}; ///< GPU map serial they were resolved with
+    std::array<std::pair<u64, u64>, NUM_PROGRAMS> nx2_code_ranges{};
 
 private:
     friend struct ShaderCacheTestAccess;
@@ -125,6 +134,11 @@ private:
     /// @param addr Start address of the shader, this doesn't cache for region
     /// @return Pointer to a valid shader, nullptr when nothing is found
     ShaderInfo* TryGet(VAddr addr) const;
+
+    const ShaderInfo* TryGetResolved(GPUVAddr shader_addr, size_t memory_id, u64 map_serial,
+                                     u64 inv_serial, std::optional<VAddr>& out_cpu_addr);
+    void CacheResolved(GPUVAddr shader_addr, size_t memory_id, u64 map_serial, u64 inv_serial,
+                       const ShaderInfo* info) noexcept;
 
     /// @brief Register in the cache a given entry
     /// @param data Shader to store in the cache
@@ -189,6 +203,17 @@ private:
     /// Bounds of every address ever rejected (never shrinks): a quick test for invalidations.
     std::atomic<VAddr> rejected_lowest{~VAddr{}};
     std::atomic<VAddr> rejected_highest{};
+
+    static constexpr size_t ResolvedShaderCacheSize = 512;
+    struct ResolvedShaderCacheEntry {
+        GPUVAddr shader_addr{~GPUVAddr{0}};
+        size_t memory_id{~size_t{0}};
+        u64 map_serial{};
+        u64 invalidation_serial{};
+        const ShaderInfo* info{};
+    };
+    std::array<ResolvedShaderCacheEntry, ResolvedShaderCacheSize> resolved_shader_cache{};
+    std::atomic<u64> invalidation_serial{1};
 };
 
 } // namespace VideoCommon

@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include "common/logging.h"
+#include "common/settings.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_streamline_dlss.h"
 #include "video_core/vulkan_common/streamline.h"
@@ -45,6 +46,21 @@ sl::DLSSMode ModeFor(VkExtent2D render, VkExtent2D upscale) {
         return sl::DLSSMode::eMaxPerformance;
     }
     return sl::DLSSMode::eUltraPerformance;
+}
+
+sl::DLSSMode ConfiguredMode(VkExtent2D render, VkExtent2D upscale) {
+    switch (Settings::values.nvidia_dlss_quality.GetValue()) {
+    case Settings::DlssQuality::Performance:
+        return sl::DLSSMode::eMaxPerformance;
+    case Settings::DlssQuality::Balanced:
+        return sl::DLSSMode::eBalanced;
+    case Settings::DlssQuality::Quality:
+        return sl::DLSSMode::eMaxQuality;
+    case Settings::DlssQuality::DLAA:
+        return sl::DLSSMode::eDLAA;
+    default:
+        return ModeFor(render, upscale);
+    }
 }
 
 // Preset K for every mode: NVIDIA's defaults for Performance/Ultra Performance (M, L) draw thin
@@ -119,6 +135,8 @@ StreamlineDlssUpscaler::StreamlineDlssUpscaler(const Device& device_, Scheduler&
                   static_cast<int>(result));
         throw vk::Exception(VK_ERROR_FEATURE_NOT_PRESENT);
     }
+    void(Streamline::GetApi().get_feature_function(sl::kFeatureDLSS, "slDLSSGetOptimalSettings",
+                                                   get_optimal_settings));
     point_sampler = device.GetLogical().CreateSampler(VkSamplerCreateInfo{
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
         .pNext = nullptr,
@@ -228,18 +246,24 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
         options_changed = true;
         reset = true;
     }
+    if (in.hdr != hdr) {
+        hdr = in.hdr;
+        options_changed = true;
+        reset = true;
+    }
 
     // The game's own setup (Fortune's Weave: render-size motion vectors, reversed depth). Its
     // colour is linear and goes above 1 with no exposure passed, so by default DLSS gets the HDR
     // path with its own auto exposure. EDEN_NX2_DLSS_HDR=0 / EDEN_NX2_DLSS_AUTO_EXPOSURE=0 turn
     // those off.
     sl::DLSSOptions options{};
-    options.mode = ModeFor(in.render_size, in.upscale_size);
+    options.mode = ConfiguredMode(in.render_size, in.upscale_size);
     options.outputWidth = in.upscale_size.width;
     options.outputHeight = in.upscale_size.height;
-    options.colorBuffersHDR = EnvInt("EDEN_NX2_DLSS_HDR", 1) != 0 ? sl::eTrue : sl::eFalse;
+    options.colorBuffersHDR =
+        in.hdr && EnvInt("EDEN_NX2_DLSS_HDR", 1) != 0 ? sl::eTrue : sl::eFalse;
     options.useAutoExposure =
-        EnvInt("EDEN_NX2_DLSS_AUTO_EXPOSURE", 1) != 0 ? sl::eTrue : sl::eFalse;
+        in.hdr && EnvInt("EDEN_NX2_DLSS_AUTO_EXPOSURE", 1) != 0 ? sl::eTrue : sl::eFalse;
     const sl::DLSSPreset preset = Preset();
     options.dlaaPreset = preset;
     options.qualityPreset = preset;
@@ -247,6 +271,23 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
     options.performancePreset = preset;
     options.ultraPerformancePreset = preset;
     options.ultraQualityPreset = preset;
+    if (get_optimal_settings) {
+        const auto get_optimal =
+            reinterpret_cast<PFun_slDLSSGetOptimalSettings*>(get_optimal_settings);
+        sl::DLSSOptimalSettings optimal{};
+        if (get_optimal(options, optimal) != sl::Result::eOk ||
+            in.render_size.width < optimal.renderWidthMin ||
+            in.render_size.width > optimal.renderWidthMax ||
+            in.render_size.height < optimal.renderHeightMin ||
+            in.render_size.height > optimal.renderHeightMax) {
+            options.mode = ModeFor(in.render_size, in.upscale_size);
+        }
+    }
+    if (static_cast<u32>(options.mode) != current_mode) {
+        current_mode = static_cast<u32>(options.mode);
+        options_changed = true;
+        reset = true;
+    }
     if (options_changed) {
         LOG_INFO(Render_Vulkan, "NVIDIA DLSS (Streamline): {}x{} -> {}x{}, mode {}, preset {}",
                  in.render_size.width, in.render_size.height, in.upscale_size.width,
@@ -355,7 +396,7 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
         constants.cameraFar = 1000.0f;
         constants.cameraFOV = 1.0f;
         constants.cameraAspectRatio = rw / rh;
-        constants.depthInverted = sl::eTrue;
+        constants.depthInverted = in.depth_inverted ? sl::eTrue : sl::eFalse;
         constants.cameraMotionIncluded = sl::eTrue;
         constants.motionVectors3D = sl::eFalse;
         constants.reset = reset ? sl::eTrue : sl::eFalse;

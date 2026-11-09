@@ -6,12 +6,15 @@
 
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <optional>
 
 #include <boost/container/small_vector.hpp>
 
 #include "common/common_types.h"
+#include "common/logging.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/shader_info.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
@@ -23,6 +26,32 @@
 namespace Vulkan {
 
 using Shader::Backend::SPIRV::NUM_TEXTURE_AND_IMAGE_SCALING_WORDS;
+
+// Timing of pipelines built on the workers, logged only when slow, to tell a wait for the worker
+// queue from a slow driver compile, and how long a draw/dispatch held the submission thread.
+inline void ReportPipelineBuild(const char* kind, u64 hash,
+                                std::chrono::steady_clock::time_point queued,
+                                std::chrono::steady_clock::time_point started) {
+    static std::atomic<u32> logged{};
+    const auto now = std::chrono::steady_clock::now();
+    const auto ms = [](auto d) { return std::chrono::duration<double, std::milli>(d).count(); };
+    if ((now - queued > std::chrono::milliseconds{50}) && logged.fetch_add(1) < 400) {
+        LOG_INFO(Render_Vulkan, "{} pipeline {:016x}: {:.1f} ms in the worker queue, {:.1f} ms to build",
+                 kind, hash, ms(started - queued), ms(now - started));
+    }
+}
+
+inline void ReportPipelineBuildWait(const char* kind, u64 hash,
+                                    std::chrono::steady_clock::time_point begin,
+                                    std::string_view details = {}) {
+    static std::atomic<u32> logged{};
+    const auto elapsed = std::chrono::steady_clock::now() - begin;
+    if (elapsed > std::chrono::milliseconds{2} && logged.fetch_add(1) < 400) {
+        LOG_INFO(Render_Vulkan,
+                 "Submission thread waited {:.1f} ms for {} pipeline {:016x} to finish building{}",
+                 std::chrono::duration<double, std::milli>(elapsed).count(), kind, hash, details);
+    }
+}
 
 [[nodiscard]] inline std::optional<PixelFormat> PixelFormatFromImageFormat(
     Shader::ImageFormat format) {
@@ -131,6 +160,69 @@ inline void WriteDescriptorBuffer(const Device& device, const DescriptorBufferLa
             dev.GetDescriptorEXT(get_info, binding.stride,
                                  host + binding.offset + index * binding.stride);
         }
+    }
+}
+
+inline void WriteDescriptorBuffer(const Device& device, const DescriptorBufferLayout& layout,
+                                  const DescriptorUpdateEntry* payload, u8* host,
+                                  std::vector<DescriptorUpdateEntry>& cached_payload,
+                                  std::vector<u8>& cached_bytes, bool can_diff) {
+    const vk::Device& dev = device.GetLogical();
+    const size_t total_size = static_cast<size_t>(layout.size);
+    if (!can_diff || cached_bytes.size() != total_size) {
+        cached_bytes.resize(total_size);
+        can_diff = false;
+    }
+    u8* const cache_dst = cached_bytes.data();
+    size_t flat_index = 0;
+    for (const DescriptorBufferBinding& binding : layout.bindings) {
+        for (u32 index = 0; index < binding.count; ++index, ++flat_index) {
+            const DescriptorUpdateEntry& entry = payload[flat_index];
+            if (can_diff && cached_payload[flat_index].raw == entry.raw) {
+                continue;
+            }
+            cached_payload[flat_index] = entry;
+            const VkDescriptorAddressInfoEXT address_info{
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT,
+                .pNext = nullptr,
+                .address = entry.address.address,
+                .range = entry.address.range,
+                .format = entry.address.format,
+            };
+            VkDescriptorGetInfoEXT get_info{
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
+                .pNext = nullptr,
+                .type = binding.type,
+                .data{},
+            };
+            switch (binding.type) {
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+                get_info.data.pUniformBuffer = &address_info;
+                break;
+            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+                get_info.data.pStorageBuffer = &address_info;
+                break;
+            case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+                get_info.data.pUniformTexelBuffer = &address_info;
+                break;
+            case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+                get_info.data.pStorageTexelBuffer = &address_info;
+                break;
+            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+                get_info.data.pCombinedImageSampler = &entry.image;
+                break;
+            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+                get_info.data.pStorageImage = &entry.image;
+                break;
+            default:
+                continue;
+            }
+            dev.GetDescriptorEXT(get_info, binding.stride,
+                                 cache_dst + binding.offset + index * binding.stride);
+        }
+    }
+    if (total_size != 0) {
+        std::memcpy(host, cache_dst, total_size);
     }
 }
 
@@ -396,6 +488,7 @@ inline void PushImageDescriptors(TextureCache& texture_cache,
     const u32 num_image_buffers = Shader::NumDescriptors(info.image_buffer_descriptors);
     views += num_texture_buffers;
     views += num_image_buffers;
+    const bool rescaling_active{Settings::values.resolution_info.active};
     for (const auto& desc : info.texture_descriptors) {
         bool is_rescaled{};
         for (u32 index = 0; index < desc.count; ++index) {
@@ -410,8 +503,9 @@ inline void PushImageDescriptors(TextureCache& texture_cache,
             Sampler& sampler{texture_cache.GetSampler(sampler_id)};
             guest_descriptor_queue.AddSampledImage(vk_image_view,
                                                    sampler.HandleFor(image_view, desc.is_depth));
-            const bool element_rescaled{texture_cache.IsRescaling(image_view)};
-            is_rescaled |= element_rescaled;
+            if (rescaling_active) {
+                is_rescaled |= texture_cache.IsRescaling(image_view);
+            }
         }
         rescaling.PushTexture(is_rescaled);
     }
@@ -424,8 +518,9 @@ inline void PushImageDescriptors(TextureCache& texture_cache,
             }
             const VkImageView vk_image_view{image_view.StorageView(desc.type, desc.format)};
             guest_descriptor_queue.AddImage(vk_image_view);
-            const bool element_rescaled{texture_cache.IsRescaling(image_view)};
-            is_rescaled |= element_rescaled;
+            if (rescaling_active) {
+                is_rescaled |= texture_cache.IsRescaling(image_view);
+            }
         }
         rescaling.PushImage(is_rescaled);
     }

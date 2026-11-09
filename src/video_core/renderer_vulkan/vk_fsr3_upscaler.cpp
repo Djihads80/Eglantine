@@ -175,6 +175,7 @@ public:
                                                  VK_ACCESS_SHADER_READ_BIT |
                                                      VK_ACCESS_SHADER_WRITE_BIT));
         });
+        scheduler_.InvalidateDescriptorBuffer();
     }
 
 private:
