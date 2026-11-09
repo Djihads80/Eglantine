@@ -32,13 +32,14 @@ enum class Site : u32 {
     MappedUpload,
     ClaimGpuModified,
     WriteGpuModified,
+    TextureUpload,
     Count,
 };
 
 inline constexpr const char* SiteNames[] = {
     "uniform (fast bind)", "uniform (compute)", "uniform (stream reuse)",
     "buffer immediate upload", "buffer mapped upload", "claim of GPU-modified range",
-    "write over GPU-modified range"};
+    "write over GPU-modified range", "texture upload"};
 
 [[nodiscard]] inline bool Enabled() {
     static const bool enabled = [] {
@@ -84,6 +85,7 @@ struct Counters {
     std::atomic<u64> checks[static_cast<size_t>(Site::Count)]{};
     std::atomic<u64> hazards[static_cast<size_t>(Site::Count)]{};
     std::atomic<u64> bytes[static_cast<size_t>(Site::Count)]{};
+    std::atomic<u64> read_bytes[static_cast<size_t>(Site::Count)]{};
 };
 inline Counters g_counters;
 
@@ -126,6 +128,7 @@ inline void CheckRead(Site site, DAddr addr, u64 size) {
     }
     const size_t index = static_cast<size_t>(site);
     Detail::g_counters.checks[index].fetch_add(1, std::memory_order_relaxed);
+    Detail::g_counters.read_bytes[index].fetch_add(size, std::memory_order_relaxed);
     u64 unit = 0;
     const u64 written = Detail::NewestWrite(addr, size, unit);
     const u64 list = g_back_epoch.load(std::memory_order_relaxed) & Detail::EpochMask;
@@ -141,6 +144,16 @@ inline void CheckRead(Site site, DAddr addr, u64 size) {
                  SiteNames[index], addr, size, list, unit << 6, written, count,
                  Detail::g_counters.checks[index].load(std::memory_order_relaxed));
     }
+}
+
+/// Guest bytes read for a texture upload (volume only).
+inline void CountRead(Site site, u64 size) {
+    if (!Enabled()) {
+        return;
+    }
+    const size_t index = static_cast<size_t>(site);
+    Detail::g_counters.checks[index].fetch_add(1, std::memory_order_relaxed);
+    Detail::g_counters.read_bytes[index].fetch_add(size, std::memory_order_relaxed);
 }
 
 /// A guest write overlaps GPU-written bytes the buffer cache holds (their download is dropped).
@@ -168,11 +181,15 @@ inline void LogSummary() {
         return;
     }
     for (size_t i = 0; i < static_cast<size_t>(Site::Count); ++i) {
-        const u64 hazards = Detail::g_counters.hazards[i].load(std::memory_order_relaxed);
-        if (hazards != 0) {
-            LOG_INFO(HW_GPU, "nx2 hazard total: {}: {} of {} ({} KiB)", SiteNames[i], hazards,
-                     Detail::g_counters.checks[i].load(std::memory_order_relaxed),
-                     Detail::g_counters.bytes[i].load(std::memory_order_relaxed) >> 10);
+        const u64 checks = Detail::g_counters.checks[i].load(std::memory_order_relaxed);
+        if (checks != 0) {
+            LOG_INFO(HW_GPU,
+                     "nx2 hazard total at present {}: {}: {} events, {} hazards ({} KiB), "
+                     "{} MiB read",
+                     CurrentEpoch(), SiteNames[i], checks,
+                     Detail::g_counters.hazards[i].load(std::memory_order_relaxed),
+                     Detail::g_counters.bytes[i].load(std::memory_order_relaxed) >> 10,
+                     Detail::g_counters.read_bytes[i].load(std::memory_order_relaxed) >> 20);
         }
     }
 }

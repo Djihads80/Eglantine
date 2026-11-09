@@ -25,6 +25,7 @@
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/guest_memory.h"
+#include "video_core/nx2_hazard.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/texture_cache/image_view_base.h"
 #include "video_core/texture_cache/samples_helper.h"
@@ -2024,6 +2025,8 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
         const size_t level_offset = uploads[image.host_level_offset].buffer_offset;
         const size_t tail = image.info.layer_stride - level_offset;
         auto staging = runtime.UploadStagingBuffer(tail * layers.size());
+        VideoCommon::Nx2Hazard::CountRead(VideoCommon::Nx2Hazard::Site::TextureUpload,
+                                          tail * layers.size());
         for (size_t i = 0; i < layers.size(); ++i) {
             gpu_memory->ReadBlock(image.gpu_addr + u64{layers[i]} * image.info.layer_stride +
                                       level_offset,
@@ -2053,6 +2056,8 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
         auto uploads = FullUploadSwizzles(image.info);
         const size_t level_offset = uploads[image.host_level_offset].buffer_offset;
         const size_t tail = image.info.layer_stride - level_offset;
+        VideoCommon::Nx2Hazard::CountRead(VideoCommon::Nx2Hazard::Site::TextureUpload,
+                                          tail * image.info.resources.layers);
         for (s32 layer = 0; layer < image.info.resources.layers; ++layer) {
             gpu_memory->ReadBlock(gpu_addr + layer * image.info.layer_stride + level_offset,
                                   mapped_span.data() + layer * tail, tail,
@@ -2066,6 +2071,8 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
         return;
     }
     if (True(image.flags & ImageFlagBits::AcceleratedUpload)) {
+        VideoCommon::Nx2Hazard::CountRead(VideoCommon::Nx2Hazard::Site::TextureUpload,
+                                          mapped_span.size_bytes());
         gpu_memory->ReadBlock(gpu_addr, mapped_span.data(), mapped_span.size_bytes(),
                               VideoCommon::CacheType::NoTextureCache);
         const auto uploads = FullUploadSwizzles(image.info);
