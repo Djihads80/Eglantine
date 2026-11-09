@@ -83,6 +83,8 @@ add_executable(yuzu
     configuration/configure_graphics_extensions.cpp
     configuration/configure_graphics_extensions.h
     configuration/configure_graphics_extensions.ui
+    configuration/configure_performance.cpp
+    configuration/configure_performance.h
     configuration/configure_hotkeys.cpp
     configuration/configure_hotkeys.h
     configuration/configure_hotkeys.ui
