@@ -18,6 +18,7 @@
 #include "video_core/gpu.h"
 #include "video_core/gpu_thread.h"
 #include "video_core/gpu_split.h"
+#include "video_core/nx2_hazard.h"
 #include "video_core/nx2_job_stats.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/host1x/host1x.h"
@@ -97,6 +98,11 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 auto* const rasterizer_ptr = renderer.ReadRasterizer();
                 if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
                     Profile::Scope scope{Profile::Zone::Push};
+                    if (VideoCommon::Nx2Hazard::Enabled()) {
+                        split.Defer([epoch = submit_list->epoch] {
+                            VideoCommon::Nx2Hazard::SetListEpoch(epoch);
+                        });
+                    }
                     scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
                 } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
                     split.Defer([gpu = &system.GPU()] { gpu->TickWork(); });
@@ -129,6 +135,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
             }
             if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
                 Profile::Scope scope{Profile::Zone::Push};
+                VideoCommon::Nx2Hazard::SetListEpoch(submit_list->epoch);
                 scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
             } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
                 Profile::Scope scope{Profile::Zone::Tick};

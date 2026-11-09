@@ -21,6 +21,7 @@
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_hazard.h"
 #include "video_core/nx2_knobs.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/texture_cache/util.h"
@@ -184,6 +185,8 @@ template <class P>
 void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu_data) {
     Nx2NoteListHostWrite(device_addr, size);
     if (IsRegionGpuModified(device_addr, size)) {
+        VideoCommon::Nx2Hazard::NoteGpuModifiedWrite(
+            VideoCommon::Nx2Hazard::Site::WriteGpuModified, device_addr, size);
         ClearDownload(device_addr, size);
         gpu_modified_ranges.Subtract(device_addr, size);
     }
@@ -870,6 +873,8 @@ template <class P>
 void BufferCache<P>::ClaimCpuWrites(std::span<const std::pair<DAddr, u64>> ranges) {
     for (const auto& [device_addr, size] : ranges) {
         if (IsRegionGpuModified(device_addr, size)) {
+            VideoCommon::Nx2Hazard::NoteGpuModifiedWrite(
+                VideoCommon::Nx2Hazard::Site::ClaimGpuModified, device_addr, size);
             ClearDownload(device_addr, size);
             gpu_modified_ranges.Subtract(device_addr, size);
         }
@@ -1300,12 +1305,16 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             // stream allocation again instead of allocating and copying (uniform_stream_reuse.h).
             // EDEN_NX2_UBOREUSE=0 turns it off.
             if (VideoCommon::UniformStreamReuseEnabled()) {
+                VideoCommon::Nx2Hazard::CheckRead(VideoCommon::Nx2Hazard::Site::UniformReuse,
+                                                  device_addr, size);
                 streamed = VideoCommon::BindSmallUniformReusing(
                     runtime, device_memory, stage, index, binding_index, device_addr, size);
             }
         }
         if (!streamed) {
             const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
+            VideoCommon::Nx2Hazard::CheckRead(VideoCommon::Nx2Hazard::Site::UniformFast, device_addr,
+                                              size);
             device_memory.ReadBlockUnsafe(device_addr, span.data(), size);
         }
         return;
@@ -1539,6 +1548,8 @@ void BufferCache<P>::BindHostComputeUniformBuffers() {
             if (use_fast_buffer) {
                 const std::span<u8> span =
                     runtime.BindMappedUniformBuffer(0, binding_index, size);
+                VideoCommon::Nx2Hazard::CheckRead(VideoCommon::Nx2Hazard::Site::UniformCompute,
+                                                  binding.device_addr, size);
                 device_memory.ReadBlockUnsafe(binding.device_addr, span.data(), size);
                 return;
             }
@@ -2389,6 +2400,8 @@ void BufferCache<P>::ImmediateUploadMemory([[maybe_unused]] Buffer& buffer,
                 device_memory.ReadBlockUnsafe(device_addr, immediate_buffer.data(), copy.size);
                 upload_span = immediate_buffer.subspan(0, copy.size);
             }
+            VideoCommon::Nx2Hazard::CheckRead(VideoCommon::Nx2Hazard::Site::ImmediateUpload,
+                                              device_addr, copy.size);
             buffer.ImmediateUpload(copy.dst_offset, upload_span);
         }
     }
@@ -2404,6 +2417,8 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
         for (BufferCopy& copy : copies) {
             u8* const src_pointer = staging_pointer.data() + copy.src_offset;
             const DAddr device_addr = buffer.CpuAddr() + copy.dst_offset;
+            VideoCommon::Nx2Hazard::CheckRead(VideoCommon::Nx2Hazard::Site::MappedUpload,
+                                              device_addr, copy.size);
             device_memory.ReadBlockUnsafe(device_addr, src_pointer, copy.size);
             // Large uploads are mostly geometry the host GPU now has its own copy of: TickFrame
             // marks their guest memory cold (see TextureCache::RefreshContents).

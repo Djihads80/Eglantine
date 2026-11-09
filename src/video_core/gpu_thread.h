@@ -16,6 +16,7 @@
 
 #include "common/bounded_threadsafe_queue.h"
 #include "common/polyfill_thread.h"
+#include "video_core/nx2_hazard.h"
 #include "video_core/dma_pusher.h"
 #include "video_core/framebuffer_config.h"
 
@@ -43,10 +44,12 @@ namespace VideoCommon::GPUThread {
 /// Command to signal to the GPU thread that a command list is ready for processing
 struct SubmitListCommand final {
     explicit SubmitListCommand(s32 channel_, Tegra::CommandList&& entries_)
-        : channel{channel_}, entries{std::move(entries_)} {}
+        : channel{channel_}, entries{std::move(entries_)},
+          epoch{VideoCommon::Nx2Hazard::CurrentEpoch()} {}
 
     s32 channel;
     Tegra::CommandList entries;
+    u64 epoch; ///< Presents the guest had made when it submitted the list (nx2_hazard.h)
 };
 
 /// Command to signal to the GPU thread to flush a region

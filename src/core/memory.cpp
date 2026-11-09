@@ -30,6 +30,7 @@
 #include "core/core.h"
 #include "core/device_memory.h"
 #include "core/gpu_dirty_memory_manager.h"
+#include "video_core/nx2_hazard.h"
 #include "core/hardware_properties.h"
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_process.h"
@@ -905,6 +906,7 @@ struct Memory::Impl {
                     return;
                 }
             }
+            VideoCommon::Nx2Hazard::NoteGuestWrite(address, size);
             gpu_dirty_managers[core].Collect(address, size);
         });
     }

@@ -61,6 +61,7 @@
 #include "video_core/host1x/nx2_video_decoder.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_job_stats.h"
+#include "video_core/nx2_hazard.h"
 #include "video_core/nx2_knobs.h"
 #include "video_core/textures/decoders.h"
 #include "core/hle/service/hle_ipc.h"
@@ -1851,6 +1852,7 @@ private:
                          m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches,
                          m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
                          m_stats.pace_us / 600, m_stats.ran_ahead);
+                VideoCommon::Nx2Hazard::LogSummary();
                 m_stats = {.last_present = entered};
             }
         }
