@@ -12,7 +12,7 @@ on:
       pgo:
         description: PGO variants (both is what ci.yml builds for a release)
         type: choice
-        options: [none, both]
+        options: [none, both, only]
         default: both
 
 permissions:
@@ -28,7 +28,7 @@ jobs:
     with:
       sha: ${{ github.event.pull_request.head.sha || github.sha }}
       os: ${{ inputs.os || 'all' }}
-      pgo: ${{ inputs.pgo || 'both' }}
+      pgo: ${{ inputs.pgo || 'both' || 'only' }}
     secrets:
       CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
 

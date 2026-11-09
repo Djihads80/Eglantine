@@ -7,7 +7,7 @@ on:
         type: string
         required: true
       pgo:
-        description: none or both
+        description: none, both or only
         type: string
         default: none
       os:
@@ -39,12 +39,12 @@ jobs:
   build:
     name: nix-${{ matrix.system }}${{ matrix.pgo && '-pgo' || '' }}
     needs: flake
-    runs-on: ${{ matrix.system == 'aarch64-darwin' && 'macos-15' || (matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'ubuntu-24.04') }}
+    runs-on: ${{ matrix.system == 'aarch64-darwin' && 'macos-26' || (matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'ubuntu-24.04') }}
     strategy:
       fail-fast: false
       matrix:
         system: ${{ fromJSON(inputs.os == 'macos' && '["aarch64-darwin"]' || inputs.os == 'linux' && '["x86_64-linux","aarch64-linux"]' || '["x86_64-linux","aarch64-linux","aarch64-darwin"]') }}
-        pgo: ${{ fromJSON(inputs.pgo == 'both' && '[false, true]' || '[false]') }}
+        pgo: ${{ fromJSON(inputs.pgo == 'both' && '[false, true]' || inputs.pgo == 'only' && '[true]' || '[false]') }}
     steps:
       - name: Check out source
         uses: actions/checkout@v7
