@@ -30,6 +30,8 @@ enum class Site : u32 {
     SamplerLookup,     ///< GetSamplerId; hit: the descriptor was unchanged
     ImageViewLookup,   ///< VisitImageView; hit: the descriptor was unchanged
     UniformSmall,      ///< uniform bind <= 4 KiB; hit: same bytes as this slot's previous bind
+    UniformSmallBinds, ///< small binds through the stream reuse; hit: reused (same bytes, same tick)
+    UniformTickMiss,   ///< same bytes but another tick; hit: the ring allocation is still valid
     UniformMedium,     ///< 4 KiB < size < 64 KiB
     UniformBank,       ///< 64 KiB native bank
     StageBindUniform,  ///< BindHostGraphicsUniformBuffers; hit: the stage's bindings equal the last draw's
@@ -46,7 +48,8 @@ inline constexpr std::array<const char*, static_cast<size_t>(Site::Count)> SiteN
     "FindBuffer (index)",     "FindBuffer (vertex)",  "FindBuffer (uniform)",
     "FindBuffer (storage)",   "FindBuffer (texture)", "FindBuffer (other)",
     "texture handle read",    "GetSamplerId",         "VisitImageView",
-    "uniform bind <= 4 KiB",  "uniform bind 4-64 KiB", "uniform bind 64 KiB bank",
+    "uniform bind <= 4 KiB",  "small binds: reused (tick)", "equal bytes, other tick",
+    "uniform bind 4-64 KiB", "uniform bind 64 KiB bank",
     "stage bind: uniform",    "stage bind: storage",  "stage bind: texture",
     "lock: PrepareDraw",      "lock: inline memory",  "lock: invalidation",
     "lock: CPU write fault"};
