@@ -19,6 +19,7 @@
 #include "common/cityhash.h"
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
+#include "video_core/buffer_cache/hot_pages.h"
 #include "video_core/buffer_cache/uniform_stream_reuse.h"
 #include "video_core/gpu_split.h"
 #include "video_core/guest_memory.h"
