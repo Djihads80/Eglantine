@@ -447,6 +447,7 @@ void Scheduler::WorkerThread(std::stop_token stop_token) {
     Common::SetCurrentThreadName("VulkanWorker");
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();
+    Common::PinCurrentThreadFromEnvironment("EDEN_NX2_WORKER_CPUS");
 
     const auto TryPopQueue{[this](auto& work) -> bool {
         if (work_queue.empty()) {

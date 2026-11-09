@@ -82,6 +82,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
 #endif
         Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
         Common::SetCurrentThreadToPerformanceCores();
+        Common::PinCurrentThreadFromEnvironment("EDEN_NX2_FRONT_CPUS");
         system.RegisterHostThread();
 
         auto current_context = context.Acquire();

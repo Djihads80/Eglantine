@@ -112,6 +112,8 @@ struct ThreadPolicy {
     CoreGroup group;
     s32 nice_value;
     bool has_nice;
+    bool has_pin; ///< `pin` is used in place of the core group
+    cpu_set_t pin;
 };
 
 struct CoreInfo {
@@ -329,10 +331,12 @@ void RefreshTopologyLocked(CpuTopologyState& state) {
 }
 
 bool ApplyCoreGroupLocked(CpuTopologyState& state, pid_t tid, CoreGroup group,
-                          bool* gone = nullptr) {
+                          bool* gone = nullptr, const cpu_set_t* pin = nullptr) {
     const bool restrict_group = group != CoreGroup::Unrestricted && state.separated;
     const cpu_set_t* mask = &state.allowed;
-    if (restrict_group) {
+    if (pin != nullptr) {
+        mask = pin;
+    } else if (restrict_group) {
         mask = group == CoreGroup::Performance ? &state.performance : &state.efficiency;
     }
     if (CPU_COUNT(mask) == 0) {
@@ -401,7 +405,35 @@ ThreadPolicy& AcquirePolicyLocked(CpuTopologyState& state, pid_t tid) {
             return policy;
         }
     }
-    return state.policies.emplace_back(ThreadPolicy{tid, CoreGroup::Unrestricted, 0, false});
+    return state.policies.emplace_back(
+        ThreadPolicy{tid, CoreGroup::Unrestricted, 0, false, false, {}});
+}
+
+/// The CPUs of a list such as "7", "6-7" or "0,2-3".
+cpu_set_t ParseCpuList(const char* list) {
+    cpu_set_t cpus;
+    CPU_ZERO(&cpus);
+    const char* cursor = list;
+    while (*cursor != '\0') {
+        char* end = nullptr;
+        const s64 first = std::strtol(cursor, &end, 10);
+        if (end == cursor) {
+            break;
+        }
+        s64 last = first;
+        cursor = end;
+        if (*cursor == '-') {
+            last = std::strtol(cursor + 1, &end, 10);
+            cursor = end;
+        }
+        for (s64 cpu = (std::max<s64>)(first, 0); cpu <= last && cpu < CPU_SETSIZE; ++cpu) {
+            CPU_SET(static_cast<size_t>(cpu), &cpus);
+        }
+        if (*cursor == ',') {
+            ++cursor;
+        }
+    }
+    return cpus;
 }
 
 void SetCurrentThreadCoreGroup(CoreGroup group) {
@@ -420,7 +452,9 @@ void SetCurrentThreadCoreGroup(CoreGroup group) {
     ApplyCoreGroupLocked(state, tid, effective);
 
     std::scoped_lock policy_lock{state.policy_mutex};
-    AcquirePolicyLocked(state, tid).group = effective;
+    ThreadPolicy& policy = AcquirePolicyLocked(state, tid);
+    policy.group = effective;
+    policy.has_pin = false;
     if (!state.canary_valid) {
         SnapshotCanaryLocked(state);
     }
@@ -573,6 +607,38 @@ void SetCurrentThreadToAllCores() {
 #endif
 }
 
+void PinCurrentThreadFromEnvironment(const char* variable) {
+#if defined(__ANDROID__)
+    const char* const value = std::getenv(variable);
+    if (value == nullptr || *value == '\0') {
+        return;
+    }
+    const cpu_set_t pin = ParseCpuList(value);
+    if (CPU_COUNT(&pin) == 0) {
+        LOG_WARNING(Common, "{}: no CPU in '{}'", variable, value);
+        return;
+    }
+    const pid_t tid = gettid();
+    (void)&t_policy_registration;
+
+    CpuTopologyState& state = State();
+    std::scoped_lock topology_lock{state.topology_mutex};
+    EnsureTopologyLocked(state);
+    if (!ApplyCoreGroupLocked(state, tid, CoreGroup::Unrestricted, nullptr, &pin)) {
+        return;
+    }
+    LOG_INFO(Common, "{}: thread {} kept on CPUs {}", variable, tid, value);
+
+    std::scoped_lock policy_lock{state.policy_mutex};
+    ThreadPolicy& policy = AcquirePolicyLocked(state, tid);
+    policy.pin = pin;
+    policy.has_pin = true;
+    SnapshotCanaryLocked(state);
+#else
+    (void)variable;
+#endif
+}
+
 void RefreshThreadPolicies() {
 #if defined(__ANDROID__)
     CpuTopologyState& state = State();
@@ -588,7 +654,8 @@ void RefreshThreadPolicies() {
             gone = true;
         }
         if (!gone) {
-            ApplyCoreGroupLocked(state, policy.tid, policy.group, &gone);
+            ApplyCoreGroupLocked(state, policy.tid, policy.group, &gone,
+                                 policy.has_pin ? &policy.pin : nullptr);
         }
         return gone;
     });

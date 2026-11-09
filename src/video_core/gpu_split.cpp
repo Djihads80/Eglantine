@@ -678,6 +678,9 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     back_running.store(true, std::memory_order_release);
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();
+    // EDEN_NX2_BACK_CPUS (e.g. "7" or "6-7"): the CPUs of this thread, for placement tests.
+    // EDEN_NX2_FRONT_CPUS and EDEN_NX2_WORKER_CPUS: the same for the GPU and VulkanWorker threads.
+    Common::PinCurrentThreadFromEnvironment("EDEN_NX2_BACK_CPUS");
     system->RegisterHostThread();
 #ifdef _WIN32
     g_back_thread_id.store(GetCurrentThreadId(), std::memory_order_relaxed);

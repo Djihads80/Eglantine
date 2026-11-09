@@ -112,6 +112,10 @@ void SetCurrentThreadToEfficiencyCores();
 void SetCurrentThreadToBackgroundWork();
 void SetCurrentThreadToAllCores();
 
+/// Keeps the current thread on the CPUs that the environment variable `variable` lists ("7", "6-7",
+/// "0,2-3") in place of its core group. Android only; nothing when the variable is not set.
+void PinCurrentThreadFromEnvironment(const char* variable);
+
 void RefreshThreadPolicies();
 void PollThreadPolicies();
 
