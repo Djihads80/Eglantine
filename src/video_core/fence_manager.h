@@ -16,6 +16,7 @@
 #include <thread>
 #include <vector>
 #include <queue>
+#include <string>
 
 #include "common/common_types.h"
 #include "common/logging.h"
@@ -55,6 +56,29 @@ public:
     void TickFrame() {
         std::unique_lock lock(ring_guard);
         delayed_destruction_ring.Tick();
+    }
+
+    /// Hang report (any thread): what is still held here. A busy lock is reported as such.
+    [[nodiscard]] std::string Nx2DebugState() {
+        std::string state;
+        {
+            std::unique_lock lock{uncommitted_guard, std::try_to_lock};
+            state += lock.owns_lock()
+                         ? fmt::format("{} uncommitted ops", uncommitted_operations.size())
+                         : std::string{"uncommitted ops busy"};
+        }
+        std::unique_lock lock{guard, std::defer_lock};
+        if constexpr (can_async_check) {
+            lock.try_lock();
+        }
+        if (!can_async_check || lock.owns_lock()) {
+            state += fmt::format(", {} fences, {} op lists", fences.size(),
+                                 pending_operations.size());
+        } else {
+            state += ", fences busy";
+        }
+        state += fmt::format(", {} skipped since the last", skipped_fences);
+        return state;
     }
 
     // Unlike other fences, this one doesn't

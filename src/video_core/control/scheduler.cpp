@@ -81,6 +81,22 @@ void Scheduler::ResumePending(GPU& gpu) {
     any_pending.store(!pending_channels.empty(), std::memory_order_release);
 }
 
+std::string Scheduler::Nx2DebugState() {
+    std::string state = fmt::format("{} pending (flag {})", pending_channels.size(),
+                                    any_pending.load(std::memory_order_relaxed));
+    std::unique_lock lk{scheduling_guard, std::try_to_lock};
+    if (!lk.owns_lock()) {
+        return state + ", channels busy";
+    }
+    for (const auto& [bind_id, channel] : channels) {
+        if (channel && channel->payload) {
+            state += fmt::format(" | channel {}: {}", bind_id,
+                                 channel->payload->dma_pusher.Nx2DebugState());
+        }
+    }
+    return state;
+}
+
 void Scheduler::DeclareChannel(std::shared_ptr<ChannelState> new_channel) {
     s32 channel = new_channel->bind_id;
     std::unique_lock lk(scheduling_guard);

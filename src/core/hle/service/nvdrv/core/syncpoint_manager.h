@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <mutex>
+#include <optional>
 
 #include "common/common_types.h"
 #include "core/hle/service/nvdrv/nvdata.h"
@@ -67,6 +68,17 @@ public:
      * @return The new max value of the syncpoint
      */
     u32 IncrementSyncpointMaxExt(u32 id, u32 amount);
+
+    /**
+     * @return The value the syncpoint reaches once the work submitted so far has run (its max),
+     * if the syncpoint is reserved
+     */
+    [[nodiscard]] std::optional<u32> SubmittedMax(u32 id) const {
+        if (id >= syncpoints.size() || !syncpoints[id].reserved) {
+            return std::nullopt;
+        }
+        return syncpoints[id].counter_max.load(std::memory_order_acquire);
+    }
 
     /**
      * @return The minimum value of the syncpoint

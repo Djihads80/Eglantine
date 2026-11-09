@@ -26,6 +26,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_strato.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/semaphore_ledger.h"
 #include "video_core/textures/texture.h"
@@ -1624,10 +1625,18 @@ bool DmaReadWithoutDrain(VideoCommon::GpuSplit& split, MemoryManager& memory_man
     }
     // What a wait is for (logged with the reads): the targets the back had not reached.
     const u64 consumed_before = split.Consumed();
+    namespace Strato = VideoCommon::Nx2Strato;
+    const u64 wait_start = Tegra::Nx2StratoStats() ? Strato::Now() : 0;
     waited = split.WaitForPosition((std::max)(writes, writers),
                                    VideoCommon::Nx2Profile::Zone::SplitDmaWait);
     waited_writes = waited && writes > consumed_before;
     waited_writers = waited && writers > consumed_before;
+    // EDEN_NX2_STRATO_STATS: waits for compute and copy work before reading GPU-written pages.
+    if (wait_start != 0 && waited_writers && rasterizer != nullptr) {
+        const u64 elapsed = Strato::Now() - wait_start;
+        Strato::NoteWait(Strato::Wait::SplitWriters, elapsed,
+                         Strato::WriteDone(memory_manager, *rasterizer, source, out.size_bytes()));
+    }
     u8* const bytes = reinterpret_cast<u8*>(out.data());
     for (size_t i = 0; i < count; ++i) {
         const Piece& piece = pieces[i];
@@ -1731,7 +1740,14 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
         // The words may be written by methods still queued for the back (indirect draw arguments
         // from a culling dispatch), and the caches that may hold newer ones belong to it.
         stats.drained += undrained ? 0 : 1;
+        namespace Strato = VideoCommon::Nx2Strato;
+        const bool strato_stats = Tegra::Nx2StratoStats() && rasterizer != nullptr;
+        const u64 drain_start = strato_stats ? Strato::Now() : 0;
         split.Drain(Profile::Zone::SplitDmaRead);
+        if (strato_stats) {
+            Strato::NoteWait(Strato::Wait::SplitWriters, Strato::Now() - drain_start,
+                             Strato::WriteDone(memory_manager, *rasterizer, source, read_bytes));
+        }
         // Whole pages: GPU-written ones read from guest memory until the GPU writes them again.
         const GPUVAddr first_page = source & ~GPUVAddr{0xfff};
         const GPUVAddr end_page = (source + read_bytes + 0xfff) & ~GPUVAddr{0xfff};
@@ -1739,9 +1755,15 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
         const u64 flush_size = fast ? end_page - first_page : read_bytes;
         if (memory_manager.IsMemoryDirty(flush_begin, flush_size,
                                          VideoCommon::CacheType::BufferCache)) {
+            const bool done = strato_stats && Strato::WriteDone(memory_manager, *rasterizer,
+                                                                source, read_bytes);
             const u64 start = Profile::Now();
             memory_manager.FlushRegion(flush_begin, flush_size, VideoCommon::CacheType::BufferCache);
-            Profile::NoteDmaReadFlush(Profile::Now() - start, read_bytes);
+            const u64 elapsed = Profile::Now() - start;
+            Profile::NoteDmaReadFlush(elapsed, read_bytes);
+            if (strato_stats) {
+                Strato::NoteWait(Strato::Wait::DmaFlush, elapsed, done);
+            }
         }
         // The back is drained: its query cache may be flushed from here, as its buffer cache is.
         if (query_pending || pending_query()) {

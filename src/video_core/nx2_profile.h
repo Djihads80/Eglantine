@@ -70,6 +70,15 @@ enum class Zone : u32 {
     DrainRun,         ///< Of the split drains: work that reads what the back wrote (CPU reads)
     DrainSync,        ///< Of the split drains: command lists that signal a sync fence
     SplitDmaWait,     ///< As SplitWriters, for a macro DMA read (writes queued for its pages)
+    SyncBuffer,       ///< BufferCache::SynchronizeBuffer (CPU writes uploaded before a bind)
+    MarkWritten,      ///< BufferCache::MarkWrittenBuffer (a writable binding's range noted)
+    BindIndex,        ///< Of update buffers: BindHostIndexBuffer
+    BindVertex,       ///< Of update buffers: BindHostVertexBuffers
+    UpdateOther,      ///< Of update buffers: feedback, indirect and multi-range updates
+    SsboBind,         ///< Of bind stage buffers: BindHostGraphicsStorageBuffers
+    TexBufBind,       ///< Of bind stage buffers: BindHostGraphicsTextureBuffers
+    UboTracker,       ///< Of bind stage buffers: a uniform buffer's GPU-modified checks
+    UboBank,          ///< Of bind stage buffers: native 64 KiB banks' once-a-frame reupload check
     Count,
 };
 
@@ -83,7 +92,9 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "fence skipped", "method", "split drain", "split wait", "split writers", "split dma read",
     "update index", "update vertex", "update stages", "ubo reuse", "ubo copy", "ubo cached",
     "flush submit", "cmd list flush", "cmd list copy", "drain acquire", "drain cmd list",
-    "drain run", "drain sync", "split dma wait",
+    "drain run", "drain sync", "split dma wait", "sync buffer", "mark written",
+    "bind index", "bind vertex", "update other", "ssbo bind", "texbuf bind", "ubo tracker",
+    "ubo bank",
 };
 
 // Set at startup, or by System::Load when a gpu_profile file is in the user directory (Android
@@ -103,15 +114,20 @@ inline u64 Now() {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 32> counters{}; ///< See Counter
+    std::array<u64, 48> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
     u64 sample_tick{}; ///< SampledScope: which constructions time themselves
-    /// Calls of each engine method the back ran (CountMethod), by method number.
-    std::unique_ptr<std::array<u32, 0x10000>> method_calls;
+    /// Calls of each engine method the back ran (CountMethod), by method number (made on first
+    /// use, kept for the thread's life: ThreadData stays trivially destructible).
+    std::array<u32, 0x10000>* method_calls{};
 };
 
-inline thread_local ThreadData t_data;
+// Constant-initialized and trivially destructible: no TLS init wrapper on each access. In the
+// Android library (dlopen'd) every access still resolves the TLS block through the linker, so
+// the scopes look it up once each. With all of that per access, a gpu_profile file left in the
+// user directory cost the GPU thread ~20% (simpleperf, Mario Kart World).
+constinit inline thread_local ThreadData t_data{};
 
 class Scope {
 public:
@@ -119,8 +135,9 @@ public:
         if (!enabled) {
             return;
         }
-        parent_child_ns = t_data.child_ns;
-        t_data.child_ns = 0;
+        data = &t_data;
+        parent_child_ns = data->child_ns;
+        data->child_ns = 0;
         start = Now();
     }
 
@@ -129,11 +146,10 @@ public:
             return;
         }
         const u64 elapsed = Now() - start;
-        auto& data = t_data;
         const auto index = static_cast<size_t>(zone);
-        data.exclusive_ns[index] += elapsed - data.child_ns;
-        ++data.count[index];
-        data.child_ns = parent_child_ns + elapsed;
+        data->exclusive_ns[index] += elapsed - data->child_ns;
+        ++data->count[index];
+        data->child_ns = parent_child_ns + elapsed;
     }
 
     Scope(const Scope&) = delete;
@@ -142,6 +158,7 @@ public:
 private:
     Zone zone;
     bool enabled;
+    ThreadData* data{};
     u64 start{};
     u64 parent_child_ns{};
 };
@@ -156,13 +173,14 @@ public:
         if (!enabled) {
             return;
         }
-        ++t_data.count[static_cast<size_t>(zone)];
-        timing = (t_data.sample_tick++ & ((u64{1} << Shift) - 1)) == 0;
+        data = &t_data;
+        ++data->count[static_cast<size_t>(zone)];
+        timing = (data->sample_tick++ & ((u64{1} << Shift) - 1)) == 0;
         if (!timing) {
             return;
         }
-        parent_child_ns = t_data.child_ns;
-        t_data.child_ns = 0;
+        parent_child_ns = data->child_ns;
+        data->child_ns = 0;
         start = Now();
     }
 
@@ -171,10 +189,9 @@ public:
             return;
         }
         const u64 elapsed = Now() - start;
-        auto& data = t_data;
-        const u64 own = elapsed > data.child_ns ? elapsed - data.child_ns : 0;
-        data.exclusive_ns[static_cast<size_t>(zone)] += own << Shift;
-        data.child_ns = parent_child_ns + elapsed;
+        const u64 own = elapsed > data->child_ns ? elapsed - data->child_ns : 0;
+        data->exclusive_ns[static_cast<size_t>(zone)] += own << Shift;
+        data->child_ns = parent_child_ns + elapsed;
     }
 
     SampledScope(const SampledScope&) = delete;
@@ -184,6 +201,7 @@ private:
     Zone zone;
     bool enabled;
     bool timing{};
+    ThreadData* data{};
     u64 start{};
     u64 parent_child_ns{};
 };
@@ -202,8 +220,7 @@ inline void CountMethod(u32 method, u32 amount = 1) {
     }
     auto& calls = t_data.method_calls;
     if (!calls) {
-        calls = std::make_unique<std::array<u32, 0x10000>>();
-        calls->fill(0);
+        calls = new std::array<u32, 0x10000>{};
     }
     (*calls)[method & 0xffff] += amount;
 }
@@ -238,6 +255,17 @@ enum class Counter : u32 {
     CbBindsSkipped,   ///< Constant buffer binds not sent: same slot, buffer and size as last time
     CommandListFlushes,    ///< GPU-written command list ranges downloaded (one GPU wait each)
     CommandListPagesAlong, ///< Other command list pages downloaded in those waits
+    UboBinds,       ///< Graphics uniform buffers bound (BindHostGraphicsUniformBuffer)
+    UboSame,        ///< Of UboBinds: same address and size as that slot's previous bind
+    SsboBinds,      ///< Graphics storage buffers bound
+    SsboSame,       ///< Of SsboBinds: same address and size as that slot's previous bind
+    SsboWritten,    ///< Of SsboBinds: writable (MarkWrittenBuffer)
+    VertexDirty,    ///< Vertex buffer slots updated (dirty)
+    VertexSame,     ///< Of VertexDirty: the same binding as before
+    IndexUpdates,   ///< Index buffer updates (dirty)
+    IndexSame,      ///< Of IndexUpdates: the same binding as before
+    SyncCalls,      ///< SynchronizeBuffer calls
+    SyncWalks,      ///< Of SyncCalls: past both early outs (the range's pages walked)
 };
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
@@ -321,6 +349,18 @@ inline void Report(const char* thread_name = "GPU thread") {
                         static_cast<double>(data.counters[23]) * 1e9 / window,
                         static_cast<double>(data.counters[24]) * 1e9 / window,
                         static_cast<double>(data.counters[25]) * 1e9 / window);
+    const auto per_second = [&](Counter counter) {
+        return static_cast<double>(data.counters[static_cast<size_t>(counter)]) * 1e9 / window;
+    };
+    line += fmt::format(" | UBO binds {:.0f} ({:.0f} same), SSBO binds {:.0f} ({:.0f} same, {:.0f} "
+                        "written), vertex updates {:.0f} ({:.0f} same), index updates {:.0f} "
+                        "({:.0f} same), syncs {:.0f} ({:.0f} walked)",
+                        per_second(Counter::UboBinds), per_second(Counter::UboSame),
+                        per_second(Counter::SsboBinds), per_second(Counter::SsboSame),
+                        per_second(Counter::SsboWritten), per_second(Counter::VertexDirty),
+                        per_second(Counter::VertexSame), per_second(Counter::IndexUpdates),
+                        per_second(Counter::IndexSame), per_second(Counter::SyncCalls),
+                        per_second(Counter::SyncWalks));
     line += fmt::format(" | cmd list flushes {:.0f} ({:.0f} pages along)",
                         static_cast<double>(data.counters[26]) * 1e9 / window,
                         static_cast<double>(data.counters[27]) * 1e9 / window);
@@ -348,11 +388,11 @@ inline void Report(const char* thread_name = "GPU thread") {
         }
     }
     LOG_INFO(HW_GPU, "{} per second:{}", thread_name, line);
-    auto method_calls = std::move(data.method_calls);
+    auto* const method_calls = data.method_calls;
     data = {};
     if (method_calls) {
         method_calls->fill(0);
-        data.method_calls = std::move(method_calls);
+        data.method_calls = method_calls;
     }
     data.window_start = now;
 }

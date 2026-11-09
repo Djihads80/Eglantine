@@ -17,6 +17,8 @@
 #include <type_traits>
 #include <vector>
 
+#include <boost/container/small_vector.hpp>
+
 #include "common/thread_worker.h"
 #include "shader_recompiler/shader_info.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -264,6 +266,23 @@ private:
 
     DescriptorBufferLayout descriptor_buffer_layout;
     std::vector<DescriptorUpdateEntry> last_descriptor_payload;
+
+    /// EDEN_NX2_QUICK_BIND: fills the views' ids and the samplers from the handles, reusing the
+    /// last full resolution's when nothing they came from changed.
+    void QuickBindTextures(std::span<VideoCommon::ImageViewInOut> views,
+                           boost::container::small_vector<VideoCommon::SamplerId, 96>& samplers,
+                           std::span<const u32> sampler_handles, int mode, bool blacklist);
+
+    /// EDEN_NX2_QUICK_BIND (nx2_quick_bind.h): the textures the last full resolution found, and
+    /// what they came from (the texture cache's serial and the pool generation, the handles).
+    struct QuickBind {
+        bool valid{};
+        u64 serial{};
+        u64 pool_generation{};
+        std::vector<VideoCommon::ImageViewInOut> views;
+        std::vector<u32> sampler_handles;
+        std::vector<VideoCommon::SamplerId> samplers;
+    } quick_bind;
     VkDeviceSize last_descriptor_buffer_offset{};
     u32 last_descriptor_buffer_chunk{};
     u64 last_descriptor_buffer_generation{};

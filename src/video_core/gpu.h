@@ -8,6 +8,7 @@
 
 #include <functional>
 #include <memory>
+#include <string>
 
 #include "common/bit_field.h"
 #include "common/common_types.h"
@@ -222,6 +223,10 @@ public:
 
     /// Whether a channel is suspended on a semaphore acquire (callable from any thread).
     [[nodiscard]] bool HasSuspendedChannels() const;
+
+    /// For a wait on the GPU that timed out: the state of the split, the channels, the
+    /// backend's fences and the syncpoints (racy reads).
+    [[nodiscard]] std::string Nx2HangReport();
 
     [[nodiscard]] bool UseNvdec() const;
 

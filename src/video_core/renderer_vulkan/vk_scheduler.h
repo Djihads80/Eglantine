@@ -329,6 +329,11 @@ public:
         return *master_semaphore;
     }
 
+    /// Whether a fence's submission waits for the idle hook (DeferFlush; racy, for reports).
+    [[nodiscard]] bool Nx2FlushPending() const noexcept {
+        return flush_pending;
+    }
+
     std::mutex submit_mutex;
 
 private:

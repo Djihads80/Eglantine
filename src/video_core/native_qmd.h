@@ -10,8 +10,11 @@
 
 namespace Tegra {
 
-// Native QMD 3.0 dependency scheduling; nonempty grids require a dispatch backend.
-class NativeQmdScheduler {
+// Native QMD 3.0 dependency scheduling; nonempty grids require a dispatch backend. The QMD states
+// are shared by every scheduler of one Tag: the GPU's (NativeQmdScheduler), and the split front's
+// shadow that predicts releases for the acquire ledger (EDEN_NX2_QMD_LEDGER).
+template <typename Tag>
+class BasicNativeQmdScheduler {
 public:
     using Word = std::uint32_t;
     using Address = std::uint64_t;
@@ -159,4 +162,7 @@ private:
     // arrived first was kept by the other channel's scheduler and the QMD never launched).
     static inline std::unordered_map<Address, State> states;
 };
+
+struct NativeQmdGpuTag;
+using NativeQmdScheduler = BasicNativeQmdScheduler<NativeQmdGpuTag>;
 } // namespace Tegra

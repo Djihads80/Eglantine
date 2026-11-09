@@ -35,6 +35,7 @@
 #include "frontend_common/firmware_manager.h"
 #include "video_core/gpu.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_speculate.h"
 
 namespace Service::Nvidia {
 
@@ -137,6 +138,7 @@ Module::Module(Core::System& system)
     Tegra::Nx2ClearSemaphoreRegions();
     Tegra::Nx2ClearSparseRegions();
     Tegra::Nx2ClearGpuWrittenPages();
+    Tegra::Nx2ClearContentSigs();
     Tegra::Nx2ClearGpuOnlyRegions();
     Devices::g_nx2_driver = false;
     Tegra::g_nx2_ampere = false;

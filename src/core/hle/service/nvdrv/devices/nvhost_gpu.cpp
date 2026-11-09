@@ -24,6 +24,7 @@
 #include "video_core/control/channel_state.h"
 #include "video_core/engines/puller.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_split.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
@@ -455,8 +456,20 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
             const char* value = std::getenv("EDEN_NX2_PB_SNAPSHOT");
             return value == nullptr || value[0] != '0';
         }();
-        if (snapshot && Tegra::Nx2CommandLists() && channel_state->memory_manager &&
-            channel_state->payload) {
+        // With the command list fixes off (Mario Kart World on Android), the copies are still
+        // made while the GPU thread split runs: its front parses a list later after its submit,
+        // and the game had rewritten the memory of one by then about one boot in eight (a
+        // 6720-word method read from the middle of new commands, which took the increments
+        // Eden appends and every present waited 4 s). Only the copies: the rest of the fixes
+        // (GPU-written list tracking, the writer waits) stay off. EDEN_NX2_SPLIT_SNAPSHOT=0:
+        // only with the command list fixes, as before.
+        static const bool split_snapshot = [] {
+            const char* value = std::getenv("EDEN_NX2_SPLIT_SNAPSHOT");
+            return value == nullptr || value[0] != '0';
+        }();
+        const bool copies = Tegra::Nx2CommandLists() ||
+                            (split_snapshot && VideoCommon::GpuSplit::Get().Active());
+        if (snapshot && copies && channel_state->memory_manager && channel_state->payload) {
             // Before the copy: a suspension during it must count as one after it.
             entries.snapshot_suspensions =
                 channel_state->payload->dma_pusher.suspensions.load(std::memory_order_acquire);

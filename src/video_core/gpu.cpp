@@ -36,6 +36,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_split.h"
 #include "video_core/gpu_thread.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/syncpoint_manager.h"
@@ -233,7 +234,27 @@ struct GPU::Impl {
 
     /// Push GPU command entries to be processed
     void PushGPUEntries(s32 channel, Tegra::CommandList&& entries) {
+        nx2_pushes.fetch_add(1, std::memory_order_relaxed);
+        nx2_last_push_channel.store(channel, std::memory_order_relaxed);
+        nx2_last_push.store(std::chrono::steady_clock::now().time_since_epoch().count(),
+                            std::memory_order_relaxed);
         gpu_thread.SubmitList(channel, std::move(entries), is_async);
+    }
+
+    std::string Nx2HangReport() {
+        const auto since_push = std::chrono::steady_clock::now().time_since_epoch() -
+                                std::chrono::steady_clock::duration{
+                                    nx2_last_push.load(std::memory_order_relaxed)};
+        auto* const rasterizer = renderer ? renderer->ReadRasterizer() : nullptr;
+        return fmt::format(
+            "{} submits, the last {} ms ago (channel {}) | {} | split: {} | scheduler: {} | "
+            "backend: {} | syncpoints:{}",
+            nx2_pushes.load(std::memory_order_relaxed),
+            std::chrono::duration_cast<std::chrono::milliseconds>(since_push).count(),
+            nx2_last_push_channel.load(std::memory_order_relaxed), gpu_thread.Nx2DebugState(),
+            VideoCommon::GpuSplit::Get().Nx2DebugState(), scheduler.Nx2DebugState(),
+            rasterizer ? rasterizer->Nx2DebugState() : std::string{},
+            system.Host1x().GetSyncpointManager().Nx2DebugState());
     }
 
     void RunInOrder(std::function<void()>&& func) {
@@ -406,6 +427,10 @@ struct GPU::Impl {
     // Destruction of thread must be done before all (non trivial)
     // previous members has been destroyed
     VideoCommon::GPUThread::ThreadManager gpu_thread;
+
+    std::atomic<u64> nx2_pushes{};
+    std::atomic<s64> nx2_last_push{};
+    std::atomic<s32> nx2_last_push_channel{-1};
 
     std::unique_ptr<VideoCore::RendererBase> renderer;
     const bool use_nvdec;
@@ -595,6 +620,10 @@ u64 GPU::GetTicks() const {
 
 bool GPU::IsAsync() const {
     return impl->is_async;
+}
+
+std::string GPU::Nx2HangReport() {
+    return impl->Nx2HangReport();
 }
 
 bool GPU::HasSuspendedChannels() const {

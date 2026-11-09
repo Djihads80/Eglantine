@@ -313,6 +313,23 @@ void GpuSplit::WaitForSpace(size_t words) {
     }
 }
 
+std::string GpuSplit::Nx2DebugState() const {
+    if (!active) {
+        return "off";
+    }
+    return fmt::format(
+        "written {} published {}/{} consumed {} (front cache {}), {} words pending, back {}{}{}, "
+        "quiet {}, hook requested {}, back waiting {} (wake {}), front waiting {} (drained {})",
+        write_position, published_local, published.load(std::memory_order_relaxed),
+        consumed.load(std::memory_order_relaxed), consumed_cache, pending_count,
+        back_running.load(std::memory_order_relaxed) ? "running" : "stopped",
+        g_back_busy.load(std::memory_order_relaxed) ? " busy" : "",
+        idle_hook != nullptr ? "" : " (no idle hook)", back_quiet.load(std::memory_order_relaxed),
+        hook_requested.load(std::memory_order_relaxed),
+        back_waiting.load(std::memory_order_relaxed), wake.load(std::memory_order_relaxed),
+        front_waiting.load(std::memory_order_relaxed), drained.load(std::memory_order_relaxed));
+}
+
 void GpuSplit::RequestIdleHook() {
     hook_requested.store(true, std::memory_order_seq_cst);
     wake.fetch_add(1, std::memory_order_seq_cst);
@@ -461,6 +478,44 @@ bool GpuSplit::WaitForPosition(u64 position, Nx2Profile::Zone zone) {
             SleepOnBack();
         }
     }
+}
+
+bool GpuSplit::WaitUntil(bool (*met)(void*), void* context, Nx2Profile::Zone zone) {
+    if (!active) {
+        return met(context);
+    }
+    FlushPending();
+    consumed_cache = consumed.load(std::memory_order_acquire);
+    if (consumed_cache == write_position) {
+        return met(context);
+    }
+    // The back hands its position back once it reaches the end of what was sent.
+    wait_target.store(write_position, std::memory_order_seq_cst);
+    Publish();
+    Nx2Profile::Scope scope{zone};
+    const auto start = std::chrono::steady_clock::now();
+    bool result = false;
+    for (u32 spins = 0;; ++spins) {
+        if (met(context)) {
+            result = true;
+            break;
+        }
+        consumed_cache = consumed.load(std::memory_order_acquire);
+        if (consumed_cache == write_position) {
+            result = met(context);
+            break;
+        }
+        // Checked between spins: what `met` waits for lands while the back runs an entry, not
+        // when it hands its position back, so SleepOnBack would sleep past it.
+        if ((spins & 255) != 255 ||
+            std::chrono::steady_clock::now() - start < std::chrono::milliseconds{1}) {
+            Pause();
+        } else {
+            std::this_thread::yield();
+        }
+    }
+    wait_target.store(~u64{0}, std::memory_order_relaxed);
+    return result;
 }
 
 void GpuSplit::HandBack(u64 position) {

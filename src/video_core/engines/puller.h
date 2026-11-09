@@ -80,12 +80,18 @@ public:
         std::chrono::steady_clock::time_point since;
         std::chrono::steady_clock::time_point last_fences; ///< When it last released fences
         bool reported;
+        int stats_class{-1}; ///< EDEN_NX2_ACQ_STATS: who last wrote the word (puller.cpp)
+        u64 stats_since{};   ///< EDEN_NX2_ACQ_STATS: when its drain ended (steady ns)
 
         [[nodiscard]] bool Matches(u32 current) const;
     };
 
     [[nodiscard]] bool HasPendingAcquire() const {
         return pending_acquire.has_value();
+    }
+    /// The pending acquire, for hang reports.
+    [[nodiscard]] const std::optional<PendingAcquire>& Nx2PendingAcquire() const {
+        return pending_acquire;
     }
     /// When the pending acquire began (only while HasPendingAcquire).
     [[nodiscard]] std::chrono::steady_clock::time_point PendingSince() const {

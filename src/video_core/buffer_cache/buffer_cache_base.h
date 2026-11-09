@@ -363,8 +363,26 @@ public:
         nx2_collect_list_copies = collect;
         if (!collect) {
             nx2_list_copy_requests.clear();
+            nx2_pending_writes.clear();
+            nx2_writer_global = false;
         }
     }
+    /// EDEN_NX2_CL_SPECULATE: the dispatch being recorded reads through global addresses.
+    void Nx2SetWriterGlobal(bool global) {
+        nx2_writer_global = global;
+    }
+    /// EDEN_NX2_FAST_BUFFERS: the vertex buffers the next draw's vertex shader reads (~0: all),
+    /// and whether only those are synchronized and bound (false: counted only, =verify).
+    void Nx2SetUsedVertexBuffers(u32 mask, bool skip) {
+        nx2_used_vertex_buffers = mask;
+        nx2_skip_unused_vertex_buffers = skip;
+    }
+    /// EDEN_NX2_CL_SPECULATE (nx2_speculate.h): the signature of what the compute dispatch being
+    /// recorded reads through the buffer cache (uniform buffer bytes, storage and texture buffer
+    /// ranges with their signatures, written ones as they are before it).
+    u64 Nx2ComputeInputSig();
+    /// The dispatch whose inputs sign `writer` was recorded: its storage writes hold its output.
+    void Nx2FinishDispatchSig(u64 writer);
     /// True when it recorded copies, which the GPU completes at `tick` (the caller submits).
     bool Nx2CopyListPages(u64 tick);
     enum class Nx2ListRead { Unknown, Copied, Synced };
@@ -372,6 +390,9 @@ public:
     /// written by no GPU work since), else Copied with `out` filled from the copy of its last
     /// write once the GPU is done with it. Unknown otherwise: the caller drains and flushes.
     Nx2ListRead Nx2ReadListCopy(DAddr device_addr, std::span<u8> out);
+    /// EDEN_NX2_GPU_DIRTY_GEN, without the split: reads `out` from the memory of the buffer holding
+    /// it, when the GPU can be read directly and is done with the last write to its page.
+    bool Nx2ReadListHost(DAddr device_addr, std::span<u8> out);
     /// Front thread, the split drained: the command list page was flushed to guest memory.
     void Nx2NoteListSynced(DAddr page);
     /// CPU and inline writes: they reach guest memory, so a synced page stays synced, but its copy
@@ -540,7 +561,9 @@ private:
     void DownloadBufferMemory(Buffer& buffer_id, DAddr device_addr, u64 size);
 
     /// Records that commands now recorded write `buffer` (for direct host reads).
-    void NoteGpuWrite(Buffer& buffer);
+    /// The commands being recorded write [device_addr, +size) of the buffer: a direct host read
+    /// waits for their tick (the buffer's, and the pages' with Tegra::Nx2GpuWriteTicks).
+    void NoteGpuWrite(Buffer& buffer, DAddr device_addr, u64 size);
 
     /// Downloads the GPU-written data of `buffer` in `ranges`, waiting for the GPU once.
     void DownloadBufferRanges(Buffer& buffer, std::span<const std::pair<DAddr, u64>> ranges);
@@ -568,6 +591,9 @@ private:
     [[nodiscard]] const Binding& VertexBufferSlot(u32 index) const;
 
     void UpdateVertexBufferSlot(u32 index, const Binding& binding);
+
+    /// EDEN_NX2_FAST_BUFFERS: counts the vertex buffer synchronizations a draw skips.
+    void Nx2NoteUnusedVertexBuffers(u32 unused);
 
     /// Flags the vertex buffers overlapping a written range so host copies derived from them are
     /// rebuilt.
@@ -786,6 +812,21 @@ private:
         /// the page's lists always drain the split instead of reading a copy.
         bool draw_written{};
         std::optional<Nx2Staging> copy;
+        /// EDEN_NX2_STRATO_STATS: the words the page's last copy read got (Nx2ReadListCopy).
+        u64 read_hash{};
+        u32 read_offset{};
+        u32 read_size{};
+        /// EDEN_NX2_CL_SPECULATE: the lists read from the page, with the content signature and
+        /// the hash of their words at their last read.
+        struct Span {
+            u32 offset;
+            u32 size;
+            u64 sig;
+            u64 hash;
+        };
+        boost::container::small_vector<Span, 4> spans;
+        /// The copy is of a dispatch that reads through global addresses.
+        bool global_writer{};
     };
     std::mutex nx2_list_mutex; ///< nx2_list_pages: the split's front reads the copies
     std::unordered_map<DAddr, Nx2ListPage> nx2_list_pages;
@@ -793,6 +834,18 @@ private:
     std::vector<std::pair<u64, Nx2Staging>> nx2_retired_list_copies;
     boost::container::small_vector<std::pair<BufferId, DAddr>, 8> nx2_list_copy_requests;
     bool nx2_collect_list_copies{};
+    u32 nx2_used_vertex_buffers = ~0U;
+    bool nx2_skip_unused_vertex_buffers{};
+
+    /// EDEN_NX2_GPU_PROFILE: each graphics slot's previous bind (counted unchanged binds).
+    std::array<std::array<std::pair<DAddr, u32>, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES>
+        nx2_previous_ubos{};
+    std::array<std::array<std::pair<DAddr, u32>, NUM_STORAGE_BUFFERS>, NUM_STAGES>
+        nx2_previous_ssbos{};
+
+    /// EDEN_NX2_CL_SPECULATE: the storage ranges the dispatch being recorded writes.
+    boost::container::small_vector<std::pair<DAddr, u64>, 8> nx2_pending_writes;
+    bool nx2_writer_global{};
 
     /// Downloads waiting for EndDownloadBatch. Deferred staging: a submission inside the batch
     /// must not let another download reuse it before it is read.

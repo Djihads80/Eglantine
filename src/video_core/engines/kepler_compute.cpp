@@ -383,7 +383,7 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
             },
             [&](u64 address, u32 payload, u32 flags) {
                 if (!memory_manager.IsFullyMappedRange(address, sizeof(payload))) return false;
-                if (Tegra::Nx2QmdReleaseTargets::Enabled()) {
+                if (Tegra::Nx2QmdReleaseTargets::Enabled() || Tegra::Nx2AcqStats()) {
                     if (const auto device = memory_manager.GpuToCpuAddress(address)) {
                         Tegra::Nx2QmdReleaseTargets::Note(*device);
                     }
@@ -1468,6 +1468,10 @@ void KeplerCompute::FrontApply(FrontState& fs, u32 method, u32 argument) {
         fs.compute_uploaded = true;
     }
     fs.registers[method] = argument;
+    if ((method == 0x107 || (method >= 0xae && method <= 0xb0)) && Tegra::Nx2QmdLedger())
+        [[unlikely]] {
+        FrontPredictQmdReleases(fs, method, argument);
+    }
     switch (method) {
     case 0x45:
         FrontMacroEngine(fs).ClearCode(argument);
@@ -1489,6 +1493,90 @@ void KeplerCompute::FrontApply(FrontState& fs, u32 method, u32 argument) {
     }
     default:
         break;
+    }
+}
+
+namespace {
+struct NativeQmdFrontTag {};
+} // Anonymous namespace
+
+void KeplerCompute::FrontPredictQmdReleases(FrontState& fs, u32 method, u32 argument) {
+    using Shadow = BasicNativeQmdScheduler<NativeQmdFrontTag>;
+    // Front thread only. The QMDs built from registers (0x107), as the back writes them.
+    static Shadow shadow;
+    static std::unordered_map<u64, Shadow::Descriptor> inline_qmds;
+    static bool off = false;
+    if (off) {
+        return;
+    }
+    const auto turn_off = [](std::string_view why) {
+        off = true;
+        Tegra::Nx2SemaphoreLedger::Get().ForgetQmdReleases();
+        LOG_WARNING(HW_GPU, "QMD ledger off for this session: {}", why);
+    };
+    // The same conditions as ProcessNativeMethod.
+    GPUVAddr qmd_address{};
+    u32 signal = argument;
+    if (method == 0x107) {
+        qmd_address = ((GPUVAddr{fs.registers[0xc6]} << 32) | fs.registers[0xc7]) << 8;
+        Shadow::Descriptor descriptor{};
+        std::memcpy(descriptor.data(), fs.registers.data() + 0xc8, sizeof(descriptor));
+        inline_qmds[qmd_address] = descriptor;
+        if (inline_qmds.size() > 4096) {
+            inline_qmds.clear();
+            inline_qmds[qmd_address] = descriptor;
+        }
+        const u32 control = fs.registers[0xa7];
+        if (!((control & (1U << 24)) || !(fs.registers[0xcc] & (1U << 12)))) {
+            return;
+        }
+        signal = 3;
+    } else {
+        if (method == 0xae || (method == 0xaf && !(argument & 2)) ||
+            (method == 0xb0 && ((argument & 15) == 0 || (argument & 15) == 1))) {
+            return;
+        }
+        qmd_address = GPUVAddr{fs.registers[0xad]} << 8;
+    }
+    auto& split = VideoCommon::GpuSplit::Get();
+    auto& ledger = Tegra::Nx2SemaphoreLedger::Get();
+    const u64 order = split.WritePosition();
+    const char* doubt = nullptr;
+    const auto read = [&](u64 address, Shadow::Descriptor& descriptor) {
+        if (const auto it = inline_qmds.find(address); it != inline_qmds.end()) {
+            descriptor = it->second;
+            return true;
+        }
+        if (!memory_manager.IsFullyMappedRange(address, sizeof(descriptor))) {
+            return false;
+        }
+        const auto device = memory_manager.GpuToCpuAddress(address);
+        if (!device || split.PendingWrite(*device, sizeof(descriptor)) > split.Consumed()) {
+            doubt = "a QMD read while GPU writes to it are queued";
+            return false;
+        }
+        memory_manager.ReadBlockUnsafe(address, descriptor.data(), sizeof(descriptor));
+        return true;
+    };
+    const auto release = [&](u64 address, u32 payload, u32 flags) {
+        const auto device = memory_manager.GpuToCpuAddress(address);
+        if (!device) {
+            doubt = "a QMD release to an unmapped address";
+            return false;
+        }
+        if (flags & (1U << 26)) {
+            ledger.Forget(*device); // a reduction: the value depends on the word
+        } else {
+            ledger.NoteQmdRelease(*device, payload, order, (flags & (1U << 19)) != 0);
+        }
+        return true;
+    };
+    const auto error = shadow.Signal(qmd_address, signal, read, release,
+                                     [](const Shadow::Descriptor&) { return true; });
+    if (doubt != nullptr) {
+        turn_off(doubt);
+    } else if (!error.empty()) {
+        turn_off(error);
     }
 }
 

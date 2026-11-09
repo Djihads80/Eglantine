@@ -9,6 +9,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 #include "common/container/unordered_map.h"
 
@@ -37,6 +38,9 @@ public:
     }
 
     void DeclareChannel(std::shared_ptr<ChannelState> new_channel);
+
+    /// Hang report (any thread, racy reads): every channel's queue and pending acquire.
+    [[nodiscard]] std::string Nx2DebugState();
 
 private:
     void BindChannel(GPU& gpu, s32 bind_id);

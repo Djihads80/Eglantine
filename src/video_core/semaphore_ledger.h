@@ -34,6 +34,9 @@ public:
     struct Entry {
         u64 order; ///< Ring position after the release was sent (GpuSplit::WritePosition)
         u32 value;
+        s32 channel{-1}; ///< The channel that queued it (EDEN_NX2_ACQ_STATS)
+        bool at_least{}; ///< The word becomes at least `value` (a QMD max release)
+        bool from_qmd{}; ///< Predicted by the front's QMD shadow (EDEN_NX2_QMD_LEDGER)
     };
 
     static Nx2SemaphoreLedger& Get() {
@@ -49,14 +52,48 @@ public:
         return enabled;
     }
 
+    /// EDEN_NX2_ACQ_LEDGER=2: a recorded release keeps meeting acquires after the back ran it.
+    /// The back executes puller releases as fence-timed query writes: the word holds the value
+    /// only once the host GPU passed that fence, so an acquire parsed after the back consumed the
+    /// release drained the back and then usually suspended until the fence. The release is in
+    /// the host queue before anything after the acquire, as while it was queued on the back.
+    /// With the split on Mario Kart World, ~87% of the front's time went to those drains.
+    static bool KeepsConsumed() {
+        static const bool keep = [] {
+            const char* value = std::getenv("EDEN_NX2_ACQ_LEDGER");
+            return value != nullptr && value[0] == '2';
+        }();
+        return keep;
+    }
+
     /// A 32-bit puller release of `value` to the word at `device_address` was queued.
-    void NoteRelease(u64 device_address, u32 value, u64 order) {
-        entries[device_address] = Entry{order, value};
+    void NoteRelease(u64 device_address, u32 value, u64 order, s32 channel = -1) {
+        entries[device_address] = Entry{order, value, channel};
+    }
+
+    /// A compute QMD release the front's shadow scheduler predicts (EDEN_NX2_QMD_LEDGER): a
+    /// plain write of `value`, or with `at_least` a max release (the word becomes at least it).
+    void NoteQmdRelease(u64 device_address, u32 value, u64 order, bool at_least) {
+        entries[device_address] = Entry{order, value, -1, at_least, true};
     }
 
     /// The word gets a value the front cannot know (reduction, 64-bit payload).
     void Forget(u64 device_address) {
         entries.erase(device_address);
+    }
+
+    /// The QMD shadow stopped predicting: its entries may be wrong from here on.
+    void ForgetQmdReleases() {
+        std::erase_if(entries, [](const auto& entry) { return entry.second.from_qmd; });
+    }
+
+    /// Whether the entry meets an acquire: an `at_least` entry only a greater-or-equal one.
+    [[nodiscard]] static bool EntryMet(const Entry& entry, Compare compare, u32 value) {
+        if (entry.at_least) {
+            return (compare == Compare::Gequal || compare == Compare::CircularGequal) &&
+                   Met(compare, entry.value, value);
+        }
+        return Met(compare, entry.value, value);
     }
 
     /// The split stopped: its ring positions restart at 0, so the orders recorded are stale.
@@ -95,6 +132,31 @@ private:
 // queue keep that order. Off by default: a release from a dispatch sent later (another channel,
 // a later submit) would not be waited for. From sylvieistaken/selevet-eglantine bce3c83739
 // (shintasku/selevet-eglantine-linux).
+/// EDEN_NX2_QMD_LEDGER=1 (with EDEN_NX2_SPLIT=2, where the front runs the compute macros): the
+/// front replays the compute class's QMD signals on a shadow scheduler of its own and records
+/// the releases they make in the ledger, so an acquire on a QMD-released word is met without a
+/// drain while the dispatch is still queued. Any doubt turns it off for the session (a QMD read
+/// while GPU writes to it are queued, a release format or action the scheduler rejects).
+[[nodiscard]] inline bool Nx2QmdLedger() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_QMD_LEDGER");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+/// EDEN_NX2_ACQ_STATS=1: the split's acquires that drain the back, by who last wrote the word
+/// they wait on (puller.cpp, logged every 5 s): a release of the same channel the back already
+/// ran, a release of another channel, a compute QMD release, or a writer the front does not see
+/// (the CPU, 3D reports). With the time drained and the time suspended after the drain.
+[[nodiscard]] inline bool Nx2AcqStats() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_ACQ_STATS");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
 class Nx2QmdReleaseTargets {
 public:
     static bool Enabled() {

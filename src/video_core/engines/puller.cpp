@@ -4,8 +4,11 @@
 // SPDX-FileCopyrightText: 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
+#include <string>
 
 #include "common/assert.h"
 #include "common/logging.h"
@@ -22,8 +25,10 @@
 #include "video_core/engines/puller.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_split.h"
+#include "video_core/host1x/syncpoint_manager.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_quick_bind.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/semaphore_ledger.h"
 
@@ -78,7 +83,8 @@ void NoteRelease(DmaPusher& dma_pusher, GPUVAddr address, u32 payload) {
         return;
     }
     if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address)) {
-        Ledger::Get().NoteRelease(*device, payload, VideoCommon::GpuSplit::Get().WritePosition());
+        Ledger::Get().NoteRelease(*device, payload, VideoCommon::GpuSplit::Get().WritePosition(),
+                                  dma_pusher.channel_state.bind_id);
     }
 }
 
@@ -98,7 +104,7 @@ void ForgetRelease(DmaPusher& dma_pusher, GPUVAddr address) {
 // read without flushing the caches, which belong to the back: a value they hold but memory
 // does not yet is newer, and sync words count up, so memory meeting the acquire is enough.
 bool AcquireMetWithoutDrain(DmaPusher& dma_pusher, GPUVAddr address, u32 value,
-                            Ledger::Compare compare) {
+                            Ledger::Compare compare, bool* by_qmd = nullptr) {
     auto& split = VideoCommon::GpuSplit::Get();
     if (!Ledger::Enabled() || !split.Active()) {
         return false;
@@ -108,11 +114,18 @@ bool AcquireMetWithoutDrain(DmaPusher& dma_pusher, GPUVAddr address, u32 value,
         return false;
     }
     if (const Ledger::Entry* entry = Ledger::Get().Find(*device)) {
-        const bool entry_met = Ledger::Met(compare, entry->value, value);
+        const bool entry_met = Ledger::EntryMet(*entry, compare, value);
         const bool queued = entry->order > split.Consumed();
         if (queued) {
             // The word will hold this release's value when the back passes the acquire.
+            if (by_qmd != nullptr) {
+                *by_qmd = entry_met && entry->from_qmd;
+            }
             return entry_met;
+        }
+        if (entry_met && Ledger::KeepsConsumed()) {
+            // Run by the back, written at its fence: still ahead of the acquire's successors.
+            return true;
         }
     }
     return Ledger::Met(compare, dma_pusher.memory_manager.Read<u32>(address), value);
@@ -132,6 +145,169 @@ Ledger::Compare CompareOf(u32 operation) {
 
 void CountLedgerAcquire() {
     VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireLedger, 1);
+}
+
+// EDEN_NX2_ACQ_STATS: acquires that drained the back, by who last wrote their word.
+struct AcquireStats {
+    std::array<std::atomic<u64>, 4> drains{};
+    std::array<std::atomic<u64>, 4> met{}; ///< Of the drains, the recorded release meets it
+    std::array<std::atomic<u64>, 4> drain_ns{};
+    std::array<std::atomic<u64>, 4> suspends{};
+    std::array<std::atomic<u64>, 4> suspend_ns{};
+    std::array<std::atomic<u64>, 4> resume_drains{}; ///< Drains polling a suspended acquire
+    std::array<std::atomic<u64>, 4> resume_drain_ns{};
+    std::array<std::atomic<u64>, 4> narrow{}; ///< Of the drains, met before the back ran out
+    std::atomic<u64> window_start{};
+};
+AcquireStats g_acquire_stats;
+
+// EDEN_NX2_ACQ_NARROW=1: an acquire that would drain the back waits only until the back has run
+// far enough for AcquireMetWithoutDrain to hold (polled while the back works), not for all that
+// was sent; when the back runs out of work first, it drains as before. With the split on Mario
+// Kart World, ~80% of the front's drain time went to acquires on words compute QMDs release,
+// and ~92% of those were met once drained.
+bool AcquireNarrow() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_ACQ_NARROW");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+// EDEN_NX2_ACQ_VERIFY=1: every acquire the front lets pass without draining the back is checked
+// on the back where it stands in the ring (the word flushed first): MISMATCH when the word does
+// not meet it there, counted per way it passed and logged for the first ones.
+enum class VerifyPath : u32 { Ledger, QmdLedger, QmdSkip, Narrow, Resume, Count };
+constexpr std::array<const char*, static_cast<size_t>(VerifyPath::Count)> verify_names{
+    "ledger", "QMD ledger", "QMD skip", "narrow", "resume"};
+struct AcquireVerify {
+    std::array<std::atomic<u64>, static_cast<size_t>(VerifyPath::Count)> checked{};
+    std::array<std::atomic<u64>, static_cast<size_t>(VerifyPath::Count)> mismatches{};
+};
+AcquireVerify g_acquire_verify;
+
+bool AcquireVerifyEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_ACQ_VERIFY");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+// 0: a puller release of this channel, 1: of another channel, 2: a compute QMD release, 3: none
+// the front saw (the CPU, 3D reports). `met`: the recorded release meets the acquire.
+int AcquireClass(DmaPusher& dma_pusher, GPUVAddr address, u32 value, Ledger::Compare compare,
+                 bool& met) {
+    met = false;
+    const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address);
+    if (!device) {
+        return 3;
+    }
+    if (const Ledger::Entry* entry = Ledger::Get().Find(*device)) {
+        met = Ledger::Met(compare, entry->value, value);
+        return entry->channel == dma_pusher.channel_state.bind_id ? 0 : 1;
+    }
+    return Nx2QmdReleaseTargets::Contains(*device) ? 2 : 3;
+}
+
+u64 SteadyNowNs() {
+    return static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch())
+                                .count());
+}
+
+void ReportAcquireStats() {
+    AcquireStats& stats = g_acquire_stats;
+    const u64 now = SteadyNowNs();
+    u64 start = stats.window_start.load(std::memory_order_relaxed);
+    if (start == 0) {
+        stats.window_start.compare_exchange_strong(start, now, std::memory_order_relaxed);
+        return;
+    }
+    if (now - start < 5'000'000'000ULL ||
+        !stats.window_start.compare_exchange_strong(start, now, std::memory_order_relaxed)) {
+        return;
+    }
+    static constexpr std::array<const char*, 4> names{"same channel", "other channel",
+                                                      "compute QMD", "CPU or report"};
+    const auto take = [](std::atomic<u64>& value) {
+        return value.exchange(0, std::memory_order_relaxed);
+    };
+    const double seconds = static_cast<double>(now - start) / 1e9;
+    std::string line;
+    for (size_t i = 0; i < names.size(); ++i) {
+        const u64 drains = take(stats.drains[i]);
+        const u64 met = take(stats.met[i]);
+        const u64 drain_ns = take(stats.drain_ns[i]);
+        const u64 suspends = take(stats.suspends[i]);
+        const u64 suspend_ns = take(stats.suspend_ns[i]);
+        const u64 resume_drains = take(stats.resume_drains[i]);
+        const u64 resume_drain_ns = take(stats.resume_drain_ns[i]);
+        const u64 narrow = take(stats.narrow[i]);
+        line += fmt::format(" | {}: {:.0f} drains ({:.0f} met by the release, {:.0f} narrow) {:.1f} "
+                            "ms, {:.0f} suspended {:.1f} ms, {:.0f} resume drains {:.1f} ms",
+                            names[i], static_cast<double>(drains) / seconds,
+                            static_cast<double>(met) / seconds,
+                            static_cast<double>(narrow) / seconds,
+                            static_cast<double>(drain_ns) / 1e6 / seconds,
+                            static_cast<double>(suspends) / seconds,
+                            static_cast<double>(suspend_ns) / 1e6 / seconds,
+                            static_cast<double>(resume_drains) / seconds,
+                            static_cast<double>(resume_drain_ns) / 1e6 / seconds);
+    }
+    LOG_INFO(HW_GPU, "Split acquires that drained, per second over {:.1f} s{}", seconds, line);
+    if (AcquireVerifyEnabled()) {
+        std::string verify;
+        for (size_t i = 0; i < verify_names.size(); ++i) {
+            verify += fmt::format(" | {}: {} checked, {} MISMATCH", verify_names[i],
+                                  g_acquire_verify.checked[i].load(std::memory_order_relaxed),
+                                  g_acquire_verify.mismatches[i].load(std::memory_order_relaxed));
+        }
+        LOG_INFO(HW_GPU, "Split acquire verify, since boot{}", verify);
+    }
+}
+
+// The acquire's word where the back reaches it in the ring (EDEN_NX2_ACQ_VERIFY).
+void VerifyOnBack(DmaPusher& dma_pusher, const Puller::PendingAcquire& acquire, VerifyPath path) {
+    if (!AcquireVerifyEnabled() || !VideoCommon::GpuSplit::Get().Active()) {
+        return;
+    }
+    VideoCommon::GpuSplit::Get().Defer([dma = &dma_pusher, address = acquire.address,
+                                        value = acquire.value, operation = acquire.operation,
+                                        path] {
+        const Puller::PendingAcquire check{
+            .address = address,
+            .value = value,
+            .operation = operation,
+            .since = {},
+            .last_fences = {},
+            .reported = false,
+        };
+        const u32 word = ReadSemaphoreWord(*dma, address);
+        const auto index = static_cast<size_t>(path);
+        g_acquire_verify.checked[index].fetch_add(1, std::memory_order_relaxed);
+        if (!check.Matches(word)) {
+            const u64 count =
+                g_acquire_verify.mismatches[index].fetch_add(1, std::memory_order_relaxed);
+            if (count < 16) {
+                LOG_WARNING(HW_GPU,
+                            "Split acquire MISMATCH ({}): {:#x} op {} value {:#x}, the word is "
+                            "{:#x} where the back reaches the acquire",
+                            verify_names[index], address, operation, value, word);
+            }
+        }
+    });
+}
+
+struct NarrowContext {
+    DmaPusher* dma_pusher;
+    const Puller::PendingAcquire* acquire;
+};
+
+bool NarrowMet(void* context) {
+    const auto& narrow = *static_cast<const NarrowContext*>(context);
+    return AcquireMetWithoutDrain(*narrow.dma_pusher, narrow.acquire->address,
+                                  narrow.acquire->value, CompareOf(narrow.acquire->operation));
 }
 
 // EDEN_NX2_QMD_ACQUIRE_SKIP=1: an acquire on a word compute QMDs release does not drain the back
@@ -166,6 +342,7 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     if (AcquireMetWithoutDrain(dma_pusher, pending_acquire->address, pending_acquire->value,
                                CompareOf(pending_acquire->operation))) {
         CountLedgerAcquire();
+        VerifyOnBack(dma_pusher, *pending_acquire, VerifyPath::Resume);
         return true;
     }
     // A release latched the wait (Nx2SemaphoreWaiters): the back has run it, so resume without
@@ -180,7 +357,14 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     }
     // The release may still be queued for the split GPU thread's back half (and the caches
     // ReadSemaphoreWord asks are its state).
+    const int stats_class = pending_acquire->stats_class;
+    const u64 drain_start = stats_class >= 0 ? SteadyNowNs() : 0;
     DrainBack();
+    if (stats_class >= 0) {
+        g_acquire_stats.resume_drains[stats_class].fetch_add(1, std::memory_order_relaxed);
+        g_acquire_stats.resume_drain_ns[stats_class].fetch_add(SteadyNowNs() - drain_start,
+                                                               std::memory_order_relaxed);
+    }
     const u32 current = ReadSemaphoreWord(dma_pusher, pending_acquire->address);
     if (Nx2SemaphoreWaiters::Get().Latched(this)) {
         if (static std::atomic<u32> rescued{};
@@ -258,10 +442,19 @@ bool Puller::ResumeAcquire(DmaPusher& dma_pusher) {
     if (!CanResumeAcquire(dma_pusher)) {
         return false;
     }
+    if (pending_acquire) {
+        // What the CPU wrote while the channel waited (texture pools among it).
+        Nx2BumpPoolGeneration();
+    }
     // Only a resume from a suspension counts: DmaPusher::Step calls this before every entry, and
     // counting those made the count odd ("suspended") at random, so submit-time snapshots were
     // thrown away for about half of all entries (CommandList::snapshot_suspensions).
     if (pending_acquire) {
+        if (const int stats_class = pending_acquire->stats_class; stats_class >= 0) {
+            g_acquire_stats.suspends[stats_class].fetch_add(1, std::memory_order_relaxed);
+            g_acquire_stats.suspend_ns[stats_class].fetch_add(
+                SteadyNowNs() - pending_acquire->stats_since, std::memory_order_relaxed);
+        }
         pending_acquire.reset();
         dma_pusher.suspensions.fetch_add(1, std::memory_order_release);
         Nx2SemaphoreWaiters::Get().Remove(this);
@@ -332,6 +525,16 @@ void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
         OnBack([rasterizer = dma_pusher.rasterizer] { rasterizer->ReleaseFences(); });
         break;
     case Puller::FenceOperation::Increment:
+        // A syncpoint past the table comes from misparsed commands: say where they were read.
+        if (const u32 id = static_cast<u32>(regs.fence_action.syncpoint_id.Value());
+            id >= Tegra::Host1x::SyncpointManager::NUM_MAX_SYNCPOINTS) {
+            static std::atomic<u32> reported{};
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
+                LOG_WARNING(HW_GPU, "Channel {}: increment of syncpoint {} (misparsed commands?) "
+                            "in {}",
+                            dma_pusher.channel_state.bind_id, id, dma_pusher.Nx2EntrySources());
+            }
+        }
         OnBack([rasterizer = dma_pusher.rasterizer, id = static_cast<u32>(regs.fence_action.syncpoint_id.Value())] {
             rasterizer->SignalSyncPoint(id);
         });
@@ -384,6 +587,7 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         // Switch 2 waits on semaphores the CPU (or another channel) releases, e.g. once it has
         // written the commands this channel runs next: suspend the channel until the value is
         // met instead of reading ahead (approach from changes.patch).
+        Nx2BumpPoolGeneration();
         PendingAcquire acquire{
             .address = regs.semaphore_address.SemaphoreAddress(),
             .value = regs.semaphore_sequence,
@@ -398,13 +602,49 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             return;
         }
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireChecks, 1);
-        if (AcquireMetWithoutDrain(dma_pusher, acquire.address, acquire.value,
-                                   CompareOf(acquire.operation)) ||
-            QmdAcquireSkip(dma_pusher, acquire.address)) {
+        if (bool by_qmd = false; AcquireMetWithoutDrain(dma_pusher, acquire.address,
+                                                        acquire.value, CompareOf(acquire.operation),
+                                                        &by_qmd)) {
             CountLedgerAcquire();
+            VerifyOnBack(dma_pusher, acquire, by_qmd ? VerifyPath::QmdLedger : VerifyPath::Ledger);
             return;
         }
-        DrainBack();
+        if (QmdAcquireSkip(dma_pusher, acquire.address)) {
+            CountLedgerAcquire();
+            VerifyOnBack(dma_pusher, acquire, VerifyPath::QmdSkip);
+            return;
+        }
+        const bool stats = Nx2AcqStats() && VideoCommon::GpuSplit::Get().Active();
+        bool stats_met = false;
+        const int stats_class =
+            stats ? AcquireClass(dma_pusher, acquire.address, acquire.value,
+                                 CompareOf(acquire.operation), stats_met)
+                  : -1;
+        const u64 drain_start = stats ? SteadyNowNs() : 0;
+        bool narrow_met = false;
+        if (AcquireNarrow() && VideoCommon::GpuSplit::Get().Active()) {
+            NarrowContext context{&dma_pusher, &acquire};
+            narrow_met = VideoCommon::GpuSplit::Get().WaitUntil(
+                &NarrowMet, &context, VideoCommon::Nx2Profile::Zone::DrainAcquire);
+        }
+        if (!narrow_met) {
+            DrainBack();
+        }
+        if (stats) {
+            g_acquire_stats.narrow[stats_class].fetch_add(narrow_met ? 1 : 0,
+                                                          std::memory_order_relaxed);
+            g_acquire_stats.drains[stats_class].fetch_add(1, std::memory_order_relaxed);
+            g_acquire_stats.met[stats_class].fetch_add(stats_met ? 1 : 0,
+                                                       std::memory_order_relaxed);
+            g_acquire_stats.drain_ns[stats_class].fetch_add(SteadyNowNs() - drain_start,
+                                                            std::memory_order_relaxed);
+            ReportAcquireStats();
+        }
+        if (narrow_met) {
+            CountLedgerAcquire();
+            VerifyOnBack(dma_pusher, acquire, VerifyPath::Narrow);
+            return;
+        }
         if (acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
             return;
         }
@@ -417,6 +657,8 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         dma_pusher.rasterizer->ReleaseFences();
         if (!waiters.Latched(this) && !acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
             pending_acquire = acquire;
+            pending_acquire->stats_class = stats_class;
+            pending_acquire->stats_since = stats ? SteadyNowNs() : 0;
             dma_pusher.suspensions.fetch_add(1, std::memory_order_release);
             VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireWaits, 1);
         } else {
@@ -465,6 +707,7 @@ void Puller::ProcessSemaphoreRelease(DmaPusher& dma_pusher) {
 }
 
 void Puller::ProcessSemaphoreAcquire(DmaPusher& dma_pusher) {
+    Nx2BumpPoolGeneration();
     const auto value = regs.semaphore_acquire;
     if (AcquireMetWithoutDrain(dma_pusher, regs.semaphore_address.SemaphoreAddress(), value,
                                Ledger::Compare::Equal)) {
@@ -508,6 +751,9 @@ void Puller::ProcessSemaphoreExecute(DmaPusher& dma_pusher, u32 argument) {
     }
     if (operation == 6) { // REDUCTION: the word's value depends on what it held
         ForgetRelease(dma_pusher, address);
+    }
+    if (operation != 6) {
+        Nx2BumpPoolGeneration(); // an acquire
     }
     if (!payload_64 && operation <= 5 && operation != 1) {
         const Ledger::Compare compare = operation == 0   ? Ledger::Compare::Equal

@@ -9,6 +9,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <string>
 #include <thread>
 #include <type_traits>
 
@@ -56,6 +57,10 @@ public:
     [[nodiscard]] static bool OnBackThread() {
         return on_back_thread;
     }
+    /// Whether the calling thread is the GPU thread (MarkGpuThread).
+    [[nodiscard]] static bool OnGpuThread() {
+        return on_gpu_thread;
+    }
     /// Marks the calling thread as the GPU thread (the front, or the only one without the split).
     static void MarkGpuThread() {
         on_gpu_thread = true;
@@ -76,6 +81,9 @@ public:
     }
     /// Any thread: has the back call the idle hook soon, between entries or at once if it sleeps.
     void RequestIdleHook();
+
+    /// Hang report (any thread, racy reads): ring positions and the flags the two sides wait on.
+    [[nodiscard]] std::string Nx2DebugState() const;
 
     /// Starts the back thread once the split is wanted (EDEN_NX2_SPLIT=1, a Switch 2 title,
     /// commands read without cache flushes). Called by the front between commands.
@@ -174,6 +182,10 @@ public:
     /// `zone`: the profile zone the wait counts as (SplitWriters without one).
     bool WaitForPosition(u64 position);
     bool WaitForPosition(u64 position, Nx2Profile::Zone zone);
+    /// Front thread: waits while the back works through what was sent until `met(context)`
+    /// holds (true), or until the back has run all of it without that (false, `met` checked
+    /// once more). Returns sooner than Drain when what `met` waits for is not at the end.
+    bool WaitUntil(bool (*met)(void*), void* context, Nx2Profile::Zone zone);
     /// Front thread: the ring position after the last compute or copy work sent.
     [[nodiscard]] u64 WriterPosition() const {
         return last_writer_position;

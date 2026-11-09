@@ -103,6 +103,8 @@ public:
                      VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
     GpuWrittenList ReadGpuWrittenCommandList(DAddr addr, std::span<u8> out) override;
     void NoteGpuWrittenCommandListSynced(DAddr page) override;
+    bool Nx2TickComplete(u64 tick) override;
+    std::string Nx2DebugState() override;
     bool BeginFlushBatch() override;
     void EndFlushBatch() override;
     bool MustFlushRegion(DAddr addr, u64 size,

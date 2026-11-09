@@ -59,6 +59,8 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_speculate.h"
+#include "video_core/nx2_strato.h"
 
 namespace Vulkan {
 
@@ -493,7 +495,16 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
             }
         }
     }
-    if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
+    // EDEN_NX2_STRATO_STATS: draw setup's share of this thread (what quick binds would cut).
+    const u64 configure_start = Tegra::Nx2StratoStats() ? VideoCommon::Nx2Strato::Now() : 0;
+    const bool configured = [&] {
+        Profile::Scope scope{Profile::Zone::Configure};
+        return pipeline->Configure(is_indexed);
+    }();
+    if (configure_start != 0) {
+        VideoCommon::Nx2Strato::NoteConfigure(VideoCommon::Nx2Strato::Now() - configure_start);
+    }
+    if (!configured) {
         report_failure("configure failed");
         return;
     }
@@ -1335,6 +1346,34 @@ void RasterizerVulkan::DispatchCompute() {
     };
 
     const auto& qmd{kepler_compute->launch_description};
+    // EDEN_NX2_CL_SPECULATE: what the dispatch writes gets the signature of what it reads.
+    const auto sign_dispatch = [&](u64 inputs) {
+        if (!Tegra::Nx2ClSpeculate()) {
+            return;
+        }
+        Tegra::Nx2SignTimer timer;
+        // Global accesses (counted): with =strict their writes are signed as new.
+        if (pipeline->Nx2GlobalAccesses()) {
+            buffer_cache.Nx2SetWriterGlobal(true);
+            if (Tegra::Nx2ClSpeculateStrict()) {
+                buffer_cache.Nx2FinishDispatchSig(Tegra::Nx2UniqueSig());
+                return;
+            }
+        }
+        u64 sig = Tegra::Nx2SigMix(Tegra::Nx2SigMix(pipeline->ShaderHash(), native_key), inputs);
+        bool samples_images = false;
+        for (const VideoCommon::ImageViewId id : pipeline->Nx2Views()) {
+            sig = Tegra::Nx2SigMix(Tegra::Nx2SigMix(sig, id.index),
+                                   texture_cache.Nx2ModificationTick(id));
+            samples_images |= static_cast<bool>(id);
+        }
+        if (samples_images) {
+            sig = Tegra::Nx2SigMix(
+                sig, Tegra::g_nx2_image_upload_generation.load(std::memory_order_relaxed));
+        }
+        buffer_cache.Nx2FinishDispatchSig(
+            Tegra::Nx2SigMix(sig, buffer_cache.Nx2ComputeInputSig()));
+    };
     const auto publish_collision_map = [&] {
         static const bool enabled = [] {
             const char* value = std::getenv("EDEN_MKW_WATER_FEEDBACK");
@@ -1377,6 +1416,10 @@ void RasterizerVulkan::DispatchCompute() {
         if (frame_dump.Capturing()) [[unlikely]] {
             frame_dump.TimeEnd(true);
         }
+        // Its grid is the arguments' contents.
+        sign_dispatch(Tegra::Nx2ClSpeculate()
+                          ? Tegra::Nx2RangeSig(buffer->CpuAddr() + offset, 12)
+                          : 0);
         SubmitNx2ListCopies();
         publish_collision_map();
         return;
@@ -1404,6 +1447,7 @@ void RasterizerVulkan::DispatchCompute() {
     if (frame_dump.Capturing()) [[unlikely]] {
         frame_dump.TimeEnd(true);
     }
+    sign_dispatch(Tegra::Nx2SigMix(Tegra::Nx2SigMix(dim[0], dim[1]), dim[2]));
     SubmitNx2ListCopies();
     publish_collision_map();
 
@@ -1468,6 +1512,16 @@ VideoCore::RasterizerInterface::GpuWrittenList RasterizerVulkan::ReadGpuWrittenC
 
 void RasterizerVulkan::NoteGpuWrittenCommandListSynced(DAddr page) {
     buffer_cache.Nx2NoteListSynced(page);
+}
+
+bool RasterizerVulkan::Nx2TickComplete(u64 tick) {
+    return buffer_cache_runtime.TickComplete(tick);
+}
+
+std::string RasterizerVulkan::Nx2DebugState() {
+    return fmt::format("tick {} (GPU done to {}), flush pending {}, fences: {}",
+                       scheduler.CurrentTick(), scheduler.GetMasterSemaphore().KnownGpuTick(),
+                       scheduler.Nx2FlushPending(), fence_manager.Nx2DebugState());
 }
 
 bool RasterizerVulkan::BeginFlushBatch() {

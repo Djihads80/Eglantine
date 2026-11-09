@@ -139,6 +139,9 @@ public:
 
     void NotifyShutdown();
 
+    /// Hang report: commands pushed and signalled.
+    [[nodiscard]] std::string Nx2DebugState() const;
+
 private:
     /// Pushes a command to be executed by the GPU thread
     u64 PushCommand(CommandData&& command_data, bool block, bool is_async);

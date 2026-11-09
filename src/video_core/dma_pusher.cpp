@@ -26,6 +26,8 @@
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_quick_bind.h"
+#include "video_core/nx2_strato.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace Tegra {
@@ -113,9 +115,46 @@ DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Cont
 
 DmaPusher::~DmaPusher() = default;
 
+std::string DmaPusher::Nx2EntrySources() const {
+    std::string text;
+    for (const auto& entry : entry_sources) {
+        // copy flags: 1 from the start, 2 copied, 4 copy not during a suspension, 8 no
+        // suspension since, 16 GPU-written, 32 GPU-written before waiting, 64 waited for writers,
+        // 128 copy used; >> 8: copied at (0 submit, 1 queued, 2 resume)
+        text += fmt::format("{}[{:#x} {} words, entry {}{}, {}, list {:.1f} ms old{}, copy flags "
+                            "{:#x}]",
+                            text.empty() ? "" : " then ", entry.address, entry.size, entry.index,
+                            entry.resumed_at != 0 ? fmt::format(" resumed at {}", entry.resumed_at)
+                                                  : std::string{},
+                            entry.source, static_cast<double>(entry.list_age_ns) / 1e6,
+                            entry.deferred ? ", copy deferred (map pending)" : "",
+                            entry.copy_flags);
+    }
+    return text;
+}
+
+std::string DmaPusher::Nx2DebugState() {
+    std::string state = fmt::format(
+        "{} lists queued (at {}), suspensions {}, method {:#x} sub {} with {} words left{}",
+        dma_pushbuffer.size(), dma_pushbuffer_subindex, suspensions.load(std::memory_order_relaxed),
+        dma_state.method, dma_state.subchannel, dma_state.method_count,
+        dma_state.non_incrementing ? " (non-incrementing)" : "");
+    if (const auto& acquire = puller.Nx2PendingAcquire()) {
+        state += fmt::format(
+            ", acquire {:#x} op {} value {:#x} (word {:#x}) for {} ms", acquire->address,
+            acquire->operation, acquire->value, memory_manager.Read<u32>(acquire->address),
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - acquire->since)
+                .count());
+    }
+    return state;
+}
+
 void DmaPusher::DispatchCalls() {
     // The sub-index is kept: a channel suspended on a semaphore resumes inside its command list.
     dma_state.is_last_call = true;
+    // A submission: the CPU may have written the texture pools since the last one.
+    Tegra::Nx2BumpPoolGeneration();
     while (system.IsPoweredOn()) {
         if (!Step()) {
             break;
@@ -192,6 +231,36 @@ bool KeepsCopy(const Tegra::CommandList& list) {
 // Before an entry's words are parsed: keep them when parsing from its start.
 void DmaPusher::NoteEntryWords(const CommandListHeader& header, const char* source,
                                std::span<const CommandHeader> commands, size_t resume_offset) {
+    {
+        const auto& list = dma_pushbuffer.front();
+        if (resume_offset == 0 || entry_sources[1].address != header.addr) {
+            entry_sources[0] = entry_sources[1];
+        }
+        if (long_method_entries_left != 0 && resume_offset == 0) {
+            --long_method_entries_left;
+            std::array<u32, 6> first{};
+            for (size_t i = 0; i < first.size() && i < commands.size(); ++i) {
+                first[i] = commands[i].argument;
+            }
+            LOG_WARNING(HW_GPU,
+                        "Channel {}: after the long method, entry {} at {:#x} ({} words, {}) "
+                        "starts {:08x} with {} words of the method left",
+                        channel_state.bind_id, dma_pushbuffer_subindex, header.addr.Value(),
+                        header.size.Value(), source, fmt::join(first, " "),
+                        dma_state.method_count);
+        }
+        entry_sources[1] = EntrySource{
+            .address = header.addr,
+            .size = static_cast<u32>(header.size),
+            .index = dma_pushbuffer_subindex,
+            .resumed_at = resume_offset,
+            .source = source,
+            .list_age_ns = list.submit_ns != 0 ? SteadyNs() - list.submit_ns : 0,
+            .deferred = std::ranges::binary_search(list.deferred_entries,
+                                                   static_cast<u32>(dma_pushbuffer_subindex)),
+            .copy_flags = entry_copy_flags,
+        };
+    }
     if (!record_parsed_entries && !ResumeSameWords()) {
         return;
     }
@@ -271,11 +340,52 @@ bool DmaPusher::Step() {
     }
 
     if (prefetch_size > 0) {
+        // Lists Eden builds (the syncpoint increments appended after a submission, fence waits)
+        // are not part of the game's command stream. A method the game's last entry left
+        // unfinished took their words as its data: the increments were lost, the syncpoint stayed
+        // one below the submitted max for good, and every present then waited 4 s for its frame
+        // (Mario Kart World, about one boot in seven with the GPU thread split). The method goes
+        // on in the game's next entry. EDEN_NX2_ISOLATE_BUILT_LISTS=0: parse them inside it.
+        static const bool isolate = [] {
+            const char* value = std::getenv("EDEN_NX2_ISOLATE_BUILT_LISTS");
+            return value == nullptr || value[0] != '0';
+        }();
+        if (command_resume_offset == 0 &&
+            (dma_state.method_count != 0 || dma_state.skip_words != 0 ||
+             dma_state.length_pending != 0)) {
+            static std::atomic<u32> reported{};
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 32) {
+                LOG_WARNING(HW_GPU,
+                            "Channel {}: one of Eden's lists ({} words) comes inside method {:#x} "
+                            "of subchannel {} ({} words left, non-incrementing {}, {} to skip), "
+                            "{}",
+                            channel_state.bind_id, prefetch_size, dma_state.method,
+                            dma_state.subchannel, dma_state.method_count,
+                            dma_state.non_incrementing, dma_state.skip_words,
+                            isolate ? "kept for the game's next entry" : "parsed as its data");
+            }
+        }
+        if (command_resume_offset == 0 && isolate) {
+            outer_dma_state = dma_state;
+            outer_increment_once = dma_increment_once;
+            dma_state.method_count = 0;
+            dma_state.length_pending = 0;
+            dma_state.skip_words = 0;
+            dma_state.non_incrementing = false;
+            dma_increment_once = false;
+        }
         const std::span<const CommandHeader> commands{command_list.prefetch_command_list};
+        in_built_list = true;
         command_resume_offset +=
             ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
+        in_built_list = false;
         if (puller.HasPendingAcquire()) {
             return false;
+        }
+        if (outer_dma_state) {
+            dma_state = *outer_dma_state;
+            dma_increment_once = outer_increment_once;
+            outer_dma_state.reset();
         }
         command_resume_offset = 0;
         dma_pushbuffer.pop_front();
@@ -373,12 +483,17 @@ bool DmaPusher::Step() {
         const bool wait_writers = writer_wait == 's' ? header.sync != 0 : writer_wait != '0';
         const bool written_before = gpu_written;
         bool writers_waited = false;
+        const u64 writers_start =
+            Tegra::Nx2StratoStats() && VideoCommon::GpuSplit::Get().Active()
+                ? VideoCommon::Nx2Strato::Now()
+                : 0;
         if (!gpu_written && wait_writers && Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
             Tegra::Nx2CommandLists() && VideoCommon::GpuSplit::Get().Active() &&
             VideoCommon::GpuSplit::Get().WaitForWriters()) {
             writers_waited = true;
             gpu_written =
                 IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+            NoteWritersWait(writers_start, dma_state.dma_get, size_t{header.size} * sizeof(u32));
         }
         if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed) && Tegra::Nx2CommandLists()) {
             NoteEntrySync(header.sync != 0, written_before, writers_waited,
@@ -399,6 +514,16 @@ bool DmaPusher::Step() {
                                !gpu_written &&
                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
                                                                           header.size * sizeof(u32)));
+        entry_copy_flags =
+            (command_resume_offset == 0 ? 1U : 0U) |
+            (dma_pushbuffer_subindex < command_list.submitted_offsets.size() ? 2U : 0U) |
+            ((command_list.snapshot_suspensions & 1) == 0 ? 4U : 0U) |
+            (command_list.snapshot_suspensions == suspensions.load(std::memory_order_acquire)
+                 ? 8U
+                 : 0U) |
+            (gpu_written ? 16U : 0U) | (written_before ? 32U : 0U) |
+            (writers_waited ? 64U : 0U) | (submitted ? 128U : 0U) |
+            (static_cast<u32>(command_list.copied_at) << 8);
         const bool resume_same = ResumeSameWords() && command_resume_offset != 0 &&
                                  entry_record.address == header.addr &&
                                  entry_record.size == header.size &&
@@ -604,6 +729,70 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
                     static_cast<u32>(word_offset + index), command_header.argument};
             }
             // No command active - this is the first word of a new one
+            if (long_method_headers_left != 0 && !in_built_list) [[unlikely]] {
+                --long_method_headers_left;
+                LOG_WARNING(HW_GPU,
+                            "Channel {}: header after the long method: {:#010x} at word {} of "
+                            "entry {} (mode {}, method {:#x} sub {}, {} words, subchannel {})",
+                            channel_state.bind_id, command_header.argument, word_offset + index,
+                            dma_pushbuffer_subindex, static_cast<u32>(command_header.mode.Value()),
+                            static_cast<u32>(command_header.method),
+                            static_cast<u32>(command_header.subchannel),
+                            static_cast<u32>(command_header.method_count),
+                            subchannels[command_header.subchannel] != nullptr ? "bound"
+                                                                               : "unbound");
+            }
+            // A method that claims far more words than its entry has left is a misparse more
+            // likely than data continued in the next entry: say where the words came from.
+            if (const size_t left = commands.size() - index - 1;
+                command_header.mode != SubmissionMode::Inline &&
+                static_cast<size_t>(command_header.method_count) > left + 256 &&
+                g_nx2_ampere.load(std::memory_order_relaxed)) {
+                static std::atomic<u32> reported{};
+                if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
+                    std::array<u32, 4> before{};
+                    for (size_t i = 0; i < before.size() && i < index; ++i) {
+                        before[before.size() - 1 - i] = commands[index - 1 - i].argument;
+                    }
+                    // Against the list's submit-time copy of this entry, when it has one.
+                    std::string copy = "no copy";
+                    if (!dma_pushbuffer.empty()) {
+                        const CommandList& list = dma_pushbuffer.front();
+                        if (dma_pushbuffer_subindex < list.submitted_offsets.size() &&
+                            dma_pushbuffer_subindex < list.command_lists.size()) {
+                            const u32 offset = list.submitted_offsets[dma_pushbuffer_subindex];
+                            const size_t size = list.command_lists[dma_pushbuffer_subindex].size;
+                            size_t differ = 0;
+                            size_t first = ~size_t{0};
+                            for (size_t i = 0; word_offset + i < size && i < commands.size() &&
+                                               offset + word_offset + i <
+                                                   list.submitted_words.size();
+                                 ++i) {
+                                if (list.submitted_words[offset + word_offset + i].argument !=
+                                    commands[i].argument) {
+                                    ++differ;
+                                    first = (std::min)(first, word_offset + i);
+                                }
+                            }
+                            copy = differ == 0 ? std::string{"same as its copy"}
+                                               : fmt::format("{} words differ from its copy, the "
+                                                             "first at word {}",
+                                                             differ, first);
+                        }
+                    }
+                    long_method_headers_left = 6;
+                    long_method_entries_left = 4;
+                    LOG_WARNING(HW_GPU,
+                                "Channel {}: header {:#010x} at word {} (method {:#x} sub {}, {} "
+                                "words) with {} left in the entry ({}); words before {:08x}; "
+                                "entries {}",
+                                channel_state.bind_id, command_header.argument,
+                                word_offset + index, static_cast<u32>(command_header.method),
+                                static_cast<u32>(command_header.subchannel),
+                                static_cast<u32>(command_header.method_count),
+                                left, copy, fmt::join(before, " "), Nx2EntrySources());
+                }
+            }
             switch (command_header.mode) {
             case SubmissionMode::Increasing:
                 SetState(command_header);
@@ -765,6 +954,9 @@ void DmaPusher::CallMethod(u32 argument) {
                 split.NotePendingWriteAnywhere();
             }
         };
+        if (writer || direct_writer) {
+            Tegra::Nx2BumpPoolGeneration(); // may write the texture pools
+        }
         if (split.Active()) {
             const GPUVAddr segment = dma_state.dma_get + dma_state.dma_word_offset;
             if (split.FrontMacros()) {
@@ -833,6 +1025,9 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
                 split.NotePendingWriteAnywhere();
             }
         };
+        if (writer || direct_writer) {
+            Tegra::Nx2BumpPoolGeneration(); // may write the texture pools
+        }
         if (split.Active()) {
             const GPUVAddr segment = dma_state.dma_get + dma_state.dma_word_offset;
             if (split.FrontMacros()) {
@@ -1059,7 +1254,10 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
         return false;
     }
     if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
-        split.WaitForWriters();
+        const u64 writers_start = Tegra::Nx2StratoStats() ? VideoCommon::Nx2Strato::Now() : 0;
+        if (split.WaitForWriters()) {
+            NoteWritersWait(writers_start, address, u64{count} * sizeof(u32));
+        }
     }
     using GpuWrittenList = VideoCore::RasterizerInterface::GpuWrittenList;
     command_headers.resize_destructive(count);
@@ -1132,14 +1330,37 @@ void DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
     // The caches belong to the split's back: it first runs what the front queued (the dispatch
     // that writes these words among it). The whole pages are flushed: their next lists read
     // guest memory until GPU work writes them again.
-    VideoCommon::GpuSplit::Get().Drain(VideoCommon::Nx2Profile::Zone::DrainCommandList);
+    namespace Strato = VideoCommon::Nx2Strato;
+    const bool stats = Tegra::Nx2StratoStats() && rasterizer != nullptr;
+    if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+        const u64 drain_start = stats ? Strato::Now() : 0;
+        split.Drain(VideoCommon::Nx2Profile::Zone::DrainCommandList);
+        NoteWritersWait(drain_start, address, size);
+    }
     const GPUVAddr first_page = address & ~GPUVAddr{0xfff};
     const GPUVAddr end_page = (address + size + 0xfff) & ~GPUVAddr{0xfff};
     if (memory_manager.IsMemoryDirty(first_page, end_page - first_page,
                                      VideoCommon::CacheType::BufferCache)) {
+        const bool done = stats && Strato::WriteDone(memory_manager, *rasterizer, address, size);
+        const u64 flush_start = stats ? Strato::Now() : 0;
         FlushCommandPages(first_page, end_page);
+        if (stats) {
+            Strato::NoteWait(Strato::Wait::ListFlush, Strato::Now() - flush_start, done);
+        }
     }
     NoteCommandPagesSynced(first_page, end_page);
+}
+
+void DmaPusher::NoteWritersWait(u64 start, GPUVAddr address, u64 size) {
+    // EDEN_NX2_STRATO_STATS: the split's front waited for its back (from `start`) before reading
+    // GPU-written words. Done: the last GPU write to their pages, recorded by now, is complete.
+    if (start == 0 || rasterizer == nullptr) {
+        return;
+    }
+    namespace Strato = VideoCommon::Nx2Strato;
+    const u64 waited = Strato::Now() - start;
+    Strato::NoteWait(Strato::Wait::SplitWriters, waited,
+                     Strato::WriteDone(memory_manager, *rasterizer, address, size));
 }
 
 void DmaPusher::FlushCommandPages(GPUVAddr first_page, GPUVAddr end_page) {
