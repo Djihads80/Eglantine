@@ -15,6 +15,7 @@
 #include "video_core/buffer_cache/usage_tracker.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/renderer_vulkan/vk_compute_pass.h"
+#include "video_core/renderer_vulkan/vk_host_import.h"
 #include "video_core/renderer_vulkan/vk_multi_range_buffer.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
@@ -190,6 +191,22 @@ public:
         return ref.mapped_span;
     }
 
+    /// Binds the guest's own memory at `host_ptr` as a uniform buffer, with no copy (the host GPU
+    /// reads the pages live). False when the memory cannot be imported or the offset does not
+    /// meet the uniform buffer alignment; the caller then copies as usual.
+    bool TryBindImportedUniformBuffer(const u8* host_ptr, u32 size) {
+        const u64 alignment = device.GetUniformBufferAlignment();
+        if (alignment > 1 && (reinterpret_cast<uintptr_t>(host_ptr) & 0xfff) % alignment != 0) {
+            return false;
+        }
+        HostImporter::Ref ref;
+        if (!host_importer.Get(host_ptr, size, ref)) {
+            return false;
+        }
+        guest_descriptor_queue.AddBuffer(ref.buffer, ref.address, ref.offset, size);
+        return true;
+    }
+
     /// The allocation of the latest BindMappedUniformBuffer call.
     [[nodiscard]] StreamUniformRef LastStreamUniformRef() const noexcept {
         return last_stream_uniform;
@@ -290,6 +307,7 @@ private:
     MemoryAllocator& memory_allocator;
     Scheduler& scheduler;
     StagingBufferPool& staging_pool;
+    HostImporter host_importer{device};
     GuestDescriptorQueue& guest_descriptor_queue;
 
     std::shared_ptr<QuadArrayIndexBuffer> quad_array_index_buffer;

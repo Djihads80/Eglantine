@@ -91,6 +91,7 @@ VK_DEFINE_HANDLE(VmaPool)
     EXTENSION(EXT, CONDITIONAL_RENDERING, conditional_rendering)                                   \
     EXTENSION(EXT, CONSERVATIVE_RASTERIZATION, conservative_rasterization)                         \
     EXTENSION(EXT, DEPTH_RANGE_UNRESTRICTED, depth_range_unrestricted)                             \
+    EXTENSION(EXT, EXTERNAL_MEMORY_HOST, external_memory_host)                                     \
     EXTENSION(EXT, MEMORY_BUDGET, memory_budget)                                                   \
     EXTENSION(EXT, ROBUSTNESS_2, robustness_2)                                                     \
     EXTENSION(EXT, SAMPLER_FILTER_MINMAX, sampler_filter_minmax)                                   \
@@ -970,6 +971,10 @@ FN_MAX_LIMIT_LIST
     bool IsSharedInt64AtomicsSupported() const {
         return extensions.shader_atomic_int64 &&
                features.shader_atomic_int64.shaderSharedInt64Atomics;
+    }
+
+    bool IsExtExternalMemoryHost() const {
+        return extensions.external_memory_host;
     }
 
     bool IsExtConditionalRendering() const {

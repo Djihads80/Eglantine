@@ -1251,6 +1251,35 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     const bool native_bank = has_host_buffer && size != 0 && gpu_memory != nullptr &&
                              gpu_memory->UsesNativeTiling() &&
                              !memory_tracker.IsRegionGpuModified(device_addr, size);
+    // EDEN_NX2_HOST_IMPORT=1 (experimental): a native 64 KiB bank nothing on the GPU writes is read
+    // by the host GPU from the guest's own pages, with no copy and no re-upload. Debug knob 10
+    // inverts it while the game runs.
+    if constexpr (requires { runtime.TryBindImportedUniformBuffer(static_cast<const u8*>(nullptr), u32{}); }) {
+        static const bool import_start = [] {
+            const char* value = std::getenv("EDEN_NX2_HOST_IMPORT");
+            return value != nullptr && value[0] == '1';
+        }();
+        if (native_bank && (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000 &&
+            VideoCommon::Nx2Knob::Live(import_start, VideoCommon::Nx2Knob::HostImport)) {
+            static std::atomic<u64> imported{0}, copied{0}, no_span{0}, no_import{0};
+            const u8* const host_ptr = device_memory.GetSpan(device_addr, size);
+            if (host_ptr != nullptr && runtime.TryBindImportedUniformBuffer(host_ptr, size)) {
+                channel_state->fast_bound_uniform_buffers[stage] &= ~(1u << binding_index);
+                const u64 count = imported.fetch_add(1, std::memory_order_relaxed) + 1;
+                if ((count % 500000) == 0) {
+                    LOG_INFO(HW_GPU,
+                             "nx2: {} banks bound from guest memory, {} copied instead ({} not "
+                             "physically contiguous, {} unaligned or not importable)",
+                             count, copied.load(std::memory_order_relaxed),
+                             no_span.load(std::memory_order_relaxed),
+                             no_import.load(std::memory_order_relaxed));
+                }
+                return;
+            }
+            copied.fetch_add(1, std::memory_order_relaxed);
+            (host_ptr == nullptr ? no_span : no_import).fetch_add(1, std::memory_order_relaxed);
+        }
+    }
     if (bank_mode != '0' && native_bank &&
         (bank_mode == '3' || (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000) &&
         (bank_mode == '2' || bank_mode == '3' ||

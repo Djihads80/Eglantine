@@ -364,7 +364,7 @@ void RegisterSettingsTools(ToolRegistry& registry) {
                        "bit numbers, value replaces all. Changing needs writes. A set bit inverts "
                        "the EDEN_NX2_* variable it belongs to (video_core/nx2_knobs.h): 0 "
                        "FRONT_BATCH, 1 FRAMES_AHEAD, 2 FENCE_BATCH, 3 INLINE_DEFER, 4 MACRO_COPY, "
-                       "5 FLUSH_DRAWS=32, 6 FLUSH_DRAWS=512, 7 BANK_REUPLOAD off, 8 COND_MACRO off (default on), 9 BACK_WAIT (present waits for the back thread).",
+                       "5 FLUSH_DRAWS=32, 6 FLUSH_DRAWS=512, 7 BANK_REUPLOAD off, 8 COND_MACRO off (default on), 9 BACK_WAIT (present waits for the back thread), 10 HOST_IMPORT (native 64 KiB banks read guest memory in place).",
         .input_schema = {{"type", "object"},
                          {"properties",
                           {{"value", {{"type", "integer"}, {"minimum", 0}, {"maximum", 65535}}},

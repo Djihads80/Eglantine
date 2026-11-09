@@ -22,6 +22,7 @@ enum : u8 {
     BankReupload = 7,  ///< EDEN_NX2_BANK_REUPLOAD: off while set (white flashes may come back)
     BackWait = 9,      ///< EDEN_NX2_BACK_WAIT=1: at a present wait for the GPU back thread to finish the
                        ///< frame's commands (and the previous fence), not for this frame's fence
+    HostImport = 10,   ///< EDEN_NX2_HOST_IMPORT=1: 64 KiB native uniform banks read the guest's pages in place (no copy)
     CondMacro = 8,     ///< EDEN_NX2_COND_MACRO (on by default, =0 starts it off): the back evaluates render-enable predicate macros; the knob inverts
 };
 
