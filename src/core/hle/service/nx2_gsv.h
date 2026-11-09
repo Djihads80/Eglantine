@@ -1832,8 +1832,8 @@ private:
                          "nx2 timeline ({} frames): frame {:.2f} ms; {:.1f} lists, {:.0f} entries; "
                          "first submit {:.2f} ms after the previous present, last {:.2f} ms before "
                          "this one; front done {:+.2f} ms and back done {:+.2f} ms vs the present; "
-                         "fence wake {:.2f} ms after the back; waited {:.2f} ms; front busy "
-                         "{:.2f} ms, back busy {:.2f} ms",
+                         "fence wake {:.2f} ms after the back; waited {:.2f} ms; front CPU "
+                         "{:.2f} ms, back CPU {:.2f} ms per frame",
                          frames, frame, lists, words, guest_first, last_submit, lag_front, lag_back,
                          wake, waited_ms, front_busy, back_busy);
             });

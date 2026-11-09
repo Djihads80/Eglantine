@@ -175,7 +175,7 @@ private:
                 ++total[side];
                 ++leaf[side][Where(sample.pc[0])];
                 std::string text;
-                for (int i = 0; i < std::min<int>(sample.depth, 9); ++i) {
+                for (int i = 0; i < std::min<int>(sample.depth, Depth); ++i) {
                     text += (i != 0 ? " < " : "") + Where(sample.pc[i]);
                 }
                 ++chain[side][text];
@@ -198,10 +198,9 @@ private:
                     chains.emplace_back(count, where);
                 }
                 std::sort(chains.rbegin(), chains.rend());
-                for (size_t i = 0; i < std::min<size_t>(chains.size(), 15); ++i) {
-                    LOG_INFO(HW_GPU, "nx2 sampler {} chain {:5.1f}% {}", side ? "back" : "front",
-                             100.0 * chains[i].first / static_cast<double>(std::max<u64>(total[side], 1)),
-                             chains[i].second);
+                for (size_t i = 0; i < std::min<size_t>(chains.size(), 3000); ++i) {
+                    LOG_INFO(HW_GPU, "nx2 sampler {} chain {} of {}: {}", side ? "back" : "front",
+                             chains[i].first, total[side], chains[i].second);
                 }
             }
             // Each report covers its own 20 s window.

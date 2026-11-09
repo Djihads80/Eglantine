@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <ctime>
 
 #include "common/common_types.h"
 
@@ -32,6 +33,8 @@ struct Stamps {
     std::array<std::atomic<u64>, Entries> front{};
     std::array<std::atomic<u64>, Entries> back{};
     std::array<std::atomic<u32>, Entries> words{};
+    std::array<std::atomic<u64>, Entries> front_cpu{}; ///< Thread CPU time at front done
+    std::array<std::atomic<u64>, Entries> back_cpu{};  ///< ... and at back done
     std::atomic<u64> submitted{0};
 };
 inline Stamps g_stamps;
@@ -56,14 +59,22 @@ inline Stamps g_stamps;
     return seq;
 }
 
+[[nodiscard]] inline u64 ThreadCpuNow() {
+    timespec ts{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return static_cast<u64>(ts.tv_sec) * 1'000'000'000ULL + static_cast<u64>(ts.tv_nsec);
+}
+
 inline void OnFront(u64 seq) {
     if (seq != 0) {
+        g_stamps.front_cpu[seq % Entries].store(ThreadCpuNow(), std::memory_order_relaxed);
         g_stamps.front[seq % Entries].store(Now(), std::memory_order_release);
     }
 }
 
 inline void OnBack(u64 seq) {
     if (seq != 0) {
+        g_stamps.back_cpu[seq % Entries].store(ThreadCpuNow(), std::memory_order_relaxed);
         g_stamps.back[seq % Entries].store(Now(), std::memory_order_release);
     }
 }
@@ -106,6 +117,14 @@ public:
                 }
             }
             if (last_front != 0 && last_back != 0) {
+                const u64 front_cpu_now = at(g_stamps.front_cpu, last);
+                const u64 back_cpu_now = at(g_stamps.back_cpu, last);
+                if (previous_front_cpu != 0) {
+                    front_cpu_total += front_cpu_now - previous_front_cpu;
+                    back_cpu_total += back_cpu_now - previous_back_cpu;
+                }
+                previous_front_cpu = front_cpu_now;
+                previous_back_cpu = back_cpu_now;
                 ++frames;
                 lists += last - previous_seq;
                 Add(guest_before_first, first_submit, previous_return);
@@ -129,8 +148,12 @@ public:
             log(frames, static_cast<double>(lists) / n, static_cast<double>(total_words) / n,
                 ms(frame_time), ms(guest_before_first), ms(last_submit_before_present),
                 static_cast<double>(lag_front) / 1e6 / n, static_cast<double>(lag_back) / 1e6 / n,
-                ms(wake_after_back), ms(total_wait), ms(front_ms), ms(back_ms));
+                ms(wake_after_back), ms(total_wait), ms(front_cpu_total), ms(back_cpu_total));
+            const u64 keep_front = previous_front_cpu;
+            const u64 keep_back = previous_back_cpu;
             *this = FrameStats{};
+            previous_front_cpu = keep_front;
+            previous_back_cpu = keep_back;
             previous_seq = last;
             previous_enter = enter;
             previous_return = previous_return;
@@ -160,6 +183,10 @@ private:
     u64 total_wait{};
     u64 front_ms{};
     u64 back_ms{};
+    u64 front_cpu_total{};
+    u64 back_cpu_total{};
+    u64 previous_front_cpu{};
+    u64 previous_back_cpu{};
 };
 
 } // namespace VideoCommon::Nx2Timeline
