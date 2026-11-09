@@ -23,6 +23,7 @@
 #include "common/unique_function.h"
 #include "shader_recompiler/environment.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/host1x/gpu_device_memory_manager.h"
 
 namespace Tegra {
 class Memorymanager;
@@ -181,9 +182,46 @@ public:
 
     std::optional<Shader::ReplaceConstant> GetReplaceConstBuffer(u32 bank, u32 offset) override;
 
+    /// Copies the 3D engine state translation reads and stops using the engine, so the program
+    /// can be translated on a worker thread while the GPU thread moves on. Returns false, leaving
+    /// the environment unchanged, when the texture pool isn't one contiguous device range or the
+    /// GPU has written it.
+    [[nodiscard]] bool Detach(Tegra::MaxwellDeviceMemoryManager& device_memory);
+
+    /// Bytes of constant buffer contents copied by Detach (0 if not detached).
+    [[nodiscard]] size_t SnapshotSizeBytes() const noexcept;
+
 private:
+    /// The 3D engine state a detached environment reads instead of the engine.
+    struct EngineSnapshot {
+        struct ConstBuffer {
+            bool enabled{};
+            u32 size{};
+            /// One word longer than `size`, so a read at any offset below `size` stays inside.
+            std::vector<u8> bytes;
+        };
+        std::array<ConstBuffer, Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers> const_buffers;
+
+        /// The texture pool is located, not copied (it can hold thousands of entries); its
+        /// entries are read through the device memory manager, which outlives the GPU address
+        /// space.
+        Tegra::MaxwellDeviceMemoryManager* device_memory{};
+        DAddr texture_pool{};
+        u32 texture_pool_limit{};
+        bool via_header_index{};
+        bool native_tiling{};
+
+        u32 viewport_scale_offset_enabled{};
+        ::Common::unordered_map<u64, Tegra::Engines::Maxwell3D::HLEReplacementAttributeType>
+            replace_table;
+    };
+
+    /// Texture descriptor (TIC entry) of a texture handle, from the engine or the snapshot.
+    Tegra::Texture::TICEntry ReadTextureDescriptor(u32 handle);
+
     Tegra::Engines::Maxwell3D* maxwell3d{};
     size_t stage_index{};
+    std::optional<EngineSnapshot> snapshot;
 };
 
 class ComputeEnvironment final : public GenericEnvironment {
