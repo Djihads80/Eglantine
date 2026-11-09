@@ -31,6 +31,16 @@ enum class Type {
     CachedCPU,
     Untracked,
     Preflushable,
+    // EDEN_NX2_HOT_PAGES (hot_pages.h), kept by MemoryTrackerBase. A hot page always has its CPU
+    // and Untracked bits set: it is never write-protected and never taken as clean.
+    Hot,      ///< hot page
+    HotValid, ///< hot page whose shadow copy holds the bytes the GPU copy was uploaded from
+    NoHot,    ///< page that must never turn hot (the GPU writes it)
+    Faulted,  ///< this frame: CPU write faulted (or, on a hot page, the guest bytes changed)
+    Hist0,    ///< Faulted of the last four frames, newest first
+    Hist1,
+    Hist2,
+    Hist3,
     Max
 };
 
@@ -144,6 +154,23 @@ struct WordManager {
         CollectedRanges ranges;
         const bool affects_upload = type == Type::CPU || type == Type::CachedCPU;
         IterateWords(dirty_addr - cpu_addr, size, [&](size_t index, u64 mask) {
+            if (hot_tracking && affects_upload) {
+                const u64 hot = Span(Type::Hot)[index] & mask;
+                if (enable) {
+                    // Write faults feed the hot page history. A write noticed on a hot page means
+                    // its GPU copy may no longer match the shadow (new buffer, host write).
+                    const u64 faulted = mask & ~untracked_words[index];
+                    if (faulted != 0) {
+                        Span(Type::Faulted)[index] |= faulted;
+                        hot_activity = true;
+                    }
+                    Span(Type::HotValid)[index] &= ~hot;
+                } else {
+                    // Hot pages stay CPU-dirty and unprotected.
+                    Span(Type::HotValid)[index] &= ~hot;
+                    mask &= ~hot;
+                }
+            }
             const u64 before_cpu = affects_upload ? CpuWord(index) : 0;
             const u64 before_untracked = affects_upload ? UntrackedWord(index) : 0;
             if (type == Type::CPU || type == Type::CachedCPU) {
@@ -200,6 +227,10 @@ struct WordManager {
         CollectedRanges ranges;
         const bool affects_upload = clear && (type == Type::CPU || type == Type::CachedCPU);
         IterateWords(offset, size, [&](size_t index, u64 mask) {
+            if (hot_count != 0 && affects_upload) {
+                // Hot pages are synchronized by MemoryTrackerBase::ForEachHotUpload.
+                mask &= ~Span(Type::Hot)[index];
+            }
             const u64 before_cpu = affects_upload ? CpuWord(index) : 0;
             const u64 before_untracked = affects_upload ? UntrackedWord(index) : 0;
             if (type == Type::GPU)
@@ -404,6 +435,12 @@ struct WordManager {
     u64 cpu_generation = 1;
     // Words with a CPU bit or an untracked bit set. Zero means a later upload scan can stop.
     u32 upload_words = 0;
+    // EDEN_NX2_HOT_PAGES (MemoryTrackerBase): pages are tracked for it, hot pages here, and
+    // whether Faulted/history bits changed since the manager was last on the tick list.
+    bool hot_tracking = false;
+    bool hot_activity = false;
+    bool hot_listed = false;
+    u32 hot_count = 0;
 };
 
 } // namespace VideoCommon

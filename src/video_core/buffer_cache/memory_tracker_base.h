@@ -16,6 +16,7 @@
 
 #include "common/alignment.h"
 #include "common/common_types.h"
+#include "video_core/buffer_cache/hot_pages.h"
 #include "video_core/buffer_cache/word_manager.h"
 
 namespace VideoCommon {
@@ -80,8 +81,11 @@ public:
 
     /// Mark region as CPU modified, notifying the device_tracker about this change
     void MarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 query_size) {
-        IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
+        IteratePages<true>(dirty_cpu_addr, query_size, [this](Manager* manager, u64 offset, size_t size) {
             manager->ChangeRegionState(Type::CPU, true, manager->cpu_addr + offset, size);
+            if (manager->hot_activity) {
+                NoteHotActivity(manager);
+            }
         });
     }
 
@@ -94,7 +98,13 @@ public:
             page >= NUM_HIGH_PAGES || top_tier[page] == nullptr) {
             return 0;
         }
-        return top_tier[page]->CpuGeneration();
+        const Manager* const manager = top_tier[page];
+        // Guest writes to hot pages don't move the generation: such a range is never in sync.
+        if (manager->hot_count != 0 &&
+            manager->IsRegionModified(Type::Hot, query_cpu_addr & HIGHER_PAGE_MASK, query_size)) {
+            return 0;
+        }
+        return manager->CpuGeneration();
     }
 
     /// Unmark region as CPU modified, notifying the device_tracker about this change
@@ -106,7 +116,18 @@ public:
 
     /// Mark region as modified from the host GPU
     void MarkRegionAsGpuModified(VAddr dirty_cpu_addr, u64 query_size) noexcept {
-        IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
+        IteratePages<true>(dirty_cpu_addr, query_size, [this](Manager* manager, u64 offset, size_t size) {
+            if (manager->hot_tracking) {
+                // Pages the GPU writes go back to write tracking and never turn hot again: a
+                // CPU write to them has to be seen (downloads, GPU-modified ranges).
+                manager->IterateWords(offset, size, [&](size_t index, u64 mask) {
+                    const u64 hot = manager->Span(Type::Hot)[index] & mask;
+                    if (hot != 0) {
+                        DemoteHot(manager, index, hot);
+                    }
+                    manager->Span(Type::NoHot)[index] |= mask;
+                });
+            }
             manager->ChangeRegionState(Type::GPU, true, manager->cpu_addr + offset, size);
         });
     }
@@ -177,6 +198,186 @@ public:
             remaining_size -= copy_amount;
         }
         return false;
+    }
+
+    /// EDEN_NX2_HOT_PAGES: hot pages exist (ForEachHotUpload has work).
+    [[nodiscard]] bool HasHotPages() const noexcept {
+        return hot_total != 0;
+    }
+
+    /// EDEN_NX2_HOT_PAGES: synchronizes the hot pages of a range, which ForEachUploadRange
+    /// skips. Each one is compared with its shadow (the bytes its GPU copy came from); when
+    /// they differ, or it has no shadow yet, the shadow is refreshed from guest memory and
+    /// func(page_address, shadow_bytes) uploads the page from it. Pages that are not whole in
+    /// [buffer_begin, buffer_end) or not mapped go back to write tracking (normal upload).
+    /// Call it before ForEachUploadRange on the same range.
+    template <typename Func>
+    void ForEachHotUpload(VAddr query_cpu_range, u64 query_size, VAddr buffer_begin,
+                          VAddr buffer_end, Func&& func) {
+        if (hot_total == 0) {
+            return;
+        }
+        IteratePages<false>(query_cpu_range, query_size, [&](Manager* manager, u64 offset, size_t size) {
+            if (manager->hot_count == 0) {
+                return;
+            }
+            manager->IterateWords(offset, size, [&](size_t index, u64 mask) {
+                u64 hot = manager->Span(Type::Hot)[index] & mask;
+                while (hot != 0) {
+                    const u64 bit = hot & (~hot + 1);
+                    hot &= hot - 1;
+                    const VAddr page = manager->cpu_addr +
+                                       (index * PAGES_PER_WORD + std::countr_zero(bit)) * BYTES_PER_PAGE;
+                    const u8* const guest = GuestPage(page);
+                    u8* const shadow = shadows.Find(page);
+                    if (page < buffer_begin || page + BYTES_PER_PAGE > buffer_end ||
+                        guest == nullptr || shadow == nullptr) {
+                        // No upload this buffer took can be vouched for: CPU-dirty.
+                        manager->Span(Type::HotValid)[index] &= ~bit;
+                        DemoteHot(manager, index, bit);
+                        manager->Span(Type::NoHot)[index] |= bit;
+                        continue;
+                    }
+                    ++hot_stats.compares;
+                    u64& valid = manager->Span(Type::HotValid)[index];
+                    if ((valid & bit) != 0 && std::memcmp(guest, shadow, BYTES_PER_PAGE) == 0) {
+                        ++hot_stats.unchanged;
+                        continue;
+                    }
+                    std::memcpy(shadow, guest, BYTES_PER_PAGE);
+                    valid |= bit;
+                    manager->Span(Type::Faulted)[index] |= bit;
+                    NoteHotActivity(manager);
+                    ++hot_stats.uploads;
+                    func(page, static_cast<const u8*>(shadow));
+                }
+            });
+        });
+    }
+
+    /// EDEN_NX2_HOT_PAGES: the GPU copy of the range now holds these bytes (inline uploads,
+    /// written to guest memory too): hot pages' shadows take them, so the next comparison is
+    /// against what the GPU has.
+    void UpdateHotShadows(VAddr cpu_addr, std::span<const u8> bytes) {
+        if (hot_total == 0 || bytes.empty()) {
+            return;
+        }
+        IteratePages<false>(cpu_addr, bytes.size(), [&](Manager* manager, u64 offset, size_t size) {
+            if (manager->hot_count == 0) {
+                return;
+            }
+            manager->IterateWords(offset, size, [&](size_t index, u64 mask) {
+                u64 pages = manager->Span(Type::Hot)[index] & manager->Span(Type::HotValid)[index] & mask;
+                while (pages != 0) {
+                    const u64 bit = pages & (~pages + 1);
+                    pages &= pages - 1;
+                    const VAddr page = manager->cpu_addr +
+                                       (index * PAGES_PER_WORD + std::countr_zero(bit)) * BYTES_PER_PAGE;
+                    u8* const shadow = shadows.Find(page);
+                    if (shadow == nullptr) {
+                        continue;
+                    }
+                    const VAddr begin = (std::max)(page, cpu_addr);
+                    const VAddr end = (std::min)(page + BYTES_PER_PAGE, cpu_addr + bytes.size());
+                    std::memcpy(shadow + (begin - page), bytes.data() + (begin - cpu_addr), end - begin);
+                }
+            });
+        });
+    }
+
+    /// EDEN_NX2_HOT_PAGES: hot pages of the range must be uploaded again on their next
+    /// synchronization (their buffer was just created).
+    void InvalidateHotShadows(VAddr cpu_addr, u64 size) {
+        if (hot_total == 0) {
+            return;
+        }
+        IteratePages<false>(cpu_addr, size, [](Manager* manager, u64 offset, size_t range) {
+            if (manager->hot_count == 0) {
+                return;
+            }
+            manager->IterateWords(offset, range, [&](size_t index, u64 mask) {
+                manager->Span(Type::HotValid)[index] &= ~mask;
+            });
+        });
+    }
+
+    /// EDEN_NX2_HOT_PAGES, once a frame: moves the fault history along, turns pages whose writes
+    /// faulted in enough of the last four frames hot (eligible(page) vetoes) and returns hot
+    /// pages unchanged for four frames to write tracking.
+    template <typename Eligible>
+    void TickHotPages(Eligible&& eligible) {
+        if (!HotPages::Enabled()) {
+            return;
+        }
+        const u32 min_frames = HotPages::MinFrames();
+        const size_t max_pages = HotPages::MaxPages();
+        size_t kept = 0;
+        for (size_t i = 0; i < hot_list.size(); ++i) {
+            Manager* const manager = hot_list[i];
+            manager->hot_activity = false;
+            bool any = false;
+            for (size_t index = 0; index < Manager::num_words; ++index) {
+                u64& faulted = manager->Span(Type::Faulted)[index];
+                u64& h0 = manager->Span(Type::Hist0)[index];
+                u64& h1 = manager->Span(Type::Hist1)[index];
+                u64& h2 = manager->Span(Type::Hist2)[index];
+                u64& h3 = manager->Span(Type::Hist3)[index];
+                h3 = h2;
+                h2 = h1;
+                h1 = h0;
+                h0 = std::exchange(faulted, 0);
+                const u64 hot = manager->Span(Type::Hot)[index];
+                const u64 quiet = hot & ~(h0 | h1 | h2 | h3);
+                if (quiet != 0) {
+                    DemoteHot(manager, index, quiet);
+                }
+                const u64 candidates = HotPages::AtLeast(min_frames, h0, h1, h2, h3) & ~hot;
+                const u64 blocked = candidates & (manager->Span(Type::NoHot)[index] |
+                                                  manager->Span(Type::GPU)[index]);
+                hot_stats.blocked += static_cast<u64>(std::popcount(blocked));
+                u64 promote = candidates & ~blocked;
+                while (promote != 0) {
+                    const u64 bit = promote & (~promote + 1);
+                    promote &= promote - 1;
+                    const VAddr page = manager->cpu_addr +
+                                       (index * PAGES_PER_WORD + std::countr_zero(bit)) * BYTES_PER_PAGE;
+                    if (!eligible(page)) {
+                        manager->Span(Type::NoHot)[index] |= bit;
+                        ++hot_stats.refused;
+                        continue;
+                    }
+                    if (hot_total >= max_pages) {
+                        ++hot_stats.capped;
+                        continue;
+                    }
+                    [[maybe_unused]] u8* const shadow = shadows.Acquire(page);
+                    manager->Span(Type::Hot)[index] |= bit;
+                    ++manager->hot_count;
+                    ++hot_total;
+                    ++hot_stats.promoted;
+                    // CPU-dirty and unprotected from now on (no shadow yet: uploaded at its next
+                    // synchronization).
+                    manager->ChangeRegionState(Type::CPU, true, page, BYTES_PER_PAGE);
+                }
+                any = any || (h0 | h1 | h2 | h3 | manager->Span(Type::Hot)[index] |
+                              manager->Span(Type::Faulted)[index]) != 0;
+            }
+            if (any || manager->hot_activity) {
+                hot_list[kept++] = manager;
+            } else {
+                manager->hot_listed = false;
+            }
+        }
+        hot_list.resize(kept);
+    }
+
+    /// EDEN_NX2_HOT_PAGES statistics (buffer cache side).
+    [[nodiscard]] const HotPages::Stats& HotStats() const noexcept {
+        return hot_stats;
+    }
+
+    [[nodiscard]] size_t HotPageCount() const noexcept {
+        return hot_total;
     }
 
     /// Call 'func' for each CPU modified range and unmark those pages as CPU modified
@@ -285,6 +486,58 @@ private:
         }
     }
 
+    /// Guest memory of a device page (nullptr when unmapped, or for trackers without memory).
+    [[nodiscard]] const u8* GuestPage(VAddr page) {
+        if constexpr (requires(DeviceTracker& tracker, VAddr address) {
+                          tracker.template GetPointer<u8>(address);
+                      }) {
+            return device_tracker->template GetPointer<u8>(page);
+        } else {
+            return nullptr;
+        }
+    }
+
+    void NoteHotActivity(Manager* manager) {
+        if (!manager->hot_listed) {
+            manager->hot_listed = true;
+            hot_list.push_back(manager);
+        }
+    }
+
+    /// Returns hot pages (bits of word `index`) to write tracking. A page whose GPU copy matches
+    /// its shadow is marked clean (write-protected again) and then compared with guest memory:
+    /// a write before the protection shows as a difference and marks it CPU-dirty again, one
+    /// after it faults as usual. Any other page stays CPU-dirty and is uploaded on its next
+    /// synchronization.
+    void DemoteHot(Manager* manager, size_t index, u64 bits) {
+        u64& hot = manager->Span(Type::Hot)[index];
+        bits &= hot;
+        if (bits == 0) {
+            return;
+        }
+        hot &= ~bits;
+        const u64 valid = manager->Span(Type::HotValid)[index] & bits;
+        manager->Span(Type::HotValid)[index] &= ~bits;
+        const u32 count = static_cast<u32>(std::popcount(bits));
+        manager->hot_count -= count;
+        hot_total -= count;
+        hot_stats.demoted += count;
+        for (u64 pages = bits; pages != 0; pages &= pages - 1) {
+            const VAddr page = manager->cpu_addr +
+                               (index * PAGES_PER_WORD + std::countr_zero(pages)) * BYTES_PER_PAGE;
+            const u8* const shadow = shadows.Find(page);
+            if ((valid & (pages & (~pages + 1))) != 0 && shadow != nullptr) {
+                manager->ChangeRegionState(Type::CPU, false, page, BYTES_PER_PAGE);
+                const u8* const guest = GuestPage(page);
+                if (guest == nullptr || std::memcmp(guest, shadow, BYTES_PER_PAGE) != 0) {
+                    manager->ChangeRegionState(Type::CPU, true, page, BYTES_PER_PAGE);
+                }
+            }
+            shadows.Release(page);
+        }
+        NoteHotActivity(manager);
+    }
+
     void CreateRegion(std::size_t page_index) {
         const VAddr base_cpu_addr = page_index << HIGHER_PAGE_BITS;
         top_tier[page_index] = GetNewManager(base_cpu_addr);
@@ -301,6 +554,7 @@ private:
         }
         Manager* new_manager = free_managers.front();
         new_manager->cpu_addr = base_cpu_address;
+        new_manager->hot_tracking = HotPages::Enabled();
         free_managers.pop_front();
         return new_manager;
     }
@@ -310,6 +564,11 @@ private:
     std::deque<Manager*> free_managers;
     ::Common::unordered_set<u32> cached_pages;
     DeviceTracker* device_tracker = nullptr;
+    // EDEN_NX2_HOT_PAGES
+    std::vector<Manager*> hot_list; ///< managers with fault history or hot pages
+    HotPages::ShadowStore shadows;
+    HotPages::Stats hot_stats;
+    size_t hot_total = 0;
 };
 
 } // namespace VideoCommon

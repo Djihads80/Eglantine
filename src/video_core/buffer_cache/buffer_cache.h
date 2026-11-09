@@ -7,6 +7,8 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
+#include <cstring>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
@@ -112,6 +114,9 @@ void BufferCache<P>::TickFrame() {
     }
     runtime.TickFrame(slot_buffers);
     native_indirect_uniforms_this_frame.clear();
+    if (HotPages::Enabled()) {
+        TickHotPages();
+    }
     if (frame_tick % 600 == 0 && !uploaded_buffer_ranges.empty()) {
         for (const auto& [address, size] : uploaded_buffer_ranges) {
             device_memory.HintCold(address, size);
@@ -1235,6 +1240,10 @@ void BufferCache<P>::BindHostVertexBuffers() {
             Buffer& buffer = slot_buffers[binding.buffer_id];
             TouchBuffer(buffer, binding.buffer_id);
             SynchronizeBuffer(buffer, binding.device_addr, binding.size);
+            if (stale_vertex_buffers_mask != 0) [[unlikely]] {
+                // A hot page upload (EDEN_NX2_HOT_PAGES) into a repacked vertex buffer.
+                RefreshRepackedVertexBuffers();
+            }
             if (!flags[Dirty::VertexBuffer0 + index]) {
                 flush_bindings();
                 continue;
@@ -1277,6 +1286,9 @@ void BufferCache<P>::BindHostVertexBuffers() {
             Buffer& buffer = slot_buffers[binding.buffer_id];
             TouchBuffer(buffer, binding.buffer_id);
             SynchronizeBuffer(buffer, binding.device_addr, binding.size);
+            if (stale_vertex_buffers_mask != 0) [[unlikely]] {
+                RefreshRepackedVertexBuffers();
+            }
             if (!flags[Dirty::VertexBuffer0 + index]) {
                 continue;
             }
@@ -2727,6 +2739,8 @@ BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size,
     for (const BufferId overlap_id : overlap.ids) {
         JoinOverlap(new_buffer_id, overlap_id, !overlap.has_stream_leap);
     }
+    // Hot pages the joined buffers didn't hold are only zeros here.
+    memory_tracker.InvalidateHotShadows(new_buffer.CpuAddr(), size_bytes);
     Register(new_buffer_id);
     TouchBuffer(new_buffer, new_buffer_id);
     return new_buffer_id;
@@ -2821,6 +2835,21 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
         synced = SyncedRange{&buffer, device_addr, size, generation};
     }
     Nx2Profile::Add(Nx2Profile::Counter::SyncWalks, 1);
+    // EDEN_NX2_HOT_PAGES: hot pages first (one that goes back to write tracking here is then
+    // uploaded by the walk below).
+    bool hot_uploaded = false;
+    if (memory_tracker.HasHotPages()) {
+        hot_uploads.clear();
+        memory_tracker.ForEachHotUpload(device_addr, size, buffer.CpuAddr(),
+                                        buffer.CpuAddr() + buffer.SizeBytes(),
+                                        [&](DAddr page, const u8* bytes) {
+                                            hot_uploads.emplace_back(page, bytes);
+                                        });
+        if (!hot_uploads.empty()) {
+            UploadHotPages(buffer, hot_uploads);
+            hot_uploaded = true;
+        }
+    }
 #ifdef __ANDROID__
     const bool use_optimized_vertex_buffers = Settings::values.use_optimized_vertex_buffers.GetValue();
 #else
@@ -2852,7 +2881,7 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
             add_upload(upload_start, device_addr_out + range_size);
         });
         if (total_size_bytes == 0) {
-            return true;
+            return !hot_uploaded;
         }
         const std::span<BufferCopy> copies_span(upload_copies.data(), upload_copies.size());
         UploadMemory(buffer, total_size_bytes, largest_copy, copies_span);
@@ -2878,7 +2907,7 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
             largest_copy = (std::max)(largest_copy, range_size);
         });
         if (total_size_bytes == 0) {
-            return true;
+            return !hot_uploaded;
         }
         const std::span<BufferCopy> copies_span(copies.data(), copies.size());
         UploadMemory(buffer, total_size_bytes, largest_copy, copies_span);
@@ -2953,6 +2982,129 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
 }
 
 template <class P>
+void BufferCache<P>::UploadHotPages(Buffer& buffer,
+                                    std::span<const std::pair<DAddr, const u8*>> pages) {
+    constexpr u64 page_size = Core::DEVICE_PAGESIZE;
+    for (const auto& [page, bytes] : pages) {
+        MarkVertexBuffersStale(page, page_size);
+    }
+    if constexpr (USE_MEMORY_MAPS_FOR_UPLOADS) {
+        auto upload_staging = runtime.UploadStagingBuffer(pages.size() * page_size);
+        hot_copies.clear();
+        u64 src_offset = 0;
+        for (const auto& [page, bytes] : pages) {
+            std::memcpy(upload_staging.mapped_span.data() + src_offset, bytes, page_size);
+            if (Tegra::Nx2ClSpeculate()) {
+                Tegra::Nx2NoteUploadSig(page, std::span<const u8>(bytes, page_size));
+            }
+            const u64 dst_offset = buffer.Offset(page);
+            const u64 staging_offset = upload_staging.offset + src_offset;
+            if (!hot_copies.empty() &&
+                hot_copies.back().dst_offset + hot_copies.back().size == dst_offset &&
+                hot_copies.back().src_offset + hot_copies.back().size == staging_offset) {
+                hot_copies.back().size += page_size;
+            } else {
+                hot_copies.push_back(BufferCopy{
+                    .src_offset = staging_offset,
+                    .dst_offset = dst_offset,
+                    .size = page_size,
+                });
+            }
+            src_offset += page_size;
+        }
+        const std::span<BufferCopy> copies(hot_copies.data(), hot_copies.size());
+        const bool can_reorder = runtime.CanReorderUpload(buffer, copies);
+        for (const BufferCopy& copy : copies) {
+            NoteGpuWrite(buffer, buffer.CpuAddr() + copy.dst_offset, copy.size);
+        }
+        runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true, can_reorder);
+    } else {
+        for (const auto& [page, bytes] : pages) {
+            buffer.ImmediateUpload(buffer.Offset(page), std::span<const u8>(bytes, page_size));
+        }
+        any_buffer_uploaded = true;
+    }
+}
+
+template <class P>
+void BufferCache<P>::TickHotPages() {
+    // Never hot: Switch 2 GPU-written pages (command lists the GPU fills, culling results) and
+    // the command list pages the front reads.
+    memory_tracker.TickHotPages([](DAddr page) {
+        const u64 index = page >> Tegra::Nx2WrittenPageBits;
+        if (index < Tegra::g_nx2_gpu_written_pages.size() * 64 &&
+            ((Tegra::g_nx2_gpu_written_pages[index / 64].load(std::memory_order_relaxed) >>
+              (index % 64)) &
+             1) != 0) {
+            return false;
+        }
+        return !Tegra::Nx2IsCommandListPage(page);
+    });
+    struct Totals {
+        u64 protects, protect_pages, unprotects, faults, compares, unchanged, uploads, promoted,
+            demoted, refused, blocked, capped;
+        u64 frames;
+    };
+    static auto last_time = std::chrono::steady_clock::now();
+    static Totals last{};
+    static u64 frames = 0;
+    static bool announced = false;
+    ++frames;
+    if (!announced) {
+        announced = true;
+        LOG_INFO(HW_GPU,
+                 "Hot pages on (EDEN_NX2_HOT_PAGES): hot after write faults in {} of 4 frames, "
+                 "at most {} pages",
+                 HotPages::MinFrames(), HotPages::MaxPages());
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const double seconds = std::chrono::duration<double>(now - last_time).count();
+    if (seconds < 10.0) {
+        return;
+    }
+    const auto& shared = HotPages::g_shared;
+    const auto& stats = memory_tracker.HotStats();
+    const Totals totals{
+        shared.protects.load(std::memory_order_relaxed),
+        shared.protect_pages.load(std::memory_order_relaxed),
+        shared.unprotects.load(std::memory_order_relaxed),
+        shared.faults.load(std::memory_order_relaxed),
+        stats.compares,
+        stats.unchanged,
+        stats.uploads,
+        stats.promoted,
+        stats.demoted,
+        stats.refused,
+        stats.blocked,
+        stats.capped,
+        frames,
+    };
+    const auto rate = [seconds](u64 now_value, u64 last_value) {
+        return static_cast<double>(now_value - last_value) / seconds;
+    };
+    const u64 compares = totals.compares - last.compares;
+    const u64 ticks = (std::max<u64>)(totals.frames - last.frames, 1);
+    LOG_INFO(HW_GPU,
+             "Hot pages: {} hot (+{} -{} in {:.1f} s, {} refused, {:.0f} GPU-written candidates "
+             "a frame, {} capped) | protects {:.0f}/s ({:.0f} pages/s), unprotects {:.0f}/s, "
+             "write faults {:.0f}/s | hot syncs {:.0f}/s, {:.1f}% unchanged, extra upload {:.0f} "
+             "KiB/s",
+             memory_tracker.HotPageCount(), totals.promoted - last.promoted,
+             totals.demoted - last.demoted, seconds, totals.refused - last.refused,
+             static_cast<double>(totals.blocked - last.blocked) / static_cast<double>(ticks),
+             totals.capped - last.capped, rate(totals.protects, last.protects),
+             rate(totals.protect_pages, last.protect_pages), rate(totals.unprotects, last.unprotects),
+             rate(totals.faults, last.faults), rate(totals.compares, last.compares),
+             compares != 0 ? 100.0 * static_cast<double>(totals.unchanged - last.unchanged) /
+                                 static_cast<double>(compares)
+                           : 0.0,
+             rate(totals.uploads, last.uploads) * static_cast<double>(Core::DEVICE_PAGESIZE) /
+                 1024.0);
+    last = totals;
+    last_time = now;
+}
+
+template <class P>
 bool BufferCache<P>::InlineMemory(DAddr dest_address, size_t copy_size,
                                   std::span<const u8> inlined_buffer) {
     const bool is_dirty = IsRegionRegistered(dest_address, copy_size);
@@ -2980,6 +3132,7 @@ void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_
     BufferId buffer_id = FindBuffer(dest_address, static_cast<u32>(copy_size), false);
     auto& buffer = slot_buffers[buffer_id];
     SynchronizeBuffer(buffer, dest_address, static_cast<u32>(copy_size));
+    memory_tracker.UpdateHotShadows(dest_address, inlined_buffer.first(copy_size));
 
     if constexpr (USE_MEMORY_MAPS_FOR_UPLOADS) {
         auto upload_staging = runtime.UploadStagingBuffer(copy_size);

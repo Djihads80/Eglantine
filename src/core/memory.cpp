@@ -37,6 +37,7 @@
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/memory.h"
+#include "video_core/buffer_cache/hot_pages.h"
 #include "video_core/gpu.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/host1x/host1x.h"
@@ -511,6 +512,7 @@ struct Memory::Impl {
             const bool stats = Core::NceStats::Enabled();
             const u64 start = stats ? Core::NceStats::Ticks() : 0;
             host_buffer->Protect(vaddr, size, perm);
+            VideoCommon::HotPages::NoteProtect(cached, size);
             if (stats) {
                 auto& shared = Core::NceStats::Shared();
                 shared.cache_protects.fetch_add(1, std::memory_order_relaxed);
@@ -1391,6 +1393,7 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size, bool is_re
     const bool invalidated = rasterizer && !read_trap && !separate_heap_mapped;
     if (invalidated) {
         impl->InvalidateGPUMemory(ptr, size);
+        VideoCommon::HotPages::NoteFault();
     }
 
 #ifdef __ANDROID__
