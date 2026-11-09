@@ -42,6 +42,7 @@
 #include "video_core/host1x/syncpoint_manager.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_sampler.h"
 #include "video_core/renderer_base.h"
 #include "video_core/shader_notify.h"
 
@@ -202,6 +203,7 @@ struct GPU::Impl {
 
     void RendererFrameEndNotify() {
         system.GetPerfStats().EndGameFrame();
+        VideoCommon::Nx2Sampler::Frame();
     }
 
     /// Performs any additional setup necessary in order to begin GPU emulation.

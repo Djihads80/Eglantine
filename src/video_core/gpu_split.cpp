@@ -38,6 +38,7 @@
 #include "video_core/semaphore_ledger.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_sampler.h"
 
 namespace VideoCommon {
 
@@ -316,6 +317,8 @@ void GpuSplit::WaitForSpace(size_t words) {
     }
     Publish();
     Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain};
+    Nx2Sampler::Scope mark{Nx2Sampler::FrontOnBack +
+                           static_cast<u32>(Nx2Profile::Zone::SplitDrain)};
     for (u32 spins = 0;; ++spins) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (write_position + words - consumed_cache <= RingWords) {
@@ -428,6 +431,7 @@ void GpuSplit::Drain(Nx2Profile::Zone zone) {
     // waits on it: what the drain waits for may need that submission to finish (#593).
     RequestIdleHook();
     Nx2Profile::Scope scope{zone};
+    Nx2Sampler::Scope mark{Nx2Sampler::FrontOnBack + static_cast<u32>(zone)};
     auto next_report = std::chrono::steady_clock::now() + std::chrono::seconds{5};
     // Everything consumed is not enough: the back submits deferred work (Scheduler::DeferFlush)
     // from its idle hook afterwards, and the caller may use the scheduler once this returns.
@@ -482,6 +486,7 @@ bool GpuSplit::WaitForPosition(u64 position, Nx2Profile::Zone zone) {
     wait_target.store(target, std::memory_order_seq_cst);
     Publish();
     Nx2Profile::Scope scope{zone};
+    Nx2Sampler::Scope mark{Nx2Sampler::FrontOnBack + static_cast<u32>(zone)};
     for (u32 spins = 0;; ++spins) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (consumed_cache >= target) {
@@ -509,6 +514,7 @@ bool GpuSplit::WaitUntil(bool (*met)(void*), void* context, Nx2Profile::Zone zon
     wait_target.store(write_position, std::memory_order_seq_cst);
     Publish();
     Nx2Profile::Scope scope{zone};
+    Nx2Sampler::Scope mark{Nx2Sampler::FrontOnBack + static_cast<u32>(zone)};
     const auto start = std::chrono::steady_clock::now();
     bool result = false;
     for (u32 spins = 0;; ++spins) {
@@ -685,6 +691,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     // names the CPUs, =off leaves it to the kernel. EDEN_NX2_FRONT_CPUS and
     // EDEN_NX2_WORKER_CPUS: CPU lists for the GPU and VulkanWorker threads (placement tests).
     Common::PinCurrentThreadToFastestCores("EDEN_NX2_BACK_CPUS");
+    const Nx2Sampler::Registration sampled{Nx2Sampler::Role::Back};
     system->RegisterHostThread();
 #ifdef _WIN32
     g_back_thread_id.store(GetCurrentThreadId(), std::memory_order_relaxed);
@@ -698,12 +705,15 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         u64 available = published.load(std::memory_order_acquire);
         if (available == read_position) {
             Nx2Profile::Scope scope{Nx2Profile::Zone::SplitWait};
-            // The front usually sends more within microseconds: spin briefly before sleeping.
-            for (u32 spins = 0; spins < 8192 && available == read_position &&
-                                !hook_requested.load(std::memory_order_relaxed);
-                 ++spins) {
-                Pause();
-                available = published.load(std::memory_order_acquire);
+            {
+                // The front usually sends more within microseconds: spin briefly before sleeping.
+                Nx2Sampler::Scope mark{Nx2Sampler::BackSpin};
+                for (u32 spins = 0; spins < 8192 && available == read_position &&
+                                    !hook_requested.load(std::memory_order_relaxed);
+                     ++spins) {
+                    Pause();
+                    available = published.load(std::memory_order_acquire);
+                }
             }
             if (available == read_position) {
                 hook_requested.store(false, std::memory_order_seq_cst);
@@ -711,6 +721,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 // too, so the deferred submit can't overlap whatever the front does next.
                 if (!back_quiet.load(std::memory_order_relaxed)) {
                     if (idle_hook != nullptr) {
+                        Nx2Sampler::Scope mark{Nx2Sampler::BackHook};
                         idle_hook(idle_argument);
                     }
                     back_quiet.store(true, std::memory_order_seq_cst);
@@ -729,6 +740,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 // A request made after the hook ran (RequestIdleHook) runs it before sleeping.
                 if (available == read_position && !stop_token.stop_requested() &&
                     !hook_requested.load(std::memory_order_seq_cst)) {
+                    Nx2Sampler::Scope mark{Nx2Sampler::BackParked};
                     if constexpr (SleepingWaits) {
                         // A futex, not std::atomic::wait: libc++ spins with sched_yield first,
                         // and parks waiters in a shared table where a notify could miss this one.

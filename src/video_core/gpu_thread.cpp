@@ -27,6 +27,7 @@
 #include "video_core/gpu_split.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_sampler.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/renderer_base.h"
 
@@ -83,6 +84,8 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
         Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
         Common::SetCurrentThreadToPerformanceCores();
         Common::PinCurrentThreadFromEnvironment("EDEN_NX2_FRONT_CPUS");
+        namespace Sampler = VideoCommon::Nx2Sampler;
+        const Sampler::Registration sampled{Sampler::Role::Front};
         system.RegisterHostThread();
 
         auto current_context = context.Acquire();
@@ -106,6 +109,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     // 50 us for Ocarina of Time, 1 ms elsewhere). A channel still waiting after
                     // 2 s (menus, loading) goes back to 1 ms sleeps.
                     Profile::Scope scope{Profile::Zone::PendingSleep};
+                    Sampler::Scope mark{Sampler::FrontPending};
                     const auto waited = std::chrono::steady_clock::now() - last_progress;
                     if (waited < std::chrono::microseconds{500}) {
                         std::this_thread::yield();
@@ -118,6 +122,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 }
             } else {
                 Profile::Scope scope{Profile::Zone::Idle};
+                Sampler::Scope mark{Sampler::FrontIdle};
                 state.queue.PopWait(next, stop_token);
             }
             if (stop_token.stop_requested()) {
