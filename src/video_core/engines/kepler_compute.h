@@ -22,6 +22,7 @@
 #include "video_core/game_dlss_status.h"
 #include "video_core/macro.h"
 #include "video_core/native_qmd.h"
+#include "video_core/split_write_tracker.h"
 #include "video_core/textures/texture.h"
 
 namespace Core {
@@ -65,15 +66,6 @@ public:
     /// Binds a rasterizer to this engine.
     void BindRasterizer(VideoCore::RasterizerInterface* rasterizer);
 
-    /// Whether a write to `method` can write memory (a dispatch, upload or report): with the
-    /// native class, every method besides those that only store their value; macros always.
-    [[nodiscard]] bool MayWriteMemory(u32 method) const {
-        if (method >= native_plain_methods.size()) {
-            return true;
-        }
-        return native_mode ? !native_plain_methods[method] : execution_mask[method];
-    }
-
     /// The channel's MME data RAM, shared with its 3D engine.
     void SetNativeDataRam(std::array<u32, 0xc00>* data_ram) {
         native_data_ram = data_ram;
@@ -87,9 +79,14 @@ public:
         upload_state.SetNativePartialTransfers(native_mode);
         native_macro = shared_macro;
         native_macro_positions = positions;
-        if (native_mode)
+        if (native_mode) {
             execution_mask.set();
-        else {
+            for (u32 m = 0; m < native_plain_methods.size(); ++m) {
+                if (native_plain_methods[m]) {
+                    execution_mask[m] = false;
+                }
+            }
+        } else {
             execution_mask.reset();
             execution_mask[KEPLER_COMPUTE_REG_INDEX(exec_upload)] = true;
             execution_mask[KEPLER_COMPUTE_REG_INDEX(data_upload)] = true;
@@ -251,6 +248,8 @@ public:
     void CallMethod(Core::System& system, u32 method, u32 method_argument,
                     bool is_last_call) override;
 
+    void CallStateMethod(Core::System& system, u32 method, u32 method_argument) override;
+
     /// Write multiple values to the register identified by method.
     void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount,
                          u32 methods_pending) override;
@@ -262,6 +261,10 @@ public:
     bool IsNativeMode() const {
         return native_mode;
     }
+    /// NVIDIA DLSS (DLAA and Super Resolution) in place of Ocarina of Time's post-tonemap
+    /// anti-aliasing / upscaling (ocarina_upscale.h), when the setting is on: true when it
+    /// replaced this dispatch (the network's last pass).
+    bool ProcessOcarinaUpscale(u64 program_id, u64 native_key, u64 shader_hash);
     /// Whether the current native dispatch belongs to a recognized game DLSS evaluation.
     bool IsDlssDispatch() const {
         return native_mode && dlss_chain.active;
@@ -294,6 +297,10 @@ private:
     MacroEngine& FrontMacroEngine(FrontState& state);
     std::span<u32> FrontMacroPositions(FrontState& state);
     void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state);
+    /// What a method sent from the front may write on the back (GpuSplit::Effect).
+    VideoCommon::SplitWriteTracker::Effect FrontEffect(u32 method) const;
+    /// After sending it: the memory it writes, for the front's reads.
+    void FrontNoteWrites(VideoCommon::GpuSplit& split, FrontState& state, u32 method);
     std::unique_ptr<FrontState> front;
     bool front_macros{}; ///< The front owns the macro code and bindings (the back skips them)
 
@@ -306,7 +313,7 @@ private:
     void CheckDlssNetwork();
     [[nodiscard]] VideoCore::GameDlssReason GameDlssBlocker() const;
     void UpdateGameDlssStatus(bool complete, VideoCore::GameDlssReason blocker);
-    std::pair<std::vector<u32>, std::vector<u32>> NativeImageHandles(GPUVAddr program);
+    const std::pair<std::vector<u32>, std::vector<u32>>& NativeImageHandles(GPUVAddr program);
     bool UpscaleInsteadOfNativeProgram();
     void RememberNativeUpscaleInput();
     bool ReadConstBufferWords(u32 slot, std::vector<u32>& words) const;
@@ -347,6 +354,8 @@ private:
     /// Native dispatches left to skip while a retained network is being replaced (bounded, so a
     /// non-network pass cannot silence the engine forever).
     u32 network_skip_remaining{};
+    /// The tonemapped frame Ocarina of Time's anti-aliasing reads (ProcessOcarinaUpscale).
+    std::optional<Texture::TICEntry> ocarina_input;
 
     /// Mario Kart World's docked photo mode upscales 2560x1440 to 3840x2160 with a tensor-core
     /// network whose passes can't run. After its first rejected pass the next dispatches are
@@ -370,12 +379,32 @@ private:
     std::optional<Texture::TICEntry> dlss_depth;
     GPUVAddr dlss_motion_color{};
     std::array<f32, 2> dlss_jitter{};
+    struct RejectedComputeProgram {
+        std::string message;
+        bool emulates_tensor{};
+        bool matrix_multiply{};
+        u32 upscale_failures{};
+    };
+    std::unordered_map<GPUVAddr, RejectedComputeProgram> rejected_compute_programs;
     bool ProcessNativeMethod(Core::System& system, u32 method, u32 argument, bool is_last_call);
     NativeQmdScheduler native_qmd;
     std::array<u32, 0xc00>* native_data_ram{};
     bool native_mme_dumped{};
     std::optional<u32> native_executing_macro_logged;
     bool native_mode{};
+
+public:
+    /// Whether this method may write guest memory: dispatches, uploads and reports. Plain native
+    /// state does not.
+    [[nodiscard]] bool MayWriteMemory(u32 method) const {
+        if (method >= native_plain_methods.size()) {
+            return true;
+        }
+        return native_mode ? !native_plain_methods[method]
+                           : method < execution_mask.size() && execution_mask[method];
+    }
+
+private:
     NativeMacroContext* native_context{};
     bool native_compute_uploaded{};
     MacroEngine* native_macro{};

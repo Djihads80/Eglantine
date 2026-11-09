@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -173,6 +176,13 @@ void EmitStorageAtomicExchange32(EmitContext& ctx, IR::Inst& inst, const IR::Val
                                  const IR::Value& offset, std::string_view value) {
     ctx.AddU32("{}=atomicExchange({}_ssbo{}[{}>>2],{});", inst, ctx.stage_name, binding.U32(),
                ctx.var_alloc.Consume(offset), value);
+}
+
+void EmitStorageAtomicCompareExchange32(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
+                                        const IR::Value& offset, std::string_view comparator,
+                                        std::string_view value) {
+    ctx.AddU32("{}=atomicCompSwap({}_ssbo{}[{}>>2],{},{});", inst, ctx.stage_name, binding.U32(),
+               ctx.var_alloc.Consume(offset), comparator, value);
 }
 
 void EmitStorageAtomicIAdd64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
@@ -438,6 +448,10 @@ void EmitGlobalAtomicXor32(EmitContext&) {
 }
 
 void EmitGlobalAtomicExchange32(EmitContext&) {
+    throw NotImplementedException("GLSL Instruction");
+}
+
+void EmitGlobalAtomicCompareExchange32(EmitContext&) {
     throw NotImplementedException("GLSL Instruction");
 }
 

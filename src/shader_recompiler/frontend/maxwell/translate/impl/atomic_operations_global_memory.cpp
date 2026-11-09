@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
@@ -199,6 +199,25 @@ void TranslatorVisitor::ATOM(u64 insn) {
     } const atom{insn};
     const IR::U64 offset{AtomOffset(*this, insn)};
     GlobalAtomic(*this, atom.dest_reg, atom.operand_reg, offset, atom.size, atom.op, true);
+}
+
+void TranslatorVisitor::ATOM_cas(u64 insn) {
+    // ATOM.CAS Rd, [Ra + imm], Rb: if the word equals Rb, store Rb+1; Rd gets the old word.
+    union {
+        u64 raw;
+        BitField<0, 8, IR::Reg> dest_reg;
+        BitField<20, 8, IR::Reg> compare_reg;
+        BitField<49, 3, u64> size;
+    } const atom{insn};
+    if (atom.size != 0) {
+        throw NotImplementedException("ATOM.CAS size {}", atom.size.Value());
+    }
+    const IR::U64 offset{AtomOffset(*this, insn)};
+    // The register after R254 is RZ; IR::Reg arithmetic refuses to step onto it.
+    const IR::Reg value_reg{atom.compare_reg == IR::Reg::R254 ? IR::Reg::RZ
+                                                               : atom.compare_reg + 1};
+    X(atom.dest_reg,
+      ir.GlobalAtomicCompareExchange(offset, X(atom.compare_reg), X(value_reg)));
 }
 
 void TranslatorVisitor::RED(u64 insn) {

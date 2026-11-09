@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
@@ -76,6 +77,13 @@ inline void SetRecommendedSettings(Values& settings, const GamePreset& preset, b
         auto* setting = settings.linkage.by_key.at(recommendation.key);
         setting->SetGlobal(global);
         setting->LoadString(recommendation.value);
+    }
+    // DLSS does its own upscaling and anti-aliasing.
+    if (settings.nvidia_dlss.GetValue()) {
+        settings.scaling_filter.SetGlobal(global);
+        settings.scaling_filter.SetValue(ScalingFilter::Bilinear);
+        settings.anti_aliasing.SetGlobal(global);
+        settings.anti_aliasing.SetValue(AntiAliasing::None);
     }
 }
 

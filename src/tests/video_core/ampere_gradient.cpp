@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <algorithm>
 #include <array>
@@ -17,15 +18,16 @@ TEST_CASE("Ampere surface reductions preserve 3D coordinates", "[video_core][amp
         REQUIRE(lowered.required_texture_buffer == 0);
         REQUIRE(lowered.instructions.size() == 2);
         const u64 atomic = lowered.instructions[0];
-        REQUIRE((atomic & 0xfff0000000000000ULL) == 0xeb40000000000000ULL);
-        REQUIRE((atomic & 0xff) == 3); // data register
+        REQUIRE((atomic & 0xff80000000000000ULL) == 0xea00000000000000ULL);
+        REQUIRE((atomic & 0xff) == 255); // RZ (SURED discards old value)
         REQUIRE(((atomic >> 8) & 0xff) == 0); // first coordinate
         REQUIRE(((atomic >> 16) & 15) == 7); // original guard
-        REQUIRE(((atomic >> 20) & 7) == 0); // U32
-        REQUIRE(((atomic >> 24) & 7) == 0); // ADD
+        REQUIRE(((atomic >> 20) & 0xff) == 3); // data register
+        REQUIRE(((atomic >> 29) & 15) == 0); // ADD
         REQUIRE(((atomic >> 33) & 7) == dimension);
         REQUIRE(((atomic >> 36) & 0x1fff) == 0x22); // descriptor word offset
-        REQUIRE(((atomic >> 51) & 1) == 1); // bound descriptor
+        REQUIRE(((atomic >> 51) & 7) == 0); // U32
+        REQUIRE(((atomic >> 54) & 1) == 0); // bound descriptor
     }
     sured.words[0] = 0xfd00759f; // R253-R255 would cross into the zero register in 3D
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{sured, exit})));
@@ -37,10 +39,9 @@ TEST_CASE("Ampere surface reductions preserve 3D coordinates", "[video_core][amp
     sured = {{0x0000759f, 0xa0002403, 0x0310e000, 0x000fe200}};
     lowered = LowerToMaxwell(std::array{sured, exit});
     REQUIRE(static_cast<bool>(lowered));
-    REQUIRE(((lowered.instructions[0] >> 24) & 7) == 6); // OR
+    REQUIRE(((lowered.instructions[0] >> 29) & 15) == 6); // OR
     REQUIRE(((lowered.instructions[0] >> 33) & 7) == 5); // still 3D
-    sured.words[2] = 0x0010e000;
-    sured.words[2] |= 1U << 23; // unimplemented atomic operation must still be rejected
+    sured.words[2] = 0x0010e000 | (3U << 23); // unimplemented atomic operation must still be rejected
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{sured, exit})));
 }
 

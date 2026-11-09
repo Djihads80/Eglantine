@@ -233,9 +233,9 @@ TEST_CASE("Debug memory reads guest pages and names the first unmapped byte",
     REQUIRE(std::memcmp(out.data() + 0x10, guest.backing, 0x10) == 0);
     REQUIRE_FALSE(Core::Nx2Debug::ReadGuestMemory(memory, 0x7000, out));
     REQUIRE(std::memcmp(out.data(), guest.backing + 0x2000, out.size()) == 0);
-    REQUIRE(Core::Nx2Debug::ReadGuestMemory(memory, 0x5ff0, out) == 0x6000);
-    REQUIRE(Core::Nx2Debug::ReadGuestMemory(memory, 0x6800, out) == 0x6800);
-    REQUIRE(Core::Nx2Debug::ReadGuestMemory(memory, 0x100000, out) == 0x100000);
+    REQUIRE(Core::Nx2Debug::ReadGuestMemory(memory, 0x5ff0, out) == 0x6000u);
+    REQUIRE(Core::Nx2Debug::ReadGuestMemory(memory, 0x6800, out) == 0x6800u);
+    REQUIRE(Core::Nx2Debug::ReadGuestMemory(memory, 0x100000, out) == 0x100000u);
     // The top 16 bits would alias page 4 through GetPointerSilent's mask.
     REQUIRE(Core::Nx2Debug::ReadGuestMemory(memory, (1ULL << 48) | 0x4000, out) ==
             ((1ULL << 48) | 0x4000));

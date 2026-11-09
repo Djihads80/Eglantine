@@ -26,6 +26,7 @@
 #include "video_core/engines/engine_upload.h"
 #include "video_core/gpu.h"
 #include "video_core/macro.h"
+#include "video_core/split_write_tracker.h"
 #include "video_core/textures/texture.h"
 #include "video_core/engines/maxwell_3d.h"
 
@@ -35,6 +36,7 @@ class System;
 
 namespace Tegra {
 class MemoryManager;
+struct Nx2DrawPrograms;
 }
 
 namespace VideoCommon {
@@ -3114,6 +3116,9 @@ public:
         void SetInlineIndexBuffer(Maxwell3D& maxwell3d, u32 index);
         void SetInlineIndexBuffer(Maxwell3D& maxwell3d, u32 method, const u32* base_start, u32 amount);
         void DrawBegin(Maxwell3D& maxwell3d);
+        /// Nx2Perf draw_begin_coalesce: the effect of `repeats` more DrawBegin calls right after
+        /// one, with no write in between.
+        void AddInstances(Maxwell3D& maxwell3d, u32 repeats);
         void DrawEnd(Maxwell3D& maxwell3d, u32 instance_count = 1, bool force_draw = false);
         void DrawIndexSmall(Maxwell3D& maxwell3d, u32 argument);
         void DrawTexture(Maxwell3D& maxwell3d);
@@ -3199,8 +3204,19 @@ public:
     /// Write the value to the register identified by method.
     void CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) override;
 
+    void CallStateMethod(Core::System& system, u32 method, u32 argument) override;
+
     /// Write multiple values to the register identified by method.
     void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) override;
+
+    /// GpuSplit's back (fast_maxwell3d): CallMethod for each of up to 64 single writes to the
+    /// constant buffer data registers, uploaded in one memory write within a device page.
+    void CallConstBufferWords(Core::System& system, const u32* methods, const u32* arguments,
+                              u32 count);
+
+    /// GpuSplit's back (fast_maxwell3d): processes a contiguous run of non-executable state
+    /// register writes from the SPSC ring in one loop.
+    size_t CallStateMethodRun(const u64* entry, size_t max_words);
 
     /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by
     /// the front instead of CallMethod: runs macros and macro uploads against a copy of the
@@ -3209,11 +3225,24 @@ public:
                          u32 argument, bool is_last_call);
     void FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
                               const u32* base_start, u32 amount, u32 methods_pending);
-    /// LOCAL TEST (Zelda), EDEN_NX2_FRONT_BATCH=1: `count` incrementing register writes from
-    /// `method` on (all below the macro range), as `count` FrontCallMethod calls would make them.
-    /// `ends_method`: the last word is the method's last.
-    void FrontWriteRun(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
-                       const u32* words, u32 count, bool ends_method);
+    /// Nx2Perf FrontRun: FrontCallMethod for `count` words of one command below the macro
+    /// range, `methods_pending` of the command's words left at the first one.
+    void FrontCallMethodRun(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
+                            const u32* words, u32 count, bool incrementing, u32 methods_pending);
+    /// EDEN_NX2_PERF_VERIFY (FrontRun): FrontCallMethod appends its register writes here.
+    std::vector<std::array<u32, 3>>* front_run_record{};
+
+    [[nodiscard]] static bool FrontIsWriterDraw(const Regs& regs);
+    [[nodiscard]] static bool FrontIsWriterDraw(const std::array<u32, Regs::NUM_REGS>& regs) {
+        return FrontIsWriterDraw(reinterpret_cast<const Regs&>(regs));
+    }
+
+    /// Nx2Perf MacroReadWriterSet: the programs a draw with these registers binds, as the
+    /// pipeline cache resolves them (ShaderCache::RefreshStages). False when the draw may write
+    /// guest memory whatever its programs are: rasterizer off, transform feedback, task and mesh
+    /// programs.
+    [[nodiscard]] static bool Nx2DrawProgramsOf(const Regs& regs, bool native, u64 memory_id,
+                                                u64 map_serial, Tegra::Nx2DrawPrograms& out);
 
     bool ShouldExecute() const {
         return execute_on;
@@ -3288,6 +3317,12 @@ private:
     void ConsumeSinkImpl(Core::System& system) override;
 
     void ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call);
+
+    /// CallMethod with every check, for the cases and tools CallMethodFast leaves out.
+    void CallMethodSlow(Core::System& system, u32 method, u32 method_argument, bool is_last_call);
+    void CallMethodFast(u32 method, u32 method_argument, bool is_last_call);
+    /// EDEN_NX2_PERF_VERIFY: CallMethodFast's register state against CallMethodSlow's.
+    void VerifyCallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call);
 
     /// Retrieves information about a specific TIC entry from the TIC buffer.
     Texture::TICEntry GetTICEntry(u32 tic_index) const;
@@ -3394,8 +3429,18 @@ private:
     void ReleaseFront();
     void FrontWrite(VideoCommon::GpuSplit& split, FrontState& state, u32 method, u32 argument,
                     bool is_last_call, bool from_macro);
-    void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state);
-    void FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& state, u32 method, u32 count);
+    void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state,
+                       std::span<const u32> borrowed = {});
+    void FrontTrackInstanceLoop(FrontState& state, u32 method, u32 value);
+    bool FrontSkipsLoopWrite(FrontState& state, u32 method, u32 value, bool shadow_kept);
+    void FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& state, u32 macro, u32 method,
+                      u32 count);
+    bool FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& state, u32 macro, u32 method,
+                           GPUVAddr source, u32 ram, u32 words);
+    /// What the draw the front's registers describe may write (MacroReadWriterSet): Draw when
+    /// the back proved its exact programs write no memory, Gpu otherwise.
+    VideoCommon::SplitWriteTracker::Effect FrontDrawEffect(VideoCommon::GpuSplit& split,
+                                                           FrontState& state);
     void FrontVerify(VideoCommon::GpuSplit& split, FrontState& state);
     void FinishFrontMacro(Core::System& system);
     std::unique_ptr<FrontState> front;

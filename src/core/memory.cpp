@@ -577,8 +577,10 @@ struct Memory::Impl {
     }
 
     void RasterizerArmReadTraps(u64 vaddr, u64 size) {
-        // Clean cached read areas also need invalidation when reactive flushing is enabled.
-        read_trap_generation.fetch_add(1, std::memory_order_release);
+        if (Settings::values.use_reactive_flushing.GetValue()) {
+            // Clean cached read areas also need invalidation when reactive flushing is enabled.
+            read_trap_generation.fetch_add(1, std::memory_order_release);
+        }
         if (vaddr == 0 || size == 0 || !AddressSpaceContains(*current_page_table, vaddr, size) ||
             !ReadTrapsEnabled()) {
             return;
@@ -665,20 +667,36 @@ struct Memory::Impl {
             ASSERT_MSG(type != Common::PageType::Memory,
                        "Mapping memory page without a pointer @ {:016x}", base * YUZU_PAGESIZE);
 
+            last_mapped_table = nullptr;
             page_table.entries.ZeroRegion(base, end);
-        } else {
-            u64 mapping_id = block_count.load(std::memory_order_relaxed);
-            constexpr u64 exhausted_count =
-                u64{Common::PageTable::PageEntryData::INVALID_BLOCK_ID} + 1;
-            while (mapping_id < exhausted_count &&
-                   !block_count.compare_exchange_weak(mapping_id, mapping_id + 1,
-                                                      std::memory_order_relaxed)) {
-            }
-            const u16 current_block =
-                Common::PageTable::PageEntryData::BlockIdForMapping(mapping_id);
-            if (mapping_id == Common::PageTable::PageEntryData::INVALID_BLOCK_ID) {
-                LOG_WARNING(HW_Memory,
-                            "Page table block ids are exhausted; validating spans page by page");
+        } else if (base != end) {
+            const u64 first_host_ptr =
+                reinterpret_cast<u64>(system.DeviceMemory().GetPointer<u8>(target)) -
+                (base << YUZU_PAGEBITS);
+            u16 current_block = Common::PageTable::PageEntryData::INVALID_BLOCK_ID;
+            if (last_mapped_table == &page_table && base == last_mapped_end &&
+                first_host_ptr == last_mapped_host_ptr &&
+                last_mapped_block != Common::PageTable::PageEntryData::INVALID_BLOCK_ID) {
+                current_block = last_mapped_block;
+                last_mapped_end = end;
+            } else {
+                u64 mapping_id = block_count.load(std::memory_order_relaxed);
+                constexpr u64 exhausted_count =
+                    u64{Common::PageTable::PageEntryData::INVALID_BLOCK_ID} + 1;
+                while (mapping_id < exhausted_count &&
+                       !block_count.compare_exchange_weak(mapping_id, mapping_id + 1,
+                                                          std::memory_order_relaxed)) {
+                }
+                current_block =
+                    Common::PageTable::PageEntryData::BlockIdForMapping(mapping_id);
+                if (mapping_id == Common::PageTable::PageEntryData::INVALID_BLOCK_ID) {
+                    LOG_WARNING(HW_Memory,
+                                "Page table block ids are exhausted; validating spans page by page");
+                }
+                last_mapped_table = &page_table;
+                last_mapped_end = end;
+                last_mapped_host_ptr = first_host_ptr;
+                last_mapped_block = current_block;
             }
 
             page_table.entries.CommitRegion(base, end);
@@ -955,6 +973,10 @@ struct Memory::Impl {
     Common::HostMemory* host_buffer{};
 #endif
     std::atomic<u64> block_count = 0;
+    const Common::PageTable* last_mapped_table{};
+    u64 last_mapped_end{};
+    u64 last_mapped_host_ptr{};
+    u16 last_mapped_block{Common::PageTable::PageEntryData::INVALID_BLOCK_ID};
 };
 
 Memory::Memory(Core::System& system_) : system{system_} {

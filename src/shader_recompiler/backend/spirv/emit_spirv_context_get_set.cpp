@@ -422,13 +422,6 @@ void EmitSetAttribute(EmitContext& ctx, IR::Attribute attr, Id value, [[maybe_un
         value = ctx.OpBitcast(output->type, value);
     }
 
-    static constexpr IR::Attribute cd0 = IR::Attribute::ClipDistance0;
-    static constexpr IR::Attribute cd7 = IR::Attribute::ClipDistance7;
-
-    if (attr >= cd0 && attr <= cd7) {
-        const u32 idx = (u32) attr - (u32) cd0;
-        clip_distance_written.set(idx);
-    }
     ctx.OpStore(output->pointer, value);
 }
 

@@ -24,6 +24,7 @@
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/query_cache/bank_base.h"
 #include "video_core/query_cache/query_base.h"
 #include "video_core/query_cache/query_cache_base.h"
@@ -67,7 +68,11 @@ public:
         if (pending_sync.empty()) {
             return;
         }
-        std::vector<SyncValuesStruct> sync_values;
+        std::vector<SyncValuesStruct> local_values;
+        auto& sync_values = Nx2Perf::On(Nx2Perf::Opt::QueryUploadScratch) && !Nx2Perf::Verify()
+                                ? sync_values_stash
+                                : local_values;
+        sync_values.clear();
         sync_values.reserve(pending_sync.size());
         for (size_t pending_id : pending_sync) {
             auto& query = slot_queries[pending_id];
@@ -90,6 +95,7 @@ public:
 private:
     RuntimeType& runtime;
     std::deque<size_t> pending_sync;
+    std::vector<SyncValuesStruct> sync_values_stash;
 };
 
 template <typename Traits>
@@ -258,6 +264,20 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         return;
     }
     DAddr cpu_addr = *cpu_addr_opt;
+    u8* const pointer = impl->device_memory.template GetPointer<u8>(cpu_addr);
+    if (!is_fence && !Settings::IsGPULevelHigh() && counter_type == QueryType::Payload) {
+        if (has_timestamp) {
+            const u64 timestamp = impl->gpu.GetTicks();
+            const u64 value = static_cast<u64>(payload);
+            u8* const pointer_timestamp = impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
+            std::memcpy(pointer_timestamp, &timestamp, sizeof(timestamp));
+            std::memcpy(pointer, &value, sizeof(value));
+        } else {
+            std::memcpy(pointer, &payload, sizeof(payload));
+        }
+        Tegra::Nx2SemaphoreWaiters::Get().OnWrite(cpu_addr, payload);
+        return;
+    }
     const size_t new_query_id = streamer->WriteCounter(cpu_addr, has_timestamp, payload, subreport);
     auto* query = streamer->GetQuery(new_query_id);
     if (is_fence) {
@@ -270,11 +290,23 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         return std::make_pair<u64, u32>(cur_addr >> Core::DEVICE_PAGEBITS,
                                         static_cast<u32>(cur_addr & Core::DEVICE_PAGEMASK));
     };
-    u8* pointer = impl->device_memory.template GetPointer<u8>(cpu_addr);
-    u8* pointer_timestamp = impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
-    bool is_synced = (Settings::IsGPUFenceBehaviorDefault() ? !Settings::IsGPULevelHigh() : !Settings::IsGPUFenceBehaviorBalanced() && !Settings::IsGPUFenceBehaviorAccurate()) && is_fence;
-    std::function<void()> operation([this, is_synced, streamer, query_base = query, query_location,
-                                     pointer, pointer_timestamp, cpu_addr] {
+    const bool is_synced =
+        (Settings::IsGPUFenceBehaviorDefault()
+             ? !Settings::IsGPULevelHigh()
+             : !Settings::IsGPUFenceBehaviorBalanced() && !Settings::IsGPUFenceBehaviorAccurate()) &&
+        is_fence;
+    // Fits beside query_location and is_synced: the capture stays within the SBO limit below.
+    const u16 settle_slot = static_cast<u16>(Tegra::Nx2AsyncReportSlot(cpu_addr));
+    auto operation_fn = [this, query_base = query, pointer, query_location, is_synced,
+                         settle_slot] {
+        // Whatever path this takes, the slot's result write is done when it returns.
+        struct Settle {
+            u16 slot;
+            ~Settle() {
+                Tegra::g_nx2_async_reports_completed[slot].fetch_add(1,
+                                                                     std::memory_order_release);
+            }
+        } const settle{settle_slot};
         if (True(query_base->flags & QueryFlagBits::IsInvalidated)) {
             if (!is_synced) [[likely]] {
                 impl->pending_unregister.push_back(query_location);
@@ -289,37 +321,33 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
             }
             return;
         }
-        query_base->value += streamer->GetAmendValue();
-        streamer->SetAccumulationValue(query_base->value);
+        auto* const op_streamer = impl->streamers[query_location.stream_id.Value()];
+        query_base->value += op_streamer->GetAmendValue();
+        op_streamer->SetAccumulationValue(query_base->value);
+        const DAddr query_cpu_addr = query_base->guest_address;
         if (True(query_base->flags & QueryFlagBits::HasTimestamp)) {
-            u64 timestamp = impl->gpu.GetTicks();
+            const u64 timestamp = impl->gpu.GetTicks();
+            u8* const pointer_timestamp =
+                impl->device_memory.template GetPointer<u8>(query_cpu_addr + 8);
             std::memcpy(pointer_timestamp, &timestamp, sizeof(timestamp));
             std::memcpy(pointer, &query_base->value, sizeof(query_base->value));
         } else {
-            u32 value = static_cast<u32>(query_base->value);
+            const u32 value = static_cast<u32>(query_base->value);
             std::memcpy(pointer, &value, sizeof(value));
         }
-        Tegra::Nx2SemaphoreWaiters::Get().OnWrite(cpu_addr, static_cast<u32>(query_base->value));
+        Tegra::Nx2SemaphoreWaiters::Get().OnWrite(query_cpu_addr,
+                                                  static_cast<u32>(query_base->value));
         if (!is_synced) [[likely]] {
             impl->pending_unregister.push_back(query_location);
         }
-    });
+    };
+    static_assert(sizeof(operation_fn) <= 32,
+                  "CounterReport operation lambda should fit in std::function SBO");
+    std::function<void()> operation(std::move(operation_fn));
+    Tegra::g_nx2_async_reports_issued[settle_slot].fetch_add(1, std::memory_order_release);
     if (is_fence) {
         impl->rasterizer.SignalFence(std::move(operation));
     } else {
-        if (!Settings::IsGPULevelHigh() && counter_type == QueryType::Payload) {
-            if (has_timestamp) {
-                u64 timestamp = impl->gpu.GetTicks();
-                u64 value = static_cast<u64>(payload);
-                std::memcpy(pointer_timestamp, &timestamp, sizeof(timestamp));
-                std::memcpy(pointer, &value, sizeof(value));
-            } else {
-                std::memcpy(pointer, &payload, sizeof(payload));
-            }
-            Tegra::Nx2SemaphoreWaiters::Get().OnWrite(cpu_addr, payload);
-            streamer->Free(new_query_id);
-            return;
-        }
         impl->rasterizer.SyncOperation(std::move(operation));
     }
     if (is_synced) {
@@ -330,6 +358,7 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     {
         std::scoped_lock lock(cache_mutex);
         auto it1 = cached_queries.try_emplace(cont_addr);
+        page_filter.Mark(cpu_addr, 16);
         auto& sub_container = it1.first->second;
         auto it_current = sub_container.find(base);
         if (it_current == sub_container.end()) {
@@ -344,6 +373,9 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
 
 template <typename Traits>
 void QueryCacheBase<Traits>::UnregisterPending() {
+    if (impl->pending_unregister.empty()) {
+        return;
+    }
     const auto gen_caching_indexing = [](VAddr cur_addr) {
         return std::make_pair<u64, u32>(cur_addr >> Core::DEVICE_PAGEBITS,
                                         static_cast<u32>(cur_addr & Core::DEVICE_PAGEMASK));
@@ -363,6 +395,9 @@ void QueryCacheBase<Traits>::UnregisterPending() {
             if (it2 != it1->second.end()) {
                 if (it2->second.raw == loc.raw) {
                     it1->second.erase(it2);
+                    if (it1->second.empty()) {
+                        cached_queries.erase(it1);
+                    }
                 }
             }
         }

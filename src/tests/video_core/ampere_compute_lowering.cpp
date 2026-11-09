@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
@@ -11,6 +12,64 @@ using Shader::Ampere::Instruction;
 using Shader::Ampere::LowerToMaxwell;
 
 constexpr Instruction Exit{{0x0000794d, 0, 0x03800000, 0}};
+
+TEST_CASE("Ampere Ocarina high effective address negates the register base",
+          "[video_core][ampere]") {
+    const Instruction capture{{0x01017211, 0x80000000, 0x078ff0ff, 0x000fca00}};
+    for (const u32 guard : {1U, 7U, 9U}) {
+        auto instruction = capture;
+        instruction.words[0] = (instruction.words[0] & ~0xf000U) | (guard << 12);
+        const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
+        INFO(lowered.error);
+        REQUIRE(lowered);
+        REQUIRE(lowered.instructions.size() == 3);
+        CHECK(lowered.instructions[0] == (0x38280000002001faULL | (u64{guard} << 16)));
+        CHECK(lowered.instructions[1] == (0x5c1100000000fa01ULL | (u64{guard} << 16)));
+    }
+    for (const u32 bit : {62U, 74U, 81U}) {
+        auto invalid = capture;
+        invalid.words[bit / 32] ^= 1U << (bit % 32);
+        CHECK_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
+    }
+}
+
+TEST_CASE("Ampere surface reductions preserve every U32 atomic operation",
+          "[video_core][ampere]") {
+    for (u32 op = 0; op < 8; ++op) {
+        if (op == 3 || op == 4) continue;
+        for (const u32 dimension : {1U, 3U}) {
+            for (const u32 guard : {1U, 7U, 9U}) {
+                const Instruction instruction{{0x0400059fU | (guard << 12),
+                    0x00008400U | (dimension << 29), 0x0010e000U | (op << 23), 0}};
+                const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
+                INFO(lowered.error);
+                REQUIRE(lowered);
+                REQUIRE(lowered.required_texture_buffer == 0);
+                CHECK(lowered.instructions[0] == (0xea000000000004ffULL | (u64{guard} << 16) |
+                    (u64{op} << 29) | (u64{dimension} << 33) | (0x84ULL << 36)));
+                auto invalid = instruction;
+                invalid.words[2] |= 2U << 9;
+                CHECK_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
+            }
+        }
+    }
+}
+
+TEST_CASE("Half per-tap gathers prove offsets across an unrelated LEA.HI",
+          "[video_core][ampere][gather]") {
+    const Instruction lea{{0x08087211, 0x00000007, 0x078ff8ff, 0x000fc800}};
+    const Instruction gather{{0x0a0c7b63, 0x30003000, 0x001eaf0d, 0x000fc200}};
+    auto code = std::array{
+        Instruction{{0x00007802, 0xff00ff00, 0xf00, 0}},
+        Instruction{{0x00017802, 0x01000001, 0xf00, 0}},
+        lea, gather, Exit,
+    };
+    const auto lowered = LowerToMaxwell(code);
+    INFO(lowered.error);
+    REQUIRE(lowered);
+    code[2].words[0] = 0x08017211;
+    CHECK(LowerToMaxwell(code).error == "native per-tap gather nonconstant offsets");
+}
 
 TEST_CASE("Ampere LEA.HI with a constant base and no carry lowers", "[video_core][ampere]") {
     // LEA.HI R1, R17, c[0][0x0], RZ, 0x1e from Pokemon Pokopia's compute shaders.

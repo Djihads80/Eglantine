@@ -68,6 +68,38 @@ static u64 MakeIndirectCbufKey(u32 index, u32 offset, u32 indirect) {
            MakeCbufKey(index, offset);
 }
 
+// Constant buffer slots that held a null pointer when the program was translated and were
+// therefore not bound as storage buffers. A later non-null value makes the translation stale.
+static std::vector<std::pair<u32, u32>> NullStoragePointerSlots(
+    const ::Common::unordered_map<u64, u32>& cbuf_values,
+    const ::Common::unordered_map<u64, u8>& storage_pointer_types) {
+    std::vector<std::pair<u32, u32>> slots;
+    for (const auto& [key, type] : storage_pointer_types) {
+        if (type != 0 || (key >> 63) != 0) {
+            continue;
+        }
+        const auto low = cbuf_values.find(key);
+        const auto high = cbuf_values.find(key + 4);
+        if (low != cbuf_values.end() && high != cbuf_values.end() && low->second == 0 &&
+            high->second == 0) {
+            slots.emplace_back(static_cast<u32>(key >> 32), static_cast<u32>(key));
+        }
+    }
+    return slots;
+}
+
+static std::vector<u64> MappedStoragePointerKeys(
+    const ::Common::unordered_map<u64, u8>& storage_pointer_types) {
+    std::vector<u64> keys;
+    for (const auto& [key, type] : storage_pointer_types) {
+        if (type != 0) {
+            keys.push_back(key);
+        }
+    }
+    std::ranges::sort(keys);
+    return keys;
+}
+
 static Shader::TextureType ConvertTextureType(const Tegra::Texture::TICEntry& entry) {
     switch (entry.texture_type) {
     case Tegra::Texture::TextureType::Texture1D:
@@ -209,44 +241,6 @@ bool GenericEnvironment::IsCbufStorageBufferPointer(u32 index, u32 offset) {
     return mapped;
 }
 
-static void CollectStoragePointerSlots(const ::Common::unordered_map<u64, u8>& types,
-                                       const ::Common::unordered_map<u64, u32>& values,
-                                       std::vector<u64>& pointers, std::vector<u64>& null_slots) {
-    for (const auto& [key, type] : types) {
-        if ((key >> 63) != 0) {
-            continue; // pointer-table entries
-        }
-        if (type != 0) {
-            pointers.push_back(key);
-            continue;
-        }
-        const u32 index = static_cast<u32>(key >> 32);
-        const u32 offset = static_cast<u32>(key);
-        const auto low = values.find(MakeCbufKey(index, offset));
-        const auto high = values.find(MakeCbufKey(index, offset + 4));
-        if (low != values.end() && high != values.end() && low->second == 0 &&
-            high->second == 0) {
-            null_slots.push_back(key);
-        }
-    }
-}
-
-void GenericEnvironment::StoragePointerSlots(std::vector<u64>& pointers,
-                                             std::vector<u64>& null_slots) const {
-    CollectStoragePointerSlots(storage_pointer_types, cbuf_values, pointers, null_slots);
-}
-
-void GenericEnvironment::SeedStoragePointers(std::span<const u64> slots) {
-    for (const u64 key : slots) {
-        storage_pointer_types.emplace(key, u8{1});
-    }
-}
-
-void FileEnvironment::StoragePointerSlots(std::vector<u64>& pointers,
-                                          std::vector<u64>& null_slots) const {
-    CollectStoragePointerSlots(storage_pointer_types, cbuf_values, pointers, null_slots);
-}
-
 bool GenericEnvironment::IsCbufIndirectStorageBufferPointer(u32 index, u32 offset, u32 indirect) {
     const u64 key = MakeIndirectCbufKey(index, offset, indirect);
     if (const auto it = storage_pointer_types.find(key); it != storage_pointer_types.end()) {
@@ -264,6 +258,20 @@ bool GenericEnvironment::IsCbufIndirectStorageBufferPointer(u32 index, u32 offse
     }
     storage_pointer_types.emplace(key, static_cast<u8>(mapped));
     return mapped;
+}
+
+std::vector<std::pair<u32, u32>> GenericEnvironment::NullStoragePointerSlots() const {
+    return VideoCommon::NullStoragePointerSlots(cbuf_values, storage_pointer_types);
+}
+
+std::vector<u64> GenericEnvironment::MappedStoragePointerKeys() const {
+    return VideoCommon::MappedStoragePointerKeys(storage_pointer_types);
+}
+
+void GenericEnvironment::KeepStoragePointers(std::span<const u64> keys) {
+    for (const u64 key : keys) {
+        storage_pointer_types.insert_or_assign(key, u8{1});
+    }
 }
 
 std::optional<u64> GenericEnvironment::Analyze() {
@@ -421,9 +429,11 @@ Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr, 
     const auto handle{Tegra::Texture::TexturePair(raw, via_header_index)};
     const u32 index{Tegra::Texture::TextureHeaderIndex(handle.first, tic_limit,
                                                        gpu_memory->UsesNativeTiling())};
-    ASSERT(index <= tic_limit);
+    if (index > tic_limit) {
+        return {};
+    }
     const GPUVAddr descriptor_addr{tic_addr + index * sizeof(Tegra::Texture::TICEntry)};
-    Tegra::Texture::TICEntry entry;
+    Tegra::Texture::TICEntry entry{};
     gpu_memory->ReadBlock(descriptor_addr, &entry, sizeof(entry));
     return entry;
 }
@@ -1012,6 +1022,14 @@ bool FileEnvironment::IsNativeProgram() const {
     return Shader::Ampere::HasNativeAddressMap(code);
 }
 
+std::vector<std::pair<u32, u32>> FileEnvironment::NullStoragePointerSlots() const {
+    return VideoCommon::NullStoragePointerSlots(cbuf_values, storage_pointer_types);
+}
+
+std::vector<u64> FileEnvironment::MappedStoragePointerKeys() const {
+    return VideoCommon::MappedStoragePointerKeys(storage_pointer_types);
+}
+
 bool FileEnvironment::IsCbufStorageBufferPointer(u32 index, u32 offset) {
     const auto it = storage_pointer_types.find(MakeCbufKey(index, offset));
     if (it == storage_pointer_types.end()) {
@@ -1152,6 +1170,17 @@ void LoadPipelines(
     }
     if (!upgrading && (magic_number != MAGIC_NUMBER || cache_version != expected_cache_version)) {
         file.close();
+        if (cache_version != expected_cache_version && magic_number == MAGIC_NUMBER) {
+            std::filesystem::path backup = filename;
+            backup += fmt::format(".v{}", cache_version);
+            std::error_code ec;
+            std::filesystem::rename(filename, backup, ec);
+            if (!ec) {
+                LOG_INFO(Common_Filesystem, "Renamed old pipeline cache (v{}) to {}",
+                         cache_version, Common::FS::PathToUTF8String(backup));
+                return;
+            }
+        }
         if (Common::FS::RemoveFile(filename)) {
             if (magic_number != MAGIC_NUMBER) {
                 LOG_ERROR(Common_Filesystem, "Invalid pipeline cache file");

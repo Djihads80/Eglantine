@@ -52,6 +52,11 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
     std::copy_n(info.constant_buffer_used_sizes.begin(), uniform_buffer_sizes.size(),
                 uniform_buffer_sizes.begin());
     num_descriptor_entries = NumDescriptorEntries(info);
+    has_rescaling_push_constants =
+        !info.texture_descriptors.empty() || !info.image_descriptors.empty();
+    has_image_resources = has_rescaling_push_constants ||
+                          !info.texture_buffer_descriptors.empty() ||
+                          !info.image_buffer_descriptors.empty();
 
     DescriptorLayoutBuilder builder{device};
     builder.Add(info, VK_SHADER_STAGE_COMPUTE_BIT);
@@ -70,6 +75,8 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             uses_descriptor_buffer = false;
             descriptor_buffer_layout = {};
             descriptor_set_layout = builder.CreateDescriptorSetLayout(false);
+        } else {
+            last_descriptor_payload.reserve(num_descriptor_entries);
         }
     }
     pipeline_layout = builder.CreatePipelineLayout(*descriptor_set_layout);
@@ -82,7 +89,9 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         }
     }
 
-    auto func{[this, shader_notify, pipeline_statistics] {
+    const auto queued_at = std::chrono::steady_clock::now();
+    auto func{[this, shader_notify, pipeline_statistics, queued_at] {
+        const auto started_at = std::chrono::steady_clock::now();
         const VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroup_size_ci{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT,
             .pNext = nullptr,
@@ -93,7 +102,7 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         // A shader that lost a conditional barrier counts too: it relies on a whole warp running
         // in step, and at a smaller subgroup size it reads stale shared memory, which shows as
         // banding over the image in Mario Kart World on Intel's Windows driver.
-        const bool uses_warp_ops = info.UsesWarpOps();
+        const bool uses_warp_ops = info.UsesWarpOps() || info.uses_cooperative_matrix;
         VkPipelineCreateFlags flags{};
         if (device.IsKhrPipelineExecutablePropertiesEnabled() && Settings::values.renderer_debug.GetValue()) {
             flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
@@ -114,7 +123,10 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
                                  device.IsGuestWarpSizeSupported(VK_SHADER_STAGE_COMPUTE_BIT)
                              ? &subgroup_size_ci
                              : nullptr,
-                .flags = 0,
+                .flags = info.uses_cooperative_matrix
+                             ? VkPipelineShaderStageCreateFlags{
+                                   VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT}
+                             : VkPipelineShaderStageCreateFlags{},
                 .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                 .module = *spv_module,
                 .pName = "main",
@@ -151,6 +163,7 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         // Nothing reads the module once the pipeline exists; the driver keeps its SPIR-V while it
         // lives.
         spv_module.reset();
+        ReportPipelineBuild("Compute", shader_hash, queued_at, started_at);
         std::scoped_lock lock{build_mutex};
         is_built = true;
         build_condvar.notify_one();
@@ -160,7 +173,12 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
     }};
     build_task = std::move(func);
     if (thread_worker) {
-        thread_worker->QueueWork([this] { RunBuild(); });
+        build_task_done = false;
+        thread_worker->QueueWork([this] {
+            RunBuild();
+            // The last access to this pipeline from the worker.
+            build_task_done.store(true, std::memory_order::release);
+        });
     } else {
         RunBuild();
     }
@@ -191,143 +209,176 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
         ++ssbo_index;
     }
 
-    texture_cache.SynchronizeDescriptors(true);
-
-    boost::container::small_vector<VideoCommon::ImageViewInOut, 64> views;
-    boost::container::small_vector<VideoCommon::SamplerId, 64> samplers;
-
-    const auto& qmd{kepler_compute.launch_description};
-    const auto& cbufs{qmd.const_buffer_config};
-    const bool via_header_index{qmd.linked_tsc != 0};
-    const auto read_handle{[&](const auto& desc, u32 index) {
-        if (desc.handle_program != ~0U) {
-            // Read by the shader from a storage buffer: computed for this dispatch.
-            return TexturePair(VideoCommon::EvaluateTextureHandle(
-                                   info, desc.handle_program, gpu_memory,
-                                   [&](u32 cbuf) -> GPUVAddr {
-                                       return cbuf < cbufs.size() &&
-                                                      ((qmd.const_buffer_enable_mask >> cbuf) &
-                                                       1) != 0
-                                                  ? cbufs[cbuf].Address()
-                                                  : GPUVAddr{};
-                                   }),
-                               via_header_index);
-        }
-        ASSERT(((qmd.const_buffer_enable_mask >> desc.cbuf_index) & 1) != 0);
-        const u32 index_offset{index << desc.size_shift};
-        const u32 offset{desc.cbuf_offset + index_offset};
-        const GPUVAddr addr{cbufs[desc.cbuf_index].Address() + offset};
-        if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&> ||
-                      std::is_same_v<decltype(desc), const Shader::TextureBufferDescriptor&>) {
-            if (desc.has_secondary) {
-                ASSERT(((qmd.const_buffer_enable_mask >> desc.secondary_cbuf_index) & 1) != 0);
-                const u32 secondary_offset{desc.secondary_cbuf_offset + index_offset};
-                const GPUVAddr separate_addr{cbufs[desc.secondary_cbuf_index].Address() +
-                                             secondary_offset};
-                const u32 lhs_raw{gpu_memory.Read<u32>(addr) << desc.shift_left};
-                const u32 rhs_raw{gpu_memory.Read<u32>(separate_addr) << desc.secondary_shift_left};
-                return TexturePair(lhs_raw | rhs_raw, via_header_index);
-            }
-        }
-        return TexturePair(gpu_memory.Read<u32>(addr), via_header_index);
-    }};
-    const auto add_image{[&](const auto& desc, bool blacklist) {
-        for (u32 index = 0; index < desc.count; ++index) {
-            const auto handle{read_handle(desc, index)};
-            views.push_back({
-                .index = handle.first,
-                .blacklist = blacklist,
-                .id = {},
-            });
-        }
-    }};
-    for (const auto& desc : info.texture_buffer_descriptors) {
-        add_image(desc, false);
-    }
-    for (const auto& desc : info.image_buffer_descriptors) {
-        add_image(desc, false);
-    }
-    for (const auto& desc : info.texture_descriptors) {
-        for (u32 index = 0; index < desc.count; ++index) {
-            const auto handle{read_handle(desc, index)};
-            views.push_back({handle.first});
-
-            VideoCommon::SamplerId sampler = texture_cache.GetSamplerId(handle.second, true);
-            samplers.push_back(sampler);
-        }
-    }
-    for (const auto& desc : info.image_descriptors) {
-        add_image(desc, desc.is_written);
-    }
-    texture_cache.FillImageViews(std::span(views.data(), views.size()), true);
-    if (RecordingSampledTextures()) {
-        sampled_images.clear();
-        const size_t first = Shader::NumDescriptors(info.texture_buffer_descriptors) +
-                             Shader::NumDescriptors(info.image_buffer_descriptors);
-        const size_t count = Shader::NumDescriptors(info.texture_descriptors);
-        for (size_t view_index = first; view_index < first + count; ++view_index) {
-            sampled_images.push_back(
-                {views[view_index].index, views[view_index].id, samplers[view_index - first]});
-        }
-    }
-    if (RecordingWrittenImages()) {
-        written_images.clear();
-        size_t image_index{Shader::NumDescriptors(info.texture_buffer_descriptors) +
-                           Shader::NumDescriptors(info.image_buffer_descriptors) +
-                           Shader::NumDescriptors(info.texture_descriptors)};
-        for (const auto& desc : info.image_descriptors) {
-            for (u32 i = 0; i < desc.count; ++i, ++image_index) {
-                if (desc.is_written) {
-                    written_images.push_back(views[image_index].id);
-                }
-            }
-        }
-    }
-
-    buffer_cache.UnbindComputeTextureBuffers();
-    size_t index{};
-    const auto add_buffer{[&](const auto& desc) {
-        constexpr bool is_image = std::is_same_v<decltype(desc), const ImageBufferDescriptor&>;
-        for (u32 i = 0; i < desc.count; ++i) {
-            bool is_written{false};
-            if constexpr (is_image) {
-                is_written = desc.is_written;
-            }
-            ImageView& image_view = texture_cache.GetImageView(views[index].id);
-            PixelFormat format{image_view.format};
-            if constexpr (is_image) {
-                if (const auto explicit_format{PixelFormatFromImageFormat(desc.format)}) {
-                    format = *explicit_format;
-                }
-            }
-            buffer_cache.BindComputeTextureBuffer(index, image_view.GpuAddr(),
-                                                  image_view.BufferSize(), format,
-                                                  is_written, is_image);
-            ++index;
-        }
-    }};
-    std::ranges::for_each(info.texture_buffer_descriptors, add_buffer);
-    std::ranges::for_each(info.image_buffer_descriptors, add_buffer);
-
-    buffer_cache.UpdateComputeBuffers();
-    buffer_cache.BindHostComputeBuffers();
-    if (buffer_cache.any_buffer_uploaded) {
-        buffer_cache.runtime.PostCopyBarrier();
-        buffer_cache.any_buffer_uploaded = false;
-    }
-
     RescalingPushConstant rescaling;
-    const VideoCommon::SamplerId* samplers_it{samplers.data()};
-    const VideoCommon::ImageViewInOut* views_it{views.data()};
-    PushImageDescriptors(texture_cache, guest_descriptor_queue, info, rescaling, samplers_it,
-                         views_it);
+    if (has_image_resources) {
+        texture_cache.SynchronizeDescriptors(true);
+
+        boost::container::small_vector<VideoCommon::ImageViewInOut, 64> views;
+        boost::container::small_vector<VideoCommon::SamplerId, 64> samplers;
+
+        const auto& qmd{kepler_compute.launch_description};
+        const auto& cbufs{qmd.const_buffer_config};
+        const bool via_header_index{qmd.linked_tsc != 0};
+        const auto read_handle{[&](const auto& desc, u32 index) {
+            if (desc.handle_program != ~0U) {
+                // Read by the shader from a storage buffer: computed for this dispatch.
+                return TexturePair(VideoCommon::EvaluateTextureHandle(
+                                       info, desc.handle_program, gpu_memory,
+                                       [&](u32 cbuf) -> GPUVAddr {
+                                           return cbuf < cbufs.size() &&
+                                                          ((qmd.const_buffer_enable_mask >> cbuf) &
+                                                           1) != 0
+                                                      ? cbufs[cbuf].Address()
+                                                      : GPUVAddr{};
+                                       },
+                                       device.GetStorageBufferAlignment()),
+                                   via_header_index);
+            }
+            ASSERT(((qmd.const_buffer_enable_mask >> desc.cbuf_index) & 1) != 0);
+            const u32 index_offset{index << desc.size_shift};
+            const u32 offset{desc.cbuf_offset + index_offset};
+            const GPUVAddr addr{cbufs[desc.cbuf_index].Address() + offset};
+            if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&> ||
+                          std::is_same_v<decltype(desc), const Shader::TextureBufferDescriptor&>) {
+                if (desc.has_secondary) {
+                    ASSERT(((qmd.const_buffer_enable_mask >> desc.secondary_cbuf_index) & 1) != 0);
+                    const u32 secondary_offset{desc.secondary_cbuf_offset + index_offset};
+                    const GPUVAddr separate_addr{cbufs[desc.secondary_cbuf_index].Address() +
+                                                 secondary_offset};
+                    const u32 lhs_raw{gpu_memory.Read<u32>(addr) << desc.shift_left};
+                    const u32 rhs_raw{gpu_memory.Read<u32>(separate_addr)
+                                      << desc.secondary_shift_left};
+                    return TexturePair(lhs_raw | rhs_raw, via_header_index);
+                }
+            }
+            return TexturePair(gpu_memory.Read<u32>(addr), via_header_index);
+        }};
+        const auto add_image{[&](const auto& desc, bool blacklist) {
+            for (u32 index = 0; index < desc.count; ++index) {
+                const auto handle{read_handle(desc, index)};
+                views.push_back({
+                    .index = handle.first,
+                    .blacklist = blacklist,
+                    .id = {},
+                });
+            }
+        }};
+        for (const auto& desc : info.texture_buffer_descriptors) {
+            add_image(desc, false);
+        }
+        for (const auto& desc : info.image_buffer_descriptors) {
+            add_image(desc, false);
+        }
+        u32 last_sampler_handle = ~0U;
+        VideoCommon::SamplerId last_sampler{};
+        for (const auto& desc : info.texture_descriptors) {
+            for (u32 index = 0; index < desc.count; ++index) {
+                const auto handle{read_handle(desc, index)};
+                views.push_back({handle.first});
+
+                if (handle.second != last_sampler_handle) {
+                    last_sampler_handle = handle.second;
+                    last_sampler = texture_cache.GetSamplerId(handle.second, true);
+                }
+                samplers.push_back(last_sampler);
+            }
+        }
+        for (const auto& desc : info.image_descriptors) {
+            add_image(desc, desc.is_written);
+        }
+        if (!views.empty()) {
+            texture_cache.FillImageViews(std::span(views.data(), views.size()), true);
+        }
+        if (RecordingSampledTextures()) {
+            sampled_images.clear();
+            const size_t first = Shader::NumDescriptors(info.texture_buffer_descriptors) +
+                                 Shader::NumDescriptors(info.image_buffer_descriptors);
+            const size_t count = Shader::NumDescriptors(info.texture_descriptors);
+            for (size_t view_index = first; view_index < first + count; ++view_index) {
+                sampled_images.push_back(
+                    {views[view_index].index, views[view_index].id, samplers[view_index - first]});
+            }
+        }
+        if (RecordingWrittenImages()) {
+            written_images.clear();
+            size_t image_index{Shader::NumDescriptors(info.texture_buffer_descriptors) +
+                               Shader::NumDescriptors(info.image_buffer_descriptors) +
+                               Shader::NumDescriptors(info.texture_descriptors)};
+            for (const auto& desc : info.image_descriptors) {
+                for (u32 i = 0; i < desc.count; ++i, ++image_index) {
+                    if (desc.is_written) {
+                        written_images.push_back(views[image_index].id);
+                    }
+                }
+            }
+        }
+
+        buffer_cache.UnbindComputeTextureBuffers();
+        if (!info.texture_buffer_descriptors.empty() || !info.image_buffer_descriptors.empty()) {
+            size_t index{};
+            const auto add_buffer{[&](const auto& desc) {
+                constexpr bool is_image =
+                    std::is_same_v<decltype(desc), const ImageBufferDescriptor&>;
+                for (u32 i = 0; i < desc.count; ++i) {
+                    bool is_written{false};
+                    if constexpr (is_image) {
+                        is_written = desc.is_written;
+                    }
+                    ImageView& image_view = texture_cache.GetImageView(views[index].id);
+                    PixelFormat format{image_view.format};
+                    if constexpr (is_image) {
+                        if (const auto explicit_format{PixelFormatFromImageFormat(desc.format)}) {
+                            format = *explicit_format;
+                        }
+                    }
+                    buffer_cache.BindComputeTextureBuffer(index, image_view.GpuAddr(),
+                                                          image_view.BufferSize(), format,
+                                                          is_written, is_image);
+                    ++index;
+                }
+            }};
+            std::ranges::for_each(info.texture_buffer_descriptors, add_buffer);
+            std::ranges::for_each(info.image_buffer_descriptors, add_buffer);
+        }
+
+        buffer_cache.UpdateComputeBuffers();
+        buffer_cache.BindHostComputeBuffers();
+        if (buffer_cache.any_buffer_uploaded) {
+            buffer_cache.runtime.PostCopyBarrier();
+            buffer_cache.any_buffer_uploaded = false;
+        }
+
+        const VideoCommon::SamplerId* samplers_it{samplers.data()};
+        const VideoCommon::ImageViewInOut* views_it{views.data()};
+        PushImageDescriptors(texture_cache, guest_descriptor_queue, info, rescaling, samplers_it,
+                             views_it);
+    } else {
+        if (RecordingSampledTextures()) {
+            sampled_images.clear();
+        }
+        if (RecordingWrittenImages()) {
+            written_images.clear();
+        }
+        buffer_cache.UnbindComputeTextureBuffers();
+        buffer_cache.UpdateComputeBuffers();
+        buffer_cache.BindHostComputeBuffers();
+        if (buffer_cache.any_buffer_uploaded) {
+            buffer_cache.runtime.PostCopyBarrier();
+            buffer_cache.any_buffer_uploaded = false;
+        }
+    }
 
     if (!is_built.load(std::memory_order::relaxed)) {
         // Wait for the pipeline to be built
         scheduler.Record([this](vk::CommandBuffer) {
+            const auto begin = std::chrono::steady_clock::now();
             RunBuild();
-            std::unique_lock lock{build_mutex};
-            build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
+            {
+                std::unique_lock lock{build_mutex};
+                build_condvar.wait(lock,
+                                   [this] { return is_built.load(std::memory_order::relaxed); });
+            }
+            ReportPipelineBuildWait("Compute", shader_hash, begin);
         });
     }
 
@@ -340,22 +391,48 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     const DescriptorUpdateEntry* const descriptor_data{guest_descriptor_queue.UpdateData()};
     VkDeviceSize descriptor_buffer_offset{};
     u32 descriptor_buffer_chunk{};
-    if (uses_descriptor_buffer) {
-        const DescriptorBufferRing::Allocation alloc{
-            descriptor_buffer_ring.Allocate(scheduler, descriptor_buffer_layout.size)};
-        if (!alloc.host) {
-            LOG_DEBUG(Render_Vulkan, "Failed to reserve descriptor memory, skipping dispatch");
-            return false;
+    if (descriptor_set_layout && uses_descriptor_buffer) {
+        const bool reuse_allocation =
+            last_descriptor_buffer_generation == descriptor_buffer_ring.CurrentGeneration() &&
+            last_descriptor_payload.size() == num_descriptor_entries &&
+            std::memcmp(last_descriptor_payload.data(), descriptor_data,
+                        num_descriptor_entries * sizeof(DescriptorUpdateEntry)) == 0;
+        if (reuse_allocation) {
+            descriptor_buffer_offset = last_descriptor_buffer_offset;
+            descriptor_buffer_chunk = last_descriptor_buffer_chunk;
+            descriptor_buffer_ring.TouchFrame(scheduler);
+        } else {
+            const DescriptorBufferRing::Allocation alloc{
+                descriptor_buffer_ring.Allocate(scheduler, descriptor_buffer_layout.size)};
+            if (!alloc.host) {
+                LOG_DEBUG(Render_Vulkan, "Failed to reserve descriptor memory, skipping dispatch");
+                return false;
+            }
+            const bool can_diff = last_descriptor_buffer_generation == alloc.generation &&
+                                  last_descriptor_payload.size() == num_descriptor_entries;
+            if (last_descriptor_payload.size() != num_descriptor_entries) {
+                last_descriptor_payload.resize(num_descriptor_entries);
+            }
+            WriteDescriptorBuffer(device, descriptor_buffer_layout, descriptor_data, alloc.host,
+                                  last_descriptor_payload, last_descriptor_bytes, can_diff);
+            descriptor_buffer_offset = alloc.offset;
+            descriptor_buffer_chunk = alloc.chunk;
+            last_descriptor_buffer_offset = alloc.offset;
+            last_descriptor_buffer_chunk = alloc.chunk;
+            last_descriptor_buffer_generation = alloc.generation;
         }
-        WriteDescriptorBuffer(device, descriptor_buffer_layout, descriptor_data, alloc.host);
-        descriptor_buffer_offset = alloc.offset;
-        descriptor_buffer_chunk = alloc.chunk;
     }
 
     const bool bind_descriptor_buffer{
         uses_descriptor_buffer && scheduler.UpdateDescriptorBufferChunk(descriptor_buffer_chunk)};
+    if (descriptor_set_layout && !uses_descriptor_buffer) {
+        scheduler.InvalidateDescriptorBuffer();
+    }
 
-    const bool is_rescaling = !info.texture_descriptors.empty() || !info.image_descriptors.empty();
+    const bool is_rescaling = has_rescaling_push_constants;
+    if (is_rescaling) {
+        scheduler.InvalidateDescriptorBuffer();
+    }
     scheduler.Record([this, descriptor_data, is_rescaling, descriptor_buffer_offset,
                       descriptor_buffer_chunk, bind_descriptor_buffer,
                       rescaling_data = rescaling.Data()](vk::CommandBuffer cmdbuf) {

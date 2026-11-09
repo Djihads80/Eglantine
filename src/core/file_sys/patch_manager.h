@@ -71,6 +71,7 @@ public:
     // Currently tracked NSO patches:
     // - IPS
     // - IPSwitch
+    // - Built-in patches, keyed by title and build id
     [[nodiscard]] std::vector<u8> PatchNSO(const std::vector<u8>& nso,
                                            const std::string& name) const;
 

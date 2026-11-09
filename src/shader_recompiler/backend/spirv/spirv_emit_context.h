@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 
 #include <sirit/sirit.h>
 #include "common/container/unordered_set.h"
@@ -18,8 +19,6 @@
 #include "shader_recompiler/shader_info.h"
 
 namespace Shader::Backend::SPIRV {
-
-static std::bitset<8> clip_distance_written;
 
 using Sirit::Id;
 
@@ -160,6 +159,14 @@ struct GenericElementInfo {
     Id id{};
     u32 first_element{};
     u32 num_components{};
+};
+
+struct CooperativeHmmaTypes {
+    Id float16{};
+    Id float16x2{};
+    Id matrix_a{};
+    Id matrix_b{};
+    Id matrix_c{};
 };
 
 class EmitContext final : public Sirit::Module {
@@ -355,6 +362,7 @@ public:
         IAdd, SMin, UMin, SMax, UMax, Inc, Dec, And, Or, Xor, Exchange, AddF32, Count,
     };
     std::array<Id, static_cast<size_t>(GlobalAtomic::Count)> global_atomic_funcs{};
+    Id atomic_cas_global_func_u32{};
 
     bool need_input_position_indirect{};
     Id input_position{};
@@ -373,6 +381,7 @@ public:
     Id frag_depth{};
 
     std::array<Id, 2> software_matrix_functions{};
+    std::optional<CooperativeHmmaTypes> cooperative_hmma; ///< Set when a program lowers HMMA to it
     std::vector<Id> interfaces;
     std::vector<std::pair<u32, spv::Op>> opcode_rewrites;
 

@@ -5,6 +5,15 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 add_executable(tests
+    core/nx2_oot_time.cpp
+    video_core/unbacked_image_policy.cpp
+    core/builtin_patches.cpp
+    core/gpu_dirty_memory_manager.cpp
+    video_core/macro_dma_forward.cpp
+    video_core/gpu_timestamp.cpp
+    video_core/maxwell_fast_method.cpp
+    video_core/split_write_tracker.cpp
+    video_core/nx2_written_pages.cpp
     video_core/frame_dump_schedule.cpp
     core/nx2_debug_server.cpp
     core/system_test_context.h
@@ -25,6 +34,7 @@ add_executable(tests
     common/page_table.cpp
     common/param_package.cpp
     common/range_map.cpp
+    common/range_set_subtract.cpp
     common/ring_buffer.cpp
     common/scratch_buffer.cpp
     common/slot_vector.cpp
@@ -42,6 +52,13 @@ add_executable(tests
     core/internal_network/network.cpp
     video_core/frame_dump_schedule.cpp
     video_core/memory_tracker.cpp
+    video_core/nx2_perf.cpp
+    video_core/nx2_perf_draw_binds.cpp
+    video_core/nx2_perf_texture_writes.cpp
+    video_core/nx2_perf_native_qmd.cpp
+    video_core/nx2_perf_query_callback.cpp
+    video_core/nx2_perf_switches.cpp
+    video_core/memory_manager_runs.cpp
     video_core/nx2_sparse_residency.cpp
     video_core/spirv_storage_alignment.cpp
     video_core/pipeline_optimization.cpp
@@ -50,6 +67,7 @@ add_executable(tests
     video_core/ampere_depth_compare.cpp
     video_core/h264_packet.cpp
     video_core/vertex_repack.cpp
+    video_core/virtual_range_cache.cpp
     video_core/ampere_lowering.cpp
     video_core/spirv_software_matrix.cpp
     video_core/ampere_geometry.cpp
@@ -70,6 +88,7 @@ add_executable(tests
     video_core/ampere_vote.cpp
     video_core/shader_attributes.cpp
     video_core/indirect_reset.cpp
+    video_core/ocarina_upscale.cpp
     input_common/calibration_configuration_job.cpp
 )
 

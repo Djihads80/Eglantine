@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <span>
 
 #include "common/assert.h"
 #include "common/hex_util.h"
@@ -29,6 +30,7 @@
 #include "core/file_sys/vfs/vfs_layered.h"
 #include "core/file_sys/vfs/vfs_vector.h"
 #include "core/hle/service/filesystem/filesystem.h"
+#include "core/hle/service/nx2_oot_time.h"
 #include "core/hle/service/ns/language.h"
 #include "core/hle/service/set/settings_server.h"
 #include "core/loader/loader.h"
@@ -43,6 +45,56 @@ constexpr u32 SINGLE_BYTE_MODULUS = 0x100;
 constexpr std::array<const char*, 14> EXEFS_FILE_NAMES{
     "main",    "main.npdm", "rtld",    "sdk",     "subsdk0", "subsdk1", "subsdk2",
     "subsdk3", "subsdk4",   "subsdk5", "subsdk6", "subsdk7", "subsdk8", "subsdk9",
+};
+
+struct BuiltinPatchWord {
+    size_t module_offset;
+    u32 original;
+    u32 replacement;
+};
+
+/// All of a patch's words apply together, or none of them do.
+struct BuiltinPatch {
+    std::string_view name;
+    u64 title_id;
+    std::string_view module;
+    std::string_view build_id;
+    std::span<const BuiltinPatchWord> words;
+};
+
+constexpr std::array OCARINA_MAX_RESOLUTION{
+    BuiltinPatchWord{0x805BD0, 0x360041E8, 0x1400020F}, // tbz w8, #0, 0x80640c -> b 0x80640c
+};
+
+constexpr std::array OCARINA_REAL_TIME{
+    BuiltinPatchWord{Service::Nx2OotTime::DeltaOffset, 0x00000000, 0x3F800000}, // 1.0f
+    BuiltinPatchWord{Service::Nx2OotTime::LoadDeltaOffset, 0x00000000,
+                     0x1CFFFFE8}, // ldr s8, 0x3c461e0
+    BuiltinPatchWord{Service::Nx2OotTime::ReturnOffset, 0x00000000, 0x172A82B8}, // b 0x6e6cc8
+    // fdiv s8, s1, s0 -> b 0x3c461e4
+    BuiltinPatchWord{Service::Nx2OotTime::HookOffset, 0x1E201828,
+                     Service::Nx2OotTime::HookInstruction},
+};
+
+constexpr std::array BUILTIN_PATCHES{
+    // Ocarina of Time takes its "dynamic resolution disabled" path, so the 3D renders at full scale
+    // instead of following the GPU-time controller down to its 480p floor.
+    BuiltinPatch{
+        .name = "Max Resolution (built-in)",
+        .title_id = 0x0400486024DEC000,
+        .module = "main",
+        .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+        .words = OCARINA_MAX_RESOLUTION,
+    },
+    // Ocarina of Time's frame delta comes from the measured frame time, so it doesn't run in slow
+    // motion below 60 fps: see nx2_oot_time.h.
+    BuiltinPatch{
+        .name = "Real-time speed (built-in)",
+        .title_id = Service::Nx2OotTime::ProgramId,
+        .module = "main",
+        .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+        .words = OCARINA_REAL_TIME,
+    },
 };
 
 enum class TitleVersionFormat : u8 {
@@ -463,6 +515,66 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
         }
     }
 
+    const auto disabled = GetDisabledAddons();
+    for (const auto& patch : BUILTIN_PATCHES) {
+        if (patch.title_id != title_id || patch.module != name) {
+            continue;
+        }
+        if (patch.name == "Max Resolution (built-in)" && Settings::values.nvidia_dlss.GetValue()) {
+            if (Settings::values.nvidia_dlss_quality.GetValue() != Settings::DlssQuality::DLAA) {
+                LOG_INFO(Loader,
+                         "    - Skipping \"{}\": NVIDIA DLSS quality is set to Super Resolution "
+                         "(use DLAA for native 1440p)",
+                         patch.name);
+                continue;
+            }
+        } else if (std::find(disabled.cbegin(), disabled.cend(), patch.name) != disabled.cend()) {
+            LOG_INFO(Loader, "    - Skipping \"{}\": disabled in Add-Ons", patch.name);
+            continue;
+        }
+        if (patch.build_id != build_id) {
+            LOG_INFO(Loader, "    - Skipping \"{}\": build id {} is not {}", patch.name, build_id,
+                     patch.build_id);
+            continue;
+        }
+        const auto word_at = [](const std::vector<u8>& data, size_t offset) -> std::optional<u32> {
+            if (data.size() < offset + sizeof(u32)) {
+                return std::nullopt;
+            }
+            u32 word;
+            std::memcpy(&word, data.data() + offset, sizeof(word));
+            return word;
+        };
+        const bool applies = std::ranges::all_of(patch.words, [&](const BuiltinPatchWord& word) {
+            const size_t offset = sizeof(Loader::NSOHeader) + word.module_offset;
+            const auto original = word_at(nso, offset);
+            if (original != word.original) {
+                LOG_WARNING(Loader,
+                            "    - Skipping \"{}\": {}+{:#x} holds {:#010x}, expected {:#010x}",
+                            patch.name, name, word.module_offset, original.value_or(0),
+                            word.original);
+                return false;
+            }
+            if (const auto modded = word_at(out, offset); modded != word.original) {
+                LOG_INFO(Loader,
+                         "    - Skipping \"{}\": a user mod already patched {}+{:#x} to "
+                         "{:#010x}, the mod's patch is used",
+                         patch.name, name, word.module_offset, modded.value_or(0));
+                return false;
+            }
+            return true;
+        });
+        if (!applies) {
+            continue;
+        }
+        for (const auto& word : patch.words) {
+            std::memcpy(out.data() + sizeof(Loader::NSOHeader) + word.module_offset,
+                        &word.replacement, sizeof(word.replacement));
+            LOG_INFO(Loader, "    - Applying built-in patch \"{}\" at {}+{:#x}", patch.name, name,
+                     word.module_offset);
+        }
+    }
+
     if (out.size() < sizeof(Loader::NSOHeader)) {
         return nso;
     }
@@ -476,6 +588,12 @@ bool PatchManager::HasNSOPatch(const BuildID& build_id_, std::string_view name) 
     const auto build_id = build_id_raw.substr(0, build_id_raw.find_last_not_of('0') + 1);
 
     LOG_INFO(Loader, "Querying NSO patch existence for build_id={}, name={}", build_id, name);
+
+    if (std::ranges::any_of(BUILTIN_PATCHES, [&](const BuiltinPatch& patch) {
+            return patch.title_id == title_id && patch.module == name;
+        })) {
+        return true;
+    }
 
     const auto load_dir = GetModificationLoadRoot();
     if (load_dir == nullptr) {
@@ -1010,6 +1128,21 @@ std::vector<Patch> PatchManager::GetPatches(VirtualFile update_raw) const {
                            .title_id = title_id,
                            .source = PatchSource::Unknown});
         }
+    }
+
+    for (const auto& patch : BUILTIN_PATCHES) {
+        if (patch.title_id != title_id) {
+            continue;
+        }
+        const auto patch_disabled =
+            std::find(disabled.begin(), disabled.end(), patch.name) != disabled.end();
+        out.push_back({.enabled = !patch_disabled,
+                       .name = std::string{patch.name},
+                       .version = "IPS",
+                       .type = PatchType::Mod,
+                       .program_id = title_id,
+                       .title_id = title_id,
+                       .source = PatchSource::Unknown});
     }
 
     // DLC
