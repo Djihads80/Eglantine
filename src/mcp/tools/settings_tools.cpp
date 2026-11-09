@@ -361,7 +361,10 @@ void RegisterSettingsTools(ToolRegistry& registry) {
         .title = "Debug knobs",
         .description = "Read or change the 16 debug knob bits (Settings::GetDebugKnobAt) that "
                        "experimental code paths can check, to A/B a change live. set / clear take "
-                       "bit numbers, value replaces all. Changing needs writes.",
+                       "bit numbers, value replaces all. Changing needs writes. A set bit inverts "
+                       "the EDEN_NX2_* variable it belongs to (video_core/nx2_knobs.h): 0 "
+                       "FRONT_BATCH, 1 FRAMES_AHEAD, 2 FENCE_BATCH, 3 INLINE_DEFER, 4 MACRO_COPY, "
+                       "5 FLUSH_DRAWS=32, 6 FLUSH_DRAWS=512, 7 BANK_REUPLOAD off, 8 COND_MACRO off (default on), 9 BACK_WAIT (present waits for the back thread).",
         .input_schema = {{"type", "object"},
                          {"properties",
                           {{"value", {{"type", "integer"}, {"minimum", 0}, {"maximum", 65535}}},
