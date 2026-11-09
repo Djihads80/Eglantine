@@ -67,3 +67,8 @@ vulkansdk*.exe
 
 # Build-time generated external sources
 externals/generated
+
+# Nix
+/result
+/result-*
+.direnv/
