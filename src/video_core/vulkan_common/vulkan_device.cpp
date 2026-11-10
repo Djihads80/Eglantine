@@ -405,14 +405,19 @@ std::vector<const char*> ExtensionListForVulkan(
     return output;
 }
 
-// EDEN_NX2_QUEUE_PRIORITY=high|realtime: the global priority asked for the graphics queue
-// (VK_KHR/EXT_global_priority), as strato asks HIGH of drivers other than Turnip. Off by default
-// (the driver's medium) until the phone shows what it does to the waits for GPU-written pages.
-// Read when the device is made, after env.txt.
+// EDEN_NX2_QUEUE_PRIORITY=high|realtime|off: the global priority asked for the graphics queue
+// (VK_KHR/EXT_global_priority), as strato asks HIGH of drivers other than Turnip. On Android
+// high is the default (Odin 3 with Turnip: +0.4-0.7 fps in Mario Kart World, fewer frames over
+// 100 ms, Ocarina of Time unchanged); elsewhere the driver's medium. Read when the device is
+// made, after env.txt.
 std::optional<VkQueueGlobalPriorityKHR> RequestedQueuePriority() {
     const char* const value = std::getenv("EDEN_NX2_QUEUE_PRIORITY");
     if (value == nullptr) {
+#ifdef __ANDROID__
+        return VK_QUEUE_GLOBAL_PRIORITY_HIGH_KHR;
+#else
         return std::nullopt;
+#endif
     }
     const std::string_view name{value};
     if (name == "high") {
