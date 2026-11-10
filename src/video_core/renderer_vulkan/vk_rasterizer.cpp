@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <map>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -460,6 +461,41 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     // update engine as channel may be different.
     pipeline->SetEngine(maxwell3d, gpu_memory);
     if (mesh_draw && pipeline->IsMeshEmulated()) {
+        // EDEN_NX2_MESH_LOG=1: when an emulated task/mesh draw's workgroup count goes to zero or
+        // back (a batch that is not drawn for a frame: a shadow cascade left empty lights
+        // everything in it), and every 10 s how many such draws ran and were empty.
+        static const bool mesh_log = [] {
+            const char* const value = std::getenv("EDEN_NX2_MESH_LOG");
+            return value != nullptr && value[0] == '1';
+        }();
+        if (mesh_log) [[unlikely]] {
+            static std::map<std::pair<const void*, u32>, u32> last_groups;
+            static u64 draws = 0;
+            static u64 empty = 0;
+            static u32 lines = 0;
+            static auto window_start = std::chrono::steady_clock::now();
+            const auto& draw_state = maxwell3d->draw_manager.draw_state;
+            const u32 first = is_indexed ? draw_state.index_buffer.first : draw_state.vertex_buffer.first;
+            const u32 groups = pipeline->MeshGroups(is_indexed);
+            ++draws;
+            empty += groups == 0 ? 1 : 0;
+            const auto [it, added] = last_groups.try_emplace({pipeline, first}, groups);
+            if (!added && (it->second == 0) != (groups == 0) && lines < 4000) {
+                ++lines;
+                LOG_INFO(Render_Vulkan,
+                         "Emulated mesh draw {} first {} (channel {}): workgroups {} -> {}",
+                         fmt::ptr(pipeline), first, maxwell3d->GetMemoryManager().GetID(),
+                         it->second, groups);
+            }
+            it->second = groups;
+            if (const auto now = std::chrono::steady_clock::now();
+                now - window_start >= std::chrono::seconds{10}) {
+                LOG_INFO(Render_Vulkan, "Emulated mesh draws in 10 s: {}, {} without workgroups, {} kinds",
+                         draws, empty, last_groups.size());
+                draws = empty = 0;
+                window_start = now;
+            }
+        }
         if (pipeline->MeshGroups(is_indexed) == 0) {
             // No workgroups: nothing to draw, and no render pass to break for it.
             submitted = true;
