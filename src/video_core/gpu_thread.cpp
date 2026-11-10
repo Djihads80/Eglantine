@@ -18,7 +18,11 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/thread.h"
+#include "core/arm/debug.h"
 #include "core/core.h"
+#include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/k_light_lock.h"
+#include "core/hle/kernel/k_thread.h"
 #include "core/frontend/graphics_context.h"
 #include "video_core/control/scheduler.h"
 #include "video_core/dma_pusher.h"
@@ -44,6 +48,48 @@ void SignalCommand(SynchState& state, u64 fence, bool block) {
         std::scoped_lock lk{state.write_lock};
         state.cv.notify_all();
     }
+}
+
+// EDEN_NX2_PENDING_DUMP=<ms>: once a poll of suspended channels has lasted that long, log what the
+// guest's threads wait for (the first 12 such polls, then every 100th): the semaphore the channel
+// waits on is one the guest releases, so this says what the guest waits for in turn.
+long PendingDumpMs() {
+    static const long ms = [] {
+        const char* const value = std::getenv("EDEN_NX2_PENDING_DUMP");
+        return value != nullptr ? std::strtol(value, nullptr, 10) : 0L;
+    }();
+    return ms;
+}
+
+void DumpGuestWaits(Core::System& system, long waited_us) {
+    static u64 dumps = 0;
+    ++dumps;
+    if (dumps > 12 && dumps % 100 != 0) {
+        return;
+    }
+    Kernel::KProcess* const process = system.ApplicationProcess();
+    if (process == nullptr) {
+        return;
+    }
+    std::string text;
+    {
+        Kernel::KScopedLightLock lk{process->GetListLock()};
+        for (const Kernel::KThread& thread : process->GetThreadList()) {
+            const auto name = Core::GetThreadName(&thread);
+            std::string frames;
+            const auto backtrace = Core::GetBacktrace(&thread);
+            for (size_t i = 0; i < backtrace.size() && i < 5; ++i) {
+                frames += fmt::format(" {}+{:#x}", backtrace[i].module, backtrace[i].offset);
+            }
+            text += fmt::format("\n  thread {} ({}): {} / {}, svc {:#x}{}, at{}",
+                                thread.GetThreadId(), name ? *name : std::string{"?"},
+                                Core::GetThreadState(&thread), Core::GetThreadWaitReason(&thread),
+                                thread.GetSvcId(), thread.IsCallingSvc() ? " (in it)" : "",
+                                frames);
+        }
+    }
+    LOG_INFO(HW_GPU, "Suspended channels polled for {} us (poll #{}), guest threads:{}", waited_us,
+             dumps, text);
 }
 
 // The sleep between polls of suspended channels (Tegra::Nx2PendingSleepUs), asked each time:
@@ -92,6 +138,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
         CommandDataContainer next;
         // When a pending channel last moved or a command arrived (see the polling below).
         auto last_progress = std::chrono::steady_clock::now();
+        bool pending_dumped = false;
         namespace Profile = VideoCommon::Nx2Profile;
         auto& split = VideoCommon::GpuSplit::Get();
         while (!stop_token.stop_requested()) {
@@ -111,6 +158,17 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     Profile::Scope scope{Profile::Zone::PendingSleep};
                     Sampler::Scope mark{Sampler::FrontPending};
                     const auto waited = std::chrono::steady_clock::now() - last_progress;
+                    if (const long dump_ms = PendingDumpMs();
+                        dump_ms > 0 && !pending_dumped &&
+                        waited >= std::chrono::milliseconds{dump_ms} &&
+                        waited < std::chrono::seconds{1}) {
+                        pending_dumped = true;
+                        DumpGuestWaits(
+                            system,
+                            static_cast<long>(
+                                std::chrono::duration_cast<std::chrono::microseconds>(waited)
+                                    .count()));
+                    }
                     if (waited < std::chrono::microseconds{500}) {
                         std::this_thread::yield();
                     } else if (waited < std::chrono::seconds{2}) {
@@ -129,6 +187,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 break;
             }
             last_progress = std::chrono::steady_clock::now();
+            pending_dumped = false;
             if (split.Active()) {
                 // Only command lists are parsed here; everything else runs on the back thread
                 // in order, and so does the signal that the command ran.
