@@ -115,6 +115,8 @@ add_library(video_core STATIC
     nx2_debug_control.h
     nx2_diag.h
     nx2_profile.h
+    nx2_timeline.cpp
+    nx2_timeline.h
     present.h
     pte_kind.h
     query_cache/bank_base.h

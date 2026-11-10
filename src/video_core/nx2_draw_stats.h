@@ -7,7 +7,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <string>
+
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 
 #include "common/common_types.h"
 #include "common/logging.h"
@@ -79,7 +84,13 @@ inline std::array<Probe, static_cast<size_t>(Site::Count)> g_probes{};
 inline std::atomic<u64> g_draws{0};
 
 [[nodiscard]] inline u64 Cycles() {
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+    return __rdtsc();
+#elif defined(__x86_64__) || defined(__i386__)
     return __builtin_ia32_rdtsc();
+#else
+    return static_cast<u64>(std::chrono::steady_clock::now().time_since_epoch().count());
+#endif
 }
 
 /// Which FindBuffer probe the calling Update* function is feeding.
@@ -188,7 +199,7 @@ inline void Note(Site site, bool hit) {
     size_t i = 0;
     for (; i + 8 <= size; i += 8) {
         u64 word;
-        __builtin_memcpy(&word, data + i, 8);
+        std::memcpy(&word, data + i, 8);
         hash = (hash ^ word) * 0x100000001b3ULL;
     }
     for (; i < size; ++i) {

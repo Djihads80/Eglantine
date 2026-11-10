@@ -8,7 +8,6 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
-#include <ctime>
 
 #include "common/common_types.h"
 
@@ -59,11 +58,8 @@ inline Stamps g_stamps;
     return seq;
 }
 
-[[nodiscard]] inline u64 ThreadCpuNow() {
-    timespec ts{};
-    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
-    return static_cast<u64>(ts.tv_sec) * 1'000'000'000ULL + static_cast<u64>(ts.tv_nsec);
-}
+/// CPU time of the calling thread in nanoseconds.
+[[nodiscard]] u64 ThreadCpuNow();
 
 inline void OnFront(u64 seq) {
     if (seq != 0) {
