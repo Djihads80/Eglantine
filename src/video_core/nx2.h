@@ -18,6 +18,10 @@
 
 namespace Tegra {
 
+/// EDEN_NX2_LIST_DIFF: macro calls left to trace (their parameters and method writes are logged):
+/// set when a GPU-written command list is read, to see what its words are for.
+inline std::atomic<int> g_nx2_trace_macros{0};
+
 // Set once a Switch 2 (Ampere, NVN2) driver is talking to the GPU. Its command streams use
 // Ampere classes and the Turing+ macro ISA, which Eden's Maxwell engines don't implement.
 inline std::atomic<bool> g_nx2_ampere{false};

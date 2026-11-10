@@ -1354,6 +1354,16 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
     if (native_turing) {
         maxwell3d.RefreshParameters();
+        const bool traced = Tegra::g_nx2_trace_macros.load(std::memory_order_relaxed) > 0;
+        if (traced) [[unlikely]] {
+            LOG_INFO(HW_GPU, "Traced MME call start={:#x}, {} parameters: {:08x}", method,
+                     parameters.size(), fmt::join(parameters, " "));
+        }
+        SCOPE_EXIT {
+            if (traced) {
+                Tegra::g_nx2_trace_macros.fetch_sub(1, std::memory_order_relaxed);
+            }
+        };
         const auto context = reinterpret_cast<std::uintptr_t>(this);
         static std::unordered_set<std::uintptr_t> captured_contexts;
         static const bool capture = std::getenv("EDEN_NATIVE_FRAME_CAPTURE") != nullptr;
@@ -1400,6 +1410,9 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
         bool read_memory = false;
         const auto emit = [&](u32 address, u32 value) {
                 if (address >= 0xe00) return false;
+                if (Tegra::g_nx2_trace_macros.load(std::memory_order_relaxed) > 0) [[unlikely]] {
+                    LOG_INFO(HW_GPU, "Traced MME write {:#x} = {:#x}", address, value);
+                }
                 if (address == 0x556) {
                     // SET_RENDER_ENABLE_OVERRIDE: 0 use the render-enable condition, 1 always,
                     // 2 never. Log a histogram every 20000 macro writes (pop-in diagnostics).

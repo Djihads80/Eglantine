@@ -940,6 +940,28 @@ bool DmaPusher::Step() {
             NoteEntryWords(header, "GPU-written list copy", commands, command_resume_offset);
             if (command_resume_offset == 0) {
                 NoteGpuWrittenListDiff(dma_state.dma_get, commands);
+                // What the words are for: the method they continue, and the next macro calls.
+                static const bool trace = [] {
+                    const char* const value = std::getenv("EDEN_NX2_LIST_DIFF");
+                    return value != nullptr && value[0] == '1';
+                }();
+                static u32 traced = 0;
+                static const auto first = std::chrono::steady_clock::now();
+                if (trace && (traced < 4 || (traced < 40 && std::chrono::steady_clock::now() - first >
+                                                               std::chrono::seconds{50}))) {
+                    ++traced;
+                    std::string words;
+                    for (size_t i = 0; i < commands.size() && i < 8; ++i) {
+                        words += fmt::format(" {:08x}", commands[i].argument);
+                    }
+                    LOG_INFO(HW_GPU,
+                             "Traced GPU-written list {:#x} on channel {}:{} | continues method "
+                             "{:#x} with {} words left, subchannel {}, non-incrementing {}",
+                             dma_state.dma_get, channel_state.bind_id, words, dma_state.method,
+                             dma_state.method_count, dma_state.subchannel,
+                             dma_state.non_incrementing);
+                    Tegra::g_nx2_trace_macros.store(2, std::memory_order_relaxed);
+                }
             }
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);

@@ -10,6 +10,7 @@
 
 #include <ranges>
 #include "common/settings.h"
+#include "video_core/nx2_sampler.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -338,6 +339,7 @@ VkResult MasterSemaphore::SubmitQueueFence(vk::CommandBuffer& cmdbuf,
             std::scoped_lock lock{wait_mutex};
             wait_queue.emplace(host_tick, std::move(fence));
             wait_cv.notify_one();
+            VideoCommon::Nx2Sampler::g_gpu_submitted.store(host_tick, std::memory_order_relaxed);
         }
 
         return result;
@@ -373,6 +375,7 @@ VkResult MasterSemaphore::SubmitQueueFence(vk::CommandBuffer& cmdbuf,
         std::scoped_lock lock{wait_mutex};
         wait_queue.emplace(host_tick, std::move(fence));
         wait_cv.notify_one();
+        VideoCommon::Nx2Sampler::g_gpu_submitted.store(host_tick, std::memory_order_relaxed);
     }
 
     return result;
@@ -393,6 +396,7 @@ void MasterSemaphore::WaitThread(std::stop_token token) {
         }
 
         fence.Wait();
+        VideoCommon::Nx2Sampler::g_gpu_done.store(host_tick, std::memory_order_relaxed);
         fence.Reset();
 
         {

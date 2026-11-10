@@ -36,6 +36,10 @@ enum Mark : u32 {
 inline std::atomic<bool> g_enabled{};
 inline std::array<std::atomic<u32>, static_cast<size_t>(Role::Count)> g_marks{};
 inline std::atomic<u32> g_frames{};
+/// The host GPU tick last submitted and the last one the GPU finished (MasterSemaphore): each
+/// record holds how many submissions the GPU has not finished (0: the GPU is idle).
+inline std::atomic<u64> g_gpu_submitted{};
+inline std::atomic<u64> g_gpu_done{};
 constinit inline thread_local Role t_role{Role::None};
 
 /// The current thread takes `role`. The first call starts the sampler if EDEN_NX2_SAMPLE is set.
