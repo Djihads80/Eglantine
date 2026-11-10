@@ -4,9 +4,15 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <string>
+#include <mutex>
+#include <limits>
+#include <cstdlib>
+#include <array>
 #include <chrono>
 #include <thread>
 
+#include <fmt/format.h>
 #include "common/scope_exit.h"
 #include "core/core.h"
 #include "core/core_timing.h"
@@ -150,6 +156,65 @@ void ExitThread(Core::System& system) {
 }
 
 /// Sleep the current thread
+namespace {
+
+// EDEN_NX2_SLEEP_STATS=1: every 10 s, the guest's sleeps by requested length: how many, what was
+// asked for and what they took on the host clock (a game that polls with 1 ms sleeps waits as
+// long as the sleeps really are).
+bool SleepStats() {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_SLEEP_STATS");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+void NoteSleep(s64 asked_ns, s64 took_ns) {
+    struct Bucket {
+        s64 limit_ns;
+        u64 count{};
+        s64 asked{};
+        s64 took{};
+        s64 worst{};
+    };
+    static std::mutex mutex;
+    static std::array<Bucket, 6> buckets{{{100'000}, {1'100'000}, {2'100'000}, {5'100'000},
+                                          {20'100'000}, {(std::numeric_limits<s64>::max)()}}};
+    static auto window_start = std::chrono::steady_clock::now();
+    std::scoped_lock lock{mutex};
+    for (Bucket& bucket : buckets) {
+        if (asked_ns <= bucket.limit_ns) {
+            ++bucket.count;
+            bucket.asked += asked_ns;
+            bucket.took += took_ns;
+            bucket.worst = (std::max)(bucket.worst, took_ns);
+            break;
+        }
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - window_start < std::chrono::seconds{10}) {
+        return;
+    }
+    std::string text;
+    for (Bucket& bucket : buckets) {
+        if (bucket.count != 0) {
+            text += fmt::format(" | up to {} us: {} sleeps, asked {} us, took {} us on average (worst {})",
+                                bucket.limit_ns / 1000, bucket.count,
+                                bucket.asked / 1000 / static_cast<s64>(bucket.count),
+                                bucket.took / 1000 / static_cast<s64>(bucket.count),
+                                bucket.worst / 1000);
+        }
+        bucket.count = 0;
+        bucket.asked = 0;
+        bucket.took = 0;
+        bucket.worst = 0;
+    }
+    LOG_INFO(Kernel_SVC, "Guest sleeps in 10 s{}", text);
+    window_start = now;
+}
+
+} // Anonymous namespace
+
 void SleepThread(Core::System& system, s64 ns) {
     auto& kernel = system.Kernel();
     const auto yield_type = static_cast<Svc::YieldType>(ns);
@@ -174,7 +239,15 @@ void SleepThread(Core::System& system, s64 ns) {
 
         // Sleep.
         // NOTE: Nintendo does not check the result of this sleep.
+        const bool stats = SleepStats();
+        const auto sleep_start =
+            stats ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         static_cast<void>(GetCurrentThread(kernel).Sleep(kernel, timeout));
+        if (stats) {
+            NoteSleep(ns, std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              std::chrono::steady_clock::now() - sleep_start)
+                              .count());
+        }
     } else if (yield_type == Svc::YieldType::WithoutCoreMigration) {
         KScheduler::YieldWithoutCoreMigration(kernel);
     } else if (yield_type == Svc::YieldType::WithCoreMigration) {
