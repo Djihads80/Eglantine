@@ -9,6 +9,7 @@
 
 #include <QApplication>
 
+#include "common/driver_shader_cache.h"
 #include "common/fs/fs_paths.h"
 #include "common/fs/path_util.h"
 #include "startup_checks.h"
@@ -167,6 +168,8 @@ static void LoadNx2Switches(const char* argv0) {
 
 int main(int argc, char* argv[]) {
     LoadNx2Switches(argv[0]);
+    // Before StartupChecks: its Vulkan check is the first thing to load a GPU driver.
+    Common::ConfigureDriverShaderCache();
 #if YUZU_ROOM
     bool launch_room = false;
     for (int i = 1; i < argc; i++) {

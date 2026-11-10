@@ -125,6 +125,8 @@ add_library(
     swap.h
     thread.cpp
     thread.h
+    driver_shader_cache.cpp
+    driver_shader_cache.h
     adpf.cpp
     adpf.h
     thread_queue_list.h
