@@ -1411,6 +1411,22 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     TouchBuffer(buffer, binding.buffer_id);
     const bool has_host_buffer = binding.buffer_id != NULL_BUFFER_ID;
     const u32 offset = has_host_buffer ? buffer.Offset(device_addr) : 0;
+    // A binding whose buffer does not hold its range: the id of a buffer deleted while another
+    // channel was current (see DeleteBuffer). Counted and logged: none are expected.
+    if (has_host_buffer && size != 0 && !buffer.IsInBounds(device_addr, size)) [[unlikely]] {
+        static u64 stale_binds = 0;
+        static auto last_log = std::chrono::steady_clock::time_point{};
+        ++stale_binds;
+        if (const auto now = std::chrono::steady_clock::now();
+            stale_binds <= 12 || now - last_log >= std::chrono::seconds{10}) {
+            last_log = now;
+            LOG_WARNING(HW_GPU,
+                        "Uniform buffer bind {} to a buffer that does not hold it: stage {} index "
+                        "{} range {:#x}+{:#x} (binding size {:#x}), buffer {:#x}+{:#x}, channel {}",
+                        stale_binds, stage, index, device_addr, size, binding.size,
+                        buffer.CpuAddr(), buffer.SizeBytes(), this->current_channel_id);
+        }
+    }
     const bool needs_alignment_stream = [&]() {
         if constexpr (IS_OPENGL) {
             return false;
@@ -3704,6 +3720,46 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     replace(channel_state->transform_feedback_buffers);
     replace(channel_state->compute_uniform_buffers);
     replace(channel_state->compute_storage_buffers);
+
+    // The other channels' bindings too. Only the current channel's were cleared: a title that
+    // draws on several channels (Ocarina of Time: four) kept the deleted buffer's id in the
+    // others, and once the slot was taken by another buffer their draws read that buffer at
+    // the old address's offset, until the game bound the slot again. A uniform bank bound once
+    // for a pass gave a frame of garbage material constants (the white flash of the ground,
+    // moss and wood). EDEN_NX2_SCRUB_ALL_CHANNELS=0: the current channel only, as before.
+    static const bool scrub_all_channels = [] {
+        const char* const value = std::getenv("EDEN_NX2_SCRUB_ALL_CHANNELS");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (scrub_all_channels) {
+        for (const size_t channel_id : this->active_channel_ids) {
+            auto& info = this->channel_storage[channel_id];
+            if (&info == channel_state) {
+                continue;
+            }
+            auto& other_flags = info.maxwell3d.dirty.flags;
+            if (info.index_buffer.buffer_id == buffer_id) {
+                info.index_buffer.buffer_id = BufferId{};
+                other_flags[Dirty::IndexBuffer] = true;
+            }
+            for (u32 index = 0; index < info.vertex_buffers.size(); index++) {
+                auto& binding = info.vertex_buffers[index];
+                if (binding.buffer_id == buffer_id) {
+                    binding.buffer_id = BufferId{};
+                    other_flags[Dirty::VertexBuffers] = true;
+                    other_flags[Dirty::VertexBuffer0 + index] = true;
+                }
+            }
+            std::ranges::for_each(info.uniform_buffers, replace);
+            std::ranges::for_each(info.storage_buffers, replace);
+            replace(info.transform_feedback_buffers);
+            replace(info.compute_uniform_buffers);
+            replace(info.compute_storage_buffers);
+            scalar_replace(info.count_buffer_binding);
+            scalar_replace(info.indirect_buffer_binding);
+            info.has_deleted_buffers = true;
+        }
+    }
 
     synced_ranges.fill({});
     // Mark the whole buffer as CPU written to stop tracking CPU writes
