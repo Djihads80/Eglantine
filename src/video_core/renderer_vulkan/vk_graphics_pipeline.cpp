@@ -13,6 +13,7 @@
 #include <boost/container/static_vector.hpp>
 #include <fmt/format.h>
 
+#include "common/scope_exit.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 
 #include "common/bit_field.h"
@@ -191,10 +192,10 @@ size_t NumAttachments(const FixedPipelineState& state) {
 }
 
 template <typename Spec>
-bool Passes(const std::array<vk::ShaderModule, NUM_STAGES>& modules,
+bool Passes(const std::array<bool, NUM_STAGES>& stages,
             const std::array<Shader::Info, NUM_STAGES>& stage_infos) {
     for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
-        if (!Spec::enabled_stages[stage] && modules[stage]) {
+        if (!Spec::enabled_stages[stage] && stages[stage]) {
             return false;
         }
         const auto& info{stage_infos[stage]};
@@ -225,11 +226,11 @@ bool Passes(const std::array<vk::ShaderModule, NUM_STAGES>& modules,
 using ConfigureFuncPtr = bool (*)(GraphicsPipeline*, bool);
 
 template <typename Spec, typename... Specs>
-ConfigureFuncPtr FindSpec(const std::array<vk::ShaderModule, NUM_STAGES>& modules,
+ConfigureFuncPtr FindSpec(const std::array<bool, NUM_STAGES>& stages,
                           const std::array<Shader::Info, NUM_STAGES>& stage_infos) {
     if constexpr (sizeof...(Specs) > 0) {
-        if (!Passes<Spec>(modules, stage_infos)) {
-            return FindSpec<Specs...>(modules, stage_infos);
+        if (!Passes<Spec>(stages, stage_infos)) {
+            return FindSpec<Specs...>(stages, stage_infos);
         }
     }
     return GraphicsPipeline::MakeConfigureSpecFunc<Spec>();
@@ -275,10 +276,10 @@ struct DefaultSpec {
     static constexpr bool has_images = true;
 };
 
-ConfigureFuncPtr ConfigureFunc(const std::array<vk::ShaderModule, NUM_STAGES>& modules,
+ConfigureFuncPtr ConfigureFunc(const std::array<bool, NUM_STAGES>& stages,
                                const std::array<Shader::Info, NUM_STAGES>& infos) {
     return FindSpec<SimpleVertexSpec, SimpleVertexFragmentSpec, SimpleStorageSpec, SimpleImageSpec,
-                    DefaultSpec>(modules, infos);
+                    DefaultSpec>(stages, infos);
 }
 } // Anonymous namespace
 
@@ -298,6 +299,7 @@ GraphicsPipeline::GraphicsPipeline(
       pipeline_cache(pipeline_cache_), scheduler{scheduler_},
       guest_descriptor_queue{guest_descriptor_queue_},
       descriptor_buffer_ring{descriptor_buffer_ring_}, spv_modules{std::move(stages)},
+      worker_only_build{worker_thread && static_cast<bool>(emit_stages)},
       mesh_emulation{std::move(mesh_emulation_)} {
     if (shader_notify) {
         shader_notify->MarkShaderBuilding();
@@ -424,9 +426,19 @@ GraphicsPipeline::GraphicsPipeline(
     }
 
     const auto queued_at = std::chrono::steady_clock::now();
-    auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics, queued_at] {
+    auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics, queued_at,
+               emit_stages = std::move(emit_stages)] {
         const auto started_at = std::chrono::steady_clock::now();
-        const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};
+        SCOPE_EXIT {
+            if (shader_notify) {
+                shader_notify->MarkShaderComplete();
+            }
+        };
+        if (emit_stages) {
+            spv_modules = emit_stages();
+        }
+        const VkRenderPass render_pass{
+            render_pass_cache.Get(MakeRenderPassKey(key.state, device))};
         Validate();
         try {
             MakePipeline(render_pass);
@@ -437,12 +449,6 @@ GraphicsPipeline::GraphicsPipeline(
                          exception.what(), spv_modules[1] ? 1 : 0, spv_modules[2] ? 1 : 0,
                          spv_modules[3] ? 1 : 0, key.state.patch_control_points_minus_one.Value() + 1,
                          device.GetMaxTessellationPatchSize());
-            std::scoped_lock lock{build_mutex};
-            is_built = true;
-            build_condvar.notify_one();
-            if (shader_notify) {
-                shader_notify->MarkShaderComplete();
-            }
             return;
         }
         if (pipeline_statistics) {
@@ -454,22 +460,13 @@ GraphicsPipeline::GraphicsPipeline(
             module.reset();
         }
         ReportPipelineBuild("Graphics", key.Hash(), queued_at, started_at);
-
-        std::scoped_lock lock{build_mutex};
-        is_built = true;
-        build_condvar.notify_one();
-        if (shader_notify) {
-            shader_notify->MarkShaderComplete();
-        }
     }};
-    // Before the build: it frees the modules this looks at.
-    configure_func = ConfigureFunc(spv_modules, stage_infos);
-    build_task = std::move(func);
-    if (worker_thread) {
-        worker_thread->QueueWork([this] { RunBuild(); });
-    } else {
-        RunBuild();
+    std::array<bool, NUM_STAGES> present_stages{};
+    for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+        present_stages[stage] = infos[stage] != nullptr;
     }
+    configure_func = ConfigureFunc(present_stages, stage_infos);
+    build.emplace(worker_thread, std::move(func));
 }
 
 bool GraphicsPipeline::Nx2MayWriteMemory() const noexcept {
@@ -501,16 +498,6 @@ bool GraphicsPipeline::Nx2MayWriteMemory() const noexcept {
         }
     }
     return false;
-}
-
-void GraphicsPipeline::RunBuild() {
-    // A draw or dispatch that needs the pipeline builds it on the scheduler thread instead of
-    // waiting for the worker queue, which can hold hundreds of builds, to reach it.
-    if (build_claimed.exchange(true)) {
-        return;
-    }
-    build_task();
-    build_task = nullptr;
 }
 
 void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {
@@ -914,12 +901,8 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
         // triangles the draw then reads; both use the descriptor set committed here.
         scheduler.RequestOutsideRenderPassOperationContext();
         if (!IsBuilt()) {
-            scheduler.Record([this](vk::CommandBuffer) {
-                RunBuild();
-                std::unique_lock lock{build_mutex};
-                build_condvar.wait(lock,
-                                   [this] { return is_built.load(std::memory_order::relaxed); });
-            });
+            scheduler.Record(
+                [this](vk::CommandBuffer) { build->Wait(!worker_only_build); });
         }
         scheduler.Record([this, descriptor_data, groups = mesh_groups, capacity = mesh_capacity,
                           task_buffers = mesh_task_buffers,
@@ -1048,7 +1031,7 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
     if (writes_storage) {
         scheduler.NoteRenderPassStores();
     }
-    if (!is_built.load(std::memory_order::relaxed)) {
+    if (!mesh_emulation && !IsBuilt()) {
         // Wait for the pipeline to be built
         const auto& regs{maxwell3d->regs};
         const auto& draw_state{maxwell3d->draw_manager.draw_state};
@@ -1064,12 +1047,7 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
         scheduler.Record([this, rt0_addr, rt0_w, rt0_h, elem_count, inst_count, is_indexed,
                           indirect, zeta, num_rt, mesh](vk::CommandBuffer) {
             const auto begin = std::chrono::steady_clock::now();
-            RunBuild();
-            {
-                std::unique_lock lock{build_mutex};
-                build_condvar.wait(lock,
-                                   [this] { return is_built.load(std::memory_order::relaxed); });
-            }
+            build->Wait(!worker_only_build);
             const std::string details = fmt::format(
                 " (rt0={:#x} {}x{} elems={} inst={} {}{} zeta={} rts={}{})", rt0_addr, rt0_w,
                 rt0_h, elem_count, inst_count, is_indexed ? "indexed" : "array",

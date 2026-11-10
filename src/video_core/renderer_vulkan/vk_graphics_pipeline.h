@@ -9,9 +9,9 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <condition_variable>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <type_traits>
 #include <vector>
@@ -20,6 +20,7 @@
 #include "shader_recompiler/shader_info.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
+#include "video_core/renderer_vulkan/pipeline_build.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_descriptor_buffer.h"
@@ -253,7 +254,7 @@ public:
     }
 
     [[nodiscard]] bool IsBuilt() const noexcept {
-        return is_built.load(std::memory_order::relaxed);
+        return build->IsBuilt();
     }
 
     template <typename Spec>
@@ -267,9 +268,6 @@ public:
     }
 
 private:
-    /// Builds the pipeline once, on whichever thread gets here first.
-    void RunBuild();
-
     template <typename Spec>
     bool ConfigureImpl(bool is_indexed);
 
@@ -326,13 +324,10 @@ private:
     std::array<u32, 6> last_rescaling_words{};
     bool has_pushed_rescaling{false};
 
-    std::function<void()> build_task;
-    std::atomic_bool build_claimed{false};
-    std::condition_variable build_condvar;
-    std::mutex build_mutex;
-    std::atomic_bool is_built{false};
+    const bool worker_only_build;
     bool uses_push_descriptor{false};
     bool uses_descriptor_buffer{false};
+    std::optional<PipelineBuild> build;
 
     // Mesh emulation (MeshEmulationSetup).
     std::optional<MeshEmulationSetup> mesh_emulation;
