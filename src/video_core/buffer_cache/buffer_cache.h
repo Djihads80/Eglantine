@@ -1435,7 +1435,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     if (bank_mode == 'v' && has_host_buffer && size != 0 && gpu_memory != nullptr &&
         gpu_memory->UsesNativeTiling() &&
         (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000) {
-        Nx2VerifyBank(device_addr, size);
+        Nx2VerifyBank(buffer, device_addr, size);
     }
     {
         Nx2Profile::Scope bank_scope{Nx2Profile::Zone::UboBank};
@@ -3239,7 +3239,7 @@ void BufferCache<P>::Nx2UpdateBankShadows(DAddr device_addr, const u8* bytes, u6
 }
 
 template <class P>
-void BufferCache<P>::Nx2VerifyBank(DAddr device_addr, u32 size) {
+void BufferCache<P>::Nx2VerifyBank(Buffer& buffer, DAddr device_addr, u32 size) {
     struct Stats {
         u64 binds{};
         u64 pages{};
@@ -3249,11 +3249,28 @@ void BufferCache<P>::Nx2VerifyBank(DAddr device_addr, u32 size) {
         u64 missed{};
         u64 missed_unprotected{};
         u64 missed_bytes{};
+        u64 host_checked{};
+        u64 host_pending{};
+        u64 host_unknown{};
+        u64 host_stale{};
         std::chrono::steady_clock::time_point window_start{std::chrono::steady_clock::now()};
     };
     static Stats stats;
     static u32 logged = 0;
+    static u32 host_logged = 0;
     ++stats.binds;
+    // The host buffer's own memory (a phone's GPU shares it): once the GPU is past the last
+    // write recorded to a page (its uploads among them; the page ticks need
+    // EDEN_NX2_STRATO_STATS=1), it must hold the bytes last uploaded.
+    std::span<const u8> host_view;
+    if constexpr (requires { runtime.CanReadBuffersDirectly(); buffer.HostView(); }) {
+        if (runtime.CanReadBuffersDirectly()) {
+            host_view = buffer.HostView();
+            if (!host_view.empty()) {
+                buffer.InvalidateHostView();
+            }
+        }
+    }
     const auto now = std::chrono::steady_clock::now();
     const DAddr end = device_addr + size;
     for (DAddr page = device_addr & ~DAddr{0xfff}; page < end; page += 0x1000) {
@@ -3284,6 +3301,56 @@ void BufferCache<P>::Nx2VerifyBank(DAddr device_addr, u32 size) {
             continue;
         }
         if (std::memcmp(shadow->bytes.data(), guest, 0x1000) == 0) {
+            if (host_view.empty() || page < buffer.CpuAddr() ||
+                page + 0x1000 > buffer.CpuAddr() + buffer.SizeBytes()) {
+                continue;
+            }
+            const u64 page_tick = Tegra::Nx2LastGpuWriteTick(page, 0x1000);
+            if (page_tick == 0) {
+                ++stats.host_unknown;
+                continue;
+            }
+            if (!runtime.TickComplete(page_tick)) {
+                ++stats.host_pending;
+                continue;
+            }
+            ++stats.host_checked;
+            const u8* const host = host_view.data() + (page - buffer.CpuAddr());
+            if (std::memcmp(host, shadow->bytes.data(), 0x1000) == 0) {
+                continue;
+            }
+            // The tracker is right and guest memory is what was uploaded, but the host buffer
+            // holds something else: copies reached it in another order than they were made.
+            u32 first = 0x1000;
+            u32 last = 0;
+            u32 changed = 0;
+            for (u32 i = 0; i < 0x1000; ++i) {
+                if (shadow->bytes[i] != host[i]) {
+                    first = (std::min)(first, i);
+                    last = i;
+                    ++changed;
+                }
+            }
+            ++stats.host_stale;
+            if (host_logged < 80) {
+                ++host_logged;
+                u32 host_word{};
+                u32 uploaded_word{};
+                std::memcpy(&host_word, host + (first & ~3U), 4);
+                std::memcpy(&uploaded_word, shadow->bytes.data() + (first & ~3U), 4);
+                LOG_INFO(HW_GPU,
+                         "Uniform bank page {:#x} (bank {:#x}+{:#x}, buffer {:#x}+{:#x}): the host "
+                         "buffer differs from the bytes last uploaded in {} bytes of [{:#x}, "
+                         "{:#x}], first word {:#010x} instead of {:#010x}; page tick {}, buffer "
+                         "tick {}, current tick {}, uploaded {} ms ago",
+                         page, device_addr, size, buffer.CpuAddr(), buffer.SizeBytes(), changed,
+                         first, last, host_word, uploaded_word, page_tick, buffer.GpuWriteTick(),
+                         runtime.CurrentTick(),
+                         std::chrono::duration_cast<std::chrono::milliseconds>(now -
+                                                                               shadow->uploaded)
+                             .count());
+            }
+            memory_tracker.MarkRegionAsCpuModified(page, 0x1000);
             continue;
         }
         // Clean for the tracker, yet not the bytes last uploaded: a write it did not see.
@@ -3322,9 +3389,11 @@ void BufferCache<P>::Nx2VerifyBank(DAddr device_addr, u32 size) {
         LOG_INFO(HW_GPU,
                  "Uniform bank check in 10 s: {} binds, {} pages ({} already marked written, {} "
                  "GPU-written, {} new), {} changed unnoticed ({} of them not write-protected, "
-                 "{} bytes)",
+                 "{} bytes) | host buffer: {} pages compared, {} differ from their upload, {} "
+                 "with writes the GPU has not finished, {} without a tick",
                  stats.binds, stats.pages, stats.dirty, stats.gpu, stats.fresh, stats.missed,
-                 stats.missed_unprotected, stats.missed_bytes);
+                 stats.missed_unprotected, stats.missed_bytes, stats.host_checked,
+                 stats.host_stale, stats.host_pending, stats.host_unknown);
         stats = {};
         stats.window_start = now;
     }

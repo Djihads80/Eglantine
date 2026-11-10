@@ -444,7 +444,7 @@ public:
         std::chrono::steady_clock::time_point uploaded;
     };
     std::unordered_map<u64, std::unique_ptr<BankShadow>> bank_shadows;
-    void Nx2VerifyBank(DAddr device_addr, u32 size);
+    void Nx2VerifyBank(Buffer& buffer, DAddr device_addr, u32 size);
     void Nx2UpdateBankShadows(DAddr device_addr, const u8* bytes, u64 size);
 
 private:
