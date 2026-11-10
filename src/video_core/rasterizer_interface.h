@@ -14,6 +14,7 @@
 #include "common/common_types.h"
 #include "common/polyfill_thread.h"
 #include "common/settings.h"
+#include "shader_recompiler/frontend/ampere/native_program_image.h"
 #include "video_core/cache_types.h"
 #include "video_core/engines/fermi_2d.h"
 #include "video_core/game_dlss_status.h"
@@ -252,6 +253,18 @@ public:
     /// Initialize disk cached resources for the game being emulated
     virtual void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                                    const DiskResourceLoadCallback& callback) {}
+
+    /// Returns the native programs in the game's files; may run for a while.
+    using NativeProgramCollector = std::function<Shader::Ampere::NativeProgramSet(std::stop_token)>;
+
+    /// Opens the game's files and returns their collector (empty: none); called on the thread
+    /// that asks for the precompile, and only when the renderer will precompile.
+    using NativeProgramSource = std::function<NativeProgramCollector()>;
+
+    /// Compiles the game's native programs ahead of their first use, at the end of
+    /// LoadDiskResources (precompile_shaders setting). The collector runs on a background thread
+    /// of the renderer meanwhile, so call this first.
+    virtual void PrecompileNativePrograms(const NativeProgramSource& open) {}
 
     virtual void InitializeChannel(Tegra::Control::ChannelState& channel) {}
 

@@ -4,6 +4,7 @@
 #include <qdebug.h>
 #include "core/core.h"
 #include "core/cpu_manager.h"
+#include "core/file_sys/native_shader_programs.h"
 #include "emu_thread.h"
 #include "qt_common/qt_common.h"
 #include "video_core/gpu.h"
@@ -27,6 +28,9 @@ void EmuThread::run() {
     gpu.ObtainContext();
 
     emit LoadProgress(VideoCore::LoadCallbackStage::Prepare, 0, 0);
+    // Scans the game's files while the pipeline cache loads; compiled at the end of the loading.
+    FileSys::PrecompileApplicationShaders(*QtCommon::system,
+                                          QtCommon::system->GetApplicationProcessProgramID());
     if (Settings::values.use_disk_shader_cache.GetValue()) {
         QtCommon::system->Renderer().ReadRasterizer()->LoadDiskResources(
             QtCommon::system->GetApplicationProcessProgramID(), stop_token,
