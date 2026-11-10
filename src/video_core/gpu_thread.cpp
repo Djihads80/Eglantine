@@ -128,8 +128,8 @@ void DumpGuestWaits(Core::System& system, long waited_us) {
             }
         }
     }
-    LOG_INFO(HW_GPU, "Suspended channels polled for {} us (poll #{}), guest threads:{}", waited_us,
-             dumps, text);
+    LOG_INFO(HW_GPU, "Suspended channels polled for {} us (poll #{}), GPU: {} | guest threads:{}",
+             waited_us, dumps, system.GPU().Nx2HangReport(), text);
 }
 
 // The sleep between polls of suspended channels (Tegra::Nx2PendingSleepUs), asked each time:
