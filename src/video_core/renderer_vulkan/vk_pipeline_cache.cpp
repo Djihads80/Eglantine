@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <fstream>
 #include <iostream>
@@ -352,6 +353,15 @@ size_t GetTotalPipelineWorkers() {
 bool AsyncTranslationAllowed() {
     const char* const value = std::getenv("EDEN_NX2_ASYNC_TRANSLATION");
     return value == nullptr || value[0] != '0';
+}
+
+// EDEN_NX2_PARALLEL_STAGES=0: a queued pipeline's stages are translated one after another.
+bool ParallelStagesEnabled() {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_PARALLEL_STAGES");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
 }
 
 // How long the GPU thread waits for a pipeline it queued before skipping the draw:
@@ -1419,7 +1429,7 @@ bool PipelineCache::BuildNewGraphicsPipeline() {
 std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     ShaderPools& pools, const GraphicsPipelineCacheKey& key,
     std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
-    bool build_in_parallel) try {
+    bool build_in_parallel, bool parallel_stages) try {
     auto hash = key.Hash();
     LOG_DEBUG(Render_Vulkan, "{:#016x}", hash);
     size_t env_index{0};
@@ -1437,6 +1447,59 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     std::vector<std::pair<std::shared_ptr<StageCache::Translation>,
                           std::shared_ptr<const StageCache::Emitted>>>
         new_translations;
+
+    // Detached environments (asynchronous translation): the stages the stage cache lacks are
+    // translated at once, each with its own pools, the extra ones on translation workers.
+    std::array<std::vector<u8>, Maxwell::MaxShaderProgram> signatures;
+    std::array<bool, Maxwell::MaxShaderProgram> looked_up{};
+    std::array<bool, Maxwell::MaxShaderProgram> translated_ahead{};
+    std::array<std::unique_ptr<ShaderPools>, Maxwell::MaxShaderProgram> stage_pools;
+    if (parallel_stages && cache_stages && translation_workers && ParallelStagesEnabled()) {
+        boost::container::static_vector<size_t, Maxwell::MaxShaderProgram> missing;
+        std::array<Shader::Environment*, Maxwell::MaxShaderProgram> ahead_envs{};
+        size_t ahead_env_index{};
+        for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
+            if (key.unique_hashes[index] == 0) {
+                continue;
+            }
+            Shader::Environment& env{*envs[ahead_env_index++]};
+            if (!env.IsNativeProgram()) {
+                continue;
+            }
+            signatures[index] = StageCache::Signature(env, key.unique_hashes[index], index);
+            reused[index] = stage_cache.Find(signatures[index], env);
+            if (reused[index] && reused[index]->program.info.requires_layer_emulation) {
+                reused[index] = nullptr;
+            }
+            looked_up[index] = true;
+            if (!reused[index]) {
+                missing.push_back(index);
+                ahead_envs[index] = &env;
+            }
+        }
+        if (missing.size() >= 2) {
+            RunInParallel(missing.size(), [&](size_t task) {
+                const size_t index{missing[task]};
+                Shader::Environment& env{*ahead_envs[index]};
+                stage_pools[index] = std::make_unique<ShaderPools>();
+                ShaderPools& own{*stage_pools[index]};
+                StageCache::Recorder recorder{env};
+                const u32 cfg_offset{
+                    static_cast<u32>(env.StartAddress() + sizeof(Shader::ProgramHeader))};
+                Shader::Maxwell::Flow::CFG cfg(recorder, own.flow_block, cfg_offset, index == 0);
+                programs[index] = TranslateProgram(own.inst, own.block, recorder, cfg, host_info);
+                auto translation = std::make_shared<StageCache::Translation>();
+                translation->signature = signatures[index];
+                translation->reads = recorder.TakeReads();
+                translation->program = StageCache::Summary(programs[index]);
+                recorded[index] = std::move(translation);
+            });
+            for (const size_t index : missing) {
+                translated_ahead[index] = true;
+            }
+            parallel_stage_pipelines.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
 
     // Layer passthrough generation for devices without VK_EXT_shader_viewport_index_layer
     Shader::IR::Program* layer_source_program{};
@@ -1478,7 +1541,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         stage_envs[index] = &env;
         const bool cacheable{cache_stages && env.IsNativeProgram()};
         std::vector<u8> signature;
-        if (cacheable) {
+        if (cacheable && looked_up[index]) {
+            signature = std::move(signatures[index]);
+        } else if (cacheable) {
             signature = StageCache::Signature(env, key.unique_hashes[index], index);
             reused[index] = stage_cache.Find(signature, env);
             // A layer emulation source is needed with its IR (GenerateGeometryPassthrough).
@@ -1488,6 +1553,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         }
         if (reused[index]) {
             programs[index] = reused[index]->program;
+        } else if (translated_ahead[index]) {
+            // programs[index] and recorded[index] came from the parallel translation above.
         } else if (cacheable) {
             StageCache::Recorder recorder{env};
             Shader::Maxwell::Flow::CFG cfg(recorder, pools.flow_block, cfg_offset, index == 0);
@@ -1781,6 +1848,53 @@ bool PipelineCache::CanTranslateAsynchronously() const {
     return true;
 }
 
+void PipelineCache::RunInParallel(size_t count, const std::function<void(size_t)>& task) {
+    // Workers that start after every task was claimed return at once, so the caller never waits
+    // for a worker that hasn't started: when all are busy it runs the tasks itself.
+    struct State {
+        std::atomic<size_t> next{};
+        size_t count{};
+        const std::function<void(size_t)>* task{};
+        std::mutex mutex;
+        std::condition_variable done_cv;
+        size_t done{};
+        std::vector<std::exception_ptr> errors;
+    };
+    const auto state = std::make_shared<State>();
+    state->count = count;
+    state->task = &task;
+    state->errors.resize(count);
+    const auto run = [](State& shared) {
+        for (;;) {
+            const size_t index{shared.next.fetch_add(1, std::memory_order_relaxed)};
+            if (index >= shared.count) {
+                return;
+            }
+            try {
+                (*shared.task)(index);
+            } catch (...) {
+                shared.errors[index] = std::current_exception();
+            }
+            std::scoped_lock lock{shared.mutex};
+            ++shared.done;
+            shared.done_cv.notify_all();
+        }
+    };
+    for (size_t helper = 1; helper < count; ++helper) {
+        translation_workers->QueueWork([state, run] { run(*state); });
+    }
+    run(*state);
+    {
+        std::unique_lock lock{state->mutex};
+        state->done_cv.wait(lock, [&] { return state->done == state->count; });
+    }
+    for (const std::exception_ptr& error : state->errors) {
+        if (error) {
+            std::rethrow_exception(error);
+        }
+    }
+}
+
 namespace {
 // Logged every 10 s from the GPU thread.
 struct TranslationReport {
@@ -1790,6 +1904,7 @@ struct TranslationReport {
     u32 ready_in_time{};
     u32 skipped{};
     u32 adopted{};
+    u64 parallel{};
     size_t peak_queued{};
     size_t copied_bytes{};
     Duration preparation{};
@@ -1810,10 +1925,11 @@ struct TranslationReport {
                      "Async translation in the last 10 s: {} queued ({} KiB copied, {:.1f} ms "
                      "preparing), {} ready in time, {} draws skipped, {} not detached; {:.1f} ms "
                      "waited; {} adopted, {:.1f} ms on workers, latency {:.1f} ms mean {:.1f} ms "
-                     "max, peak {} queued",
+                     "max, peak {} queued, {} with stages in parallel",
                      queued, copied_bytes / 1024, ms(preparation), ready_in_time, skipped,
                      not_detached, ms(waited), adopted, ms(worker),
-                     adopted != 0 ? ms(latency) / adopted : 0.0, ms(max_latency), peak_queued);
+                     adopted != 0 ? ms(latency) / adopted : 0.0, ms(max_latency), peak_queued,
+                     parallel);
         }
         *this = TranslationReport{};
     }
@@ -1897,7 +2013,7 @@ void PipelineCache::TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& ke
             }
         }
         try {
-            pipeline = CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), nullptr, true);
+            pipeline = CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), nullptr, true, true);
         } catch (const std::exception& exception) {
             // Shader errors are handled inside; nothing else may end the worker thread.
             LOG_ERROR(Render_Vulkan, "Graphics pipeline translation failed: {}", exception.what());
@@ -1928,6 +2044,7 @@ void PipelineCache::AdoptTranslatedGraphicsPipelines() {
     for (TranslatedGraphicsPipeline& translated : finished) {
         translating_graphics.erase(translated.key);
         ++report.adopted;
+        report.parallel = parallel_stage_pipelines.load(std::memory_order_relaxed);
         report.worker += translated.time;
         report.latency += translated.latency;
         report.max_latency = std::max(report.max_latency, translated.latency);

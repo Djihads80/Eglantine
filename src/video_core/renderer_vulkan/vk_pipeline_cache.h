@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <future>
 #include <unordered_map>
 #include <unordered_set>
@@ -187,7 +188,11 @@ private:
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(
         ShaderPools& pools, const GraphicsPipelineCacheKey& key,
         std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
-        bool build_in_parallel);
+        bool build_in_parallel, bool parallel_stages = false);
+
+    /// Runs task(0..count-1) on the translation workers and this thread; rethrows the first
+    /// exception a task threw.
+    void RunInParallel(size_t count, const std::function<void(size_t)>& task);
 
     std::unique_ptr<ComputePipeline> CreateComputePipeline(const ComputePipelineCacheKey& key,
                                                            const ShaderInfo* shader,
@@ -296,6 +301,7 @@ private:
     std::mutex translated_mutex;
     std::vector<TranslatedGraphicsPipeline> translated_graphics;
     std::atomic<size_t> num_translated{};
+    std::atomic<u64> parallel_stage_pipelines{}; ///< Pipelines whose stages translated in parallel
     /// Null when asynchronous translation is off. Joined first in the destructor.
     std::unique_ptr<Common::ThreadWorker> translation_workers;
 };
