@@ -433,6 +433,13 @@ void GpuSplit::Drain(Nx2Profile::Zone zone) {
     Nx2Profile::Scope scope{zone};
     Nx2Sampler::Scope mark{Nx2Sampler::FrontOnBack + static_cast<u32>(zone)};
     auto next_report = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    // EDEN_NX2_DRAIN_SPIN_US=<us>: how long the front spins on before it sleeps. A sleeping front
+    // costs the back a wake-up call, and the back then idles until the front is awake again.
+    static const u64 drain_spin_ns = [] {
+        const char* const value = std::getenv("EDEN_NX2_DRAIN_SPIN_US");
+        return value != nullptr ? std::strtoull(value, nullptr, 10) * 1000ULL : 0ULL;
+    }();
+    const u64 drain_spin_start = drain_spin_ns != 0 ? Nx2Profile::Now() : 0;
     // Everything consumed is not enough: the back submits deferred work (Scheduler::DeferFlush)
     // from its idle hook afterwards, and the caller may use the scheduler once this returns.
     bool hook_asked = false;
@@ -448,7 +455,8 @@ void GpuSplit::Drain(Nx2Profile::Zone zone) {
                 hook_asked = true;
             }
         }
-        if (spins < (SleepingWaits ? 8192U : 16384U)) {
+        if (spins < (SleepingWaits ? 8192U : 16384U) ||
+            (drain_spin_ns != 0 && Nx2Profile::Now() - drain_spin_start < drain_spin_ns)) {
             Pause();
         } else {
             // Sleep instead of spinning on: the front spent most of each frame here, keeping a big
@@ -729,6 +737,33 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                     WakeFront();
                 }
                 available = published.load(std::memory_order_acquire);
+            }
+            // EDEN_NX2_BACK_SPIN_US=<us>: stay awake that long before parking. In a run of short
+            // hand-overs with the front (the start of a Mario Kart World frame: the game's first
+            // lists, each waited for), parking costs the front a wake-up call and this thread its
+            // wake-up time at every one, while it has nothing else to run on its core anyway.
+            static const u64 spin_ns = [] {
+                const char* const value = std::getenv("EDEN_NX2_BACK_SPIN_US");
+                return value != nullptr ? std::strtoull(value, nullptr, 10) * 1000ULL : 0ULL;
+            }();
+            if (available == read_position && spin_ns != 0) {
+                Nx2Sampler::Scope mark{Nx2Sampler::BackSpin};
+                const u64 spin_start = Nx2Profile::Now();
+                u32 spins = 0;
+                while (available == read_position &&
+                       !hook_requested.load(std::memory_order_relaxed)) {
+                    Pause();
+                    available = published.load(std::memory_order_acquire);
+                    if ((++spins & 255) == 0 && (Nx2Profile::Now() - spin_start >= spin_ns ||
+                                                 stop_token.stop_requested())) {
+                        break;
+                    }
+                }
+                if (available == read_position &&
+                    hook_requested.load(std::memory_order_relaxed)) {
+                    // A hook asked for meanwhile: from the top, which runs it.
+                    continue;
+                }
             }
             if (available == read_position) {
                 g_back_busy.store(false, std::memory_order_release);
