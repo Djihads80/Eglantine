@@ -878,7 +878,9 @@ GameFileKind ClassifyGameFile(std::string_view path) {
         return GameFileKind::ZstdDictionaries;
     }
     std::string lower = Lower(path);
-    if (EndsWith(lower, ".zs")) {
+    if (EndsWith(lower, ".zst")) {
+        lower.resize(lower.size() - 4);
+    } else if (EndsWith(lower, ".zs")) {
         lower.resize(lower.size() - 3);
     }
     for (const std::string_view extension :
