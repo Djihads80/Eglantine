@@ -23,6 +23,9 @@
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_hardware_timer.h"
 #include "core/hle/kernel/k_light_lock.h"
+#include "core/hle/kernel/k_memory_block.h"
+#include "core/hle/kernel/k_process_page_table.h"
+#include "core/memory.h"
 #include "core/hle/kernel/k_timer_task.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/k_thread.h"
@@ -94,6 +97,35 @@ void DumpGuestWaits(Core::System& system, long waited_us) {
                                  now_tick) /
                                     1000,
                                 frames);
+            // Ocarina of Time's presentation thread (main+0x5704e0) sleeps 1 ms at a time until
+            // a word reads 1: [[x22 + 0xe0 + 64 * [x22 + 0x164] + 8]]. Which word, and what the
+            // other slots hold.
+            if (name && *name == "Presentation Thread") {
+                auto& memory = process->GetMemory();
+                const u64 object = thread.GetContext().r[22];
+                if (memory.IsValidVirtualAddressRange(object + 0xe0, 0x100)) {
+                    const u32 index = memory.Read32(object + 0x164);
+                    text += fmt::format(" | polls: x22 {:#x}, index {}", object, index);
+                    for (u32 slot = 0; slot < 4; ++slot) {
+                        const u64 entry = object + 0xe0 + 64 * slot;
+                        const u64 pointer = memory.Read64(entry + 8);
+                        Kernel::KMemoryInfo info{};
+                        Kernel::Svc::PageInfo page_info{};
+                        u32 state = ~0U;
+                        if (process->GetPageTable()
+                                .QueryInfo(std::addressof(info), std::addressof(page_info), pointer)
+                                .IsSuccess()) {
+                            state = static_cast<u32>(info.GetSvcState());
+                        }
+                        text += fmt::format(
+                            ", slot {}: {:#x} {:#x} -> word at {:#x} (memory state {}) = {}", slot,
+                            memory.Read64(entry), memory.Read64(entry + 16), pointer, state,
+                            memory.IsValidVirtualAddressRange(pointer, 4)
+                                ? fmt::format("{:#x}", memory.Read32(pointer))
+                                : std::string{"unmapped"});
+                    }
+                }
+            }
         }
     }
     LOG_INFO(HW_GPU, "Suspended channels polled for {} us (poll #{}), guest threads:{}", waited_us,
