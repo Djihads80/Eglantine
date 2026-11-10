@@ -230,8 +230,27 @@ public:
             if (manager->hot_count == 0) {
                 return;
             }
+            // One comparison per page per write epoch (HotPages::g_write_epoch).
+            const bool per_epoch = HotPages::ComparePerEpoch();
+            if (per_epoch) {
+                const u64 epoch = HotPages::g_write_epoch.load(std::memory_order_relaxed);
+                if (manager->hot_epoch != epoch) {
+                    manager->hot_epoch = epoch;
+                    for (u64& word : manager->Span(Type::HotChecked)) {
+                        word = 0;
+                    }
+                }
+            }
             manager->IterateWords(offset, size, [&](size_t index, u64 mask) {
                 u64 hot = manager->Span(Type::Hot)[index] & mask;
+                if (per_epoch) {
+                    // Compared already and its GPU copy still vouched for: nothing to do.
+                    const u64 done = hot & manager->Span(Type::HotChecked)[index] &
+                                     manager->Span(Type::HotValid)[index];
+                    hot_stats.skipped += static_cast<u64>(std::popcount(done));
+                    hot &= ~done;
+                    manager->Span(Type::HotChecked)[index] |= hot;
+                }
                 while (hot != 0) {
                     const u64 bit = hot & (~hot + 1);
                     hot &= hot - 1;

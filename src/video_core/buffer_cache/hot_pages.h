@@ -58,6 +58,26 @@ namespace VideoCommon::HotPages {
     return keep;
 }
 
+/// The write epoch: moved on where the GPU thread takes in the guest's writes of a command list
+/// (GPU::InvalidateGPUCache, before each list). A hot page is compared with its shadow once per
+/// epoch, at its first synchronization: every synchronization compared it before, 315,000 times a
+/// second in Mario Kart World, which cost what the saved mprotect calls had. The guest's data for
+/// a list is written before the list is submitted, so a list sees it.
+/// EDEN_NX2_HOT_PAGES_EPOCH=0 compares at every synchronization as before.
+inline std::atomic<u64> g_write_epoch{1};
+
+inline void NextWriteEpoch() noexcept {
+    g_write_epoch.fetch_add(1, std::memory_order_relaxed);
+}
+
+[[nodiscard]] inline bool ComparePerEpoch() noexcept {
+    static const bool per_epoch = [] {
+        const char* const value = std::getenv("EDEN_NX2_HOT_PAGES_EPOCH");
+        return value == nullptr || value[0] != '0';
+    }();
+    return per_epoch;
+}
+
 [[nodiscard]] inline size_t MaxPages() noexcept {
     static const size_t pages = [] {
         const char* const value = std::getenv("EDEN_NX2_HOT_PAGES_MAX");
@@ -110,7 +130,8 @@ inline void NoteFault() noexcept {
 
 /// Buffer cache side (under its lock).
 struct Stats {
-    u64 compares{};   ///< hot page synchronizations
+    u64 skipped{};    ///< hot page synchronizations in an epoch the page was already compared in
+    u64 compares{};   ///< hot page comparisons
     u64 unchanged{};  ///< ... that found the guest page equal to its shadow
     u64 uploads{};    ///< hot pages uploaded (changed, or no shadow yet)
     u64 promoted{};

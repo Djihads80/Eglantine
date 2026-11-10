@@ -35,6 +35,7 @@
 #include "video_core/engines/kepler_memory.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
+#include "video_core/buffer_cache/hot_pages.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_split.h"
 #include "video_core/gpu_thread.h"
@@ -121,6 +122,8 @@ struct GPU::Impl {
 
     /// Synchronizes CPU writes with Host GPU memory.
     void InvalidateGPUCache() {
+        // The guest's writes up to here count for what runs next: hot pages are compared again.
+        VideoCommon::HotPages::NextWriteEpoch();
         if (Tegra::Nx2HeldWrites()) {
             std::function<void(PAddr, size_t)> callback_writes([this](PAddr address, size_t size) {
                 renderer->ReadRasterizer()->OnCachedWrite(address, size);

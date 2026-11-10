@@ -41,6 +41,7 @@ enum class Type {
     Hist1,
     Hist2,
     Hist3,
+    HotChecked, ///< hot page already compared with its shadow in the manager's hot_epoch
     Max
 };
 
@@ -457,6 +458,7 @@ struct WordManager {
     bool hot_activity = false;
     bool hot_listed = false;
     u32 hot_count = 0;
+    u64 hot_epoch = 0; ///< HotPages::g_write_epoch the HotChecked bits belong to
 };
 
 } // namespace VideoCommon
