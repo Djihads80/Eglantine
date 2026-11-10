@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <thread>
 
 #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
@@ -61,19 +62,35 @@ public:
     }
 
 private:
-    // About 10 microseconds of spinning before sleeping.
-    static constexpr int SpinCount = 1024;
+    // About 10 microseconds of spinning before sleeping: 1024 `pause` on x86. On ARM64 `yield`
+    // is a single cycle: 1024 of them lasted 1-2 us, and a waiter went on to libc++'s atomic
+    // wait, which calls sched_yield for up to 64 us before it sleeps (0.6 ms of each Mario
+    // Kart World frame on the Odin 3's GPU back thread). There `isb` (tens of cycles) is the
+    // pause, 2048 times; EDEN_NX2_MUTEX_SPIN=<n> sets the count.
+    static int SpinCount() {
+#if defined(__aarch64__)
+        static const int spins = [] {
+            const char* const value = std::getenv("EDEN_NX2_MUTEX_SPIN");
+            const int count = value != nullptr ? std::atoi(value) : 0;
+            return count > 0 ? count : 2048;
+        }();
+        return spins;
+#else
+        return 1024;
+#endif
+    }
 
     static void Pause() {
 #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
         _mm_pause();
 #elif defined(__aarch64__)
-        asm volatile("yield");
+        asm volatile("isb");
 #endif
     }
 
     void LockContended() {
-        for (int spin = 0; spin < SpinCount; ++spin) {
+        const int spin_count = SpinCount();
+        for (int spin = 0; spin < spin_count; ++spin) {
             Pause();
             if (state.load(std::memory_order_relaxed) == 0) {
                 std::uint32_t expected = 0;
