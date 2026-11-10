@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <unordered_map>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -14,6 +16,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <fmt/format.h>
 
 #include "common/logging.h"
 #include "common/scope_exit.h"
@@ -350,6 +354,69 @@ void NceSamplerLoop() {
     }
 }
 
+// EDEN_NX2_FAULT_STATS=1: every 10 s, the guest's faults on GPU-cached pages: how many, on how
+// many pages, how they spread (a page that faults every frame could be left unprotected and
+// compared instead; one that faults once cannot), and the pages and PCs with the most.
+bool FaultStats() {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_FAULT_STATS");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+void NoteCachedPageFault(u64 page, u64 pc) {
+    struct Entry {
+        u64 count{};
+        u64 pc{};
+    };
+    static std::mutex mutex;
+    static std::unordered_map<u64, Entry> pages;
+    static auto window_start = std::chrono::steady_clock::now();
+    std::scoped_lock lock{mutex};
+    Entry& entry = pages[page];
+    ++entry.count;
+    entry.pc = pc;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - window_start < std::chrono::seconds{10}) {
+        return;
+    }
+    // Faults by how often their page faulted in the window.
+    static constexpr std::array<u64, 6> Limits{1, 5, 50, 250, 1000, ~u64{0}};
+    std::array<u64, 6> page_count{};
+    std::array<u64, 6> fault_count{};
+    u64 total = 0;
+    std::vector<std::pair<u64, Entry>> top(pages.begin(), pages.end());
+    for (const auto& [address, item] : top) {
+        total += item.count;
+        for (size_t i = 0; i < Limits.size(); ++i) {
+            if (item.count <= Limits[i]) {
+                ++page_count[i];
+                fault_count[i] += item.count;
+                break;
+            }
+        }
+    }
+    std::sort(top.begin(), top.end(),
+              [](const auto& a, const auto& b) { return a.second.count > b.second.count; });
+    std::string text;
+    for (size_t i = 0; i < Limits.size(); ++i) {
+        if (page_count[i] != 0) {
+            text += fmt::format(" | pages with up to {} faults: {} pages, {} faults",
+                                Limits[i] == ~u64{0} ? u64{999999} : Limits[i], page_count[i],
+                                fault_count[i]);
+        }
+    }
+    for (size_t i = 0; i < top.size() && i < 8; ++i) {
+        text += fmt::format(" | page {:#x}: {} (PC {:#x})", top[i].first, top[i].second.count,
+                            top[i].second.pc);
+    }
+    LOG_INFO(Core_ARM, "Guest faults on GPU-cached pages in {:.1f} s: {} on {} pages{}",
+             std::chrono::duration<double>(now - window_start).count(), total, top.size(), text);
+    pages.clear();
+    window_start = now;
+}
+
 } // namespace
 
 void* ArmNce::RestoreGuestContext(void* raw_context) {
@@ -551,6 +618,9 @@ bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, voi
     const bool handled =
         memory.InvalidateNCE(addr, Memory::YUZU_PAGESIZE, IsReadFault(esr), &invalidate);
     NoteGuestAccessFault(core, host_ctx, info, invalidate, handled);
+    if (handled && invalidate.rasterizer && FaultStats()) {
+        NoteCachedPageFault(GetInteger(addr), host_ctx.pc);
+    }
     if (handled && !invalidate.rasterizer && !invalidate.read_trap &&
         !invalidate.separate_heap_mapped && core->m_repeat_fault_count % 16 == 0 &&
         memory.RepairNceReadTrapPage(addr)) {
