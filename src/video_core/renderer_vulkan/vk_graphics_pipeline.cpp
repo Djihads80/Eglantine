@@ -889,8 +889,15 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         texture_cache.CheckFeedbackLoop(view_span);
         // A fragment barrier deferred in this render pass (RasterizerVulkan::FragmentBarrier):
         // end the pass, which records the barrier, if this draw may read what the pass wrote.
+        // EDEN_NX2_BARRIER_STORES=0 (measurement): storage written in the pass doesn't end it,
+        // only a sampled render target does.
+        static const bool stores_end_pass = [] {
+            const char* const value = std::getenv("EDEN_NX2_BARRIER_STORES");
+            return value == nullptr || value[0] != '0';
+        }();
         if (scheduler.HasFragmentBarrier() &&
-            (scheduler.RenderPassHasStores() || texture_cache.SamplesRenderTarget(view_span))) {
+            ((stores_end_pass && scheduler.RenderPassHasStores()) ||
+             texture_cache.SamplesRenderTarget(view_span))) {
             scheduler.RequestOutsideRenderPassOperationContext();
         }
     }
