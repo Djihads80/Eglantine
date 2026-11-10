@@ -4,8 +4,17 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <chrono>
+#include <cstdlib>
+#include <limits>
+#include <map>
+#include <mutex>
+#include <string>
+#include <fmt/format.h>
 #include "common/scope_exit.h"
 #include "common/scratch_buffer.h"
+#include "core/arm/debug.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_hardware_timer.h"
 #include "core/hle/kernel/k_process.h"
@@ -53,6 +62,81 @@ Result ResetSignal(Core::System& system, Handle handle) {
 }
 
 /// Wait for the given handles to synchronize, timeout after the specified nanoseconds
+namespace {
+
+// With EDEN_NX2_SLEEP_STATS=1: every 10 s, the guest's waits with a timeout by its length: how
+// many, how long they took, how many ran into the timeout and which threads those were.
+bool WaitStats() {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_SLEEP_STATS");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+void NoteTimedWait(Core::System& system, s64 timeout_ns, s64 took_ns, bool timed_out) {
+    struct Bucket {
+        s64 limit_ns;
+        u64 count{};
+        u64 timed_out{};
+        s64 took{};
+        s64 took_timed_out{};
+        std::map<std::string, u64> timed_out_threads;
+    };
+    static std::mutex mutex;
+    static std::array<Bucket, 6> buckets{{{1'100'000}, {5'100'000}, {17'100'000}, {34'000'000},
+                                          {110'000'000}, {(std::numeric_limits<s64>::max)()}}};
+    static auto window_start = std::chrono::steady_clock::now();
+    std::string name;
+    if (timed_out) {
+        name = Core::GetThreadName(&GetCurrentThread(system.Kernel())).value_or("?");
+    }
+    std::scoped_lock lock{mutex};
+    for (Bucket& bucket : buckets) {
+        if (timeout_ns <= bucket.limit_ns) {
+            ++bucket.count;
+            bucket.took += took_ns;
+            if (timed_out) {
+                ++bucket.timed_out;
+                bucket.took_timed_out += took_ns;
+                ++bucket.timed_out_threads[name];
+            }
+            break;
+        }
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - window_start < std::chrono::seconds{10}) {
+        return;
+    }
+    std::string text;
+    for (Bucket& bucket : buckets) {
+        if (bucket.count != 0) {
+            text += fmt::format(" | timeout up to {} us: {} waits, {} us on average, {} timed out",
+                                bucket.limit_ns / 1000, bucket.count,
+                                bucket.took / 1000 / static_cast<s64>(bucket.count),
+                                bucket.timed_out);
+            if (bucket.timed_out != 0) {
+                text += fmt::format(" (after {} us:",
+                                    bucket.took_timed_out / 1000 /
+                                        static_cast<s64>(bucket.timed_out));
+                for (const auto& [thread, count] : bucket.timed_out_threads) {
+                    text += fmt::format(" {} {}", thread, count);
+                }
+                text += ")";
+            }
+        }
+        bucket.count = 0;
+        bucket.timed_out = 0;
+        bucket.took = 0;
+        bucket.took_timed_out = 0;
+        bucket.timed_out_threads.clear();
+    }
+    LOG_INFO(Kernel_SVC, "Guest waits with a timeout in 10 s{}", text);
+    window_start = now;
+}
+
+} // Anonymous namespace
+
 Result WaitSynchronization(Core::System& system, int32_t* out_index, u64 user_handles,
                            int32_t num_handles, int64_t timeout_ns) {
     LOG_TRACE(Kernel_SVC, "called user_handles={:#x}, num_handles={}, timeout_ns={}", user_handles,
@@ -95,7 +179,17 @@ Result WaitSynchronization(Core::System& system, int32_t* out_index, u64 user_ha
     }
 
     // Wait on the objects.
+    const bool stats = timeout_ns > 0 && WaitStats();
+    const auto wait_start =
+        stats ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     Result res = KSynchronizationObject::Wait(system.Kernel(), out_index, objs.data(), num_handles, timeout);
+    if (stats) {
+        NoteTimedWait(system, timeout_ns,
+                      std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          std::chrono::steady_clock::now() - wait_start)
+                          .count(),
+                      res == ResultTimedOut);
+    }
 
     R_SUCCEED_IF(res == ResultSessionClosed);
     R_RETURN(res);
