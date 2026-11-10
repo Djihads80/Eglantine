@@ -127,6 +127,7 @@ struct CpuTopologyState {
     cpu_set_t allowed{};
     cpu_set_t performance{};
     cpu_set_t efficiency{};
+    cpu_set_t fastest{}; ///< The CPUs of the top weight; empty when all weigh the same
     bool separated = false;
     bool initialized = false;
 
@@ -245,6 +246,7 @@ void ComputeTopologyLocked(CpuTopologyState& state) {
     CPU_ZERO(&state.allowed);
     CPU_ZERO(&state.performance);
     CPU_ZERO(&state.efficiency);
+    CPU_ZERO(&state.fastest);
 
     if (sched_getaffinity(getpid(), sizeof(state.allowed), &state.allowed) != 0) {
         LOG_WARNING(Common, "Could not query process CPU affinity: {}",
@@ -283,6 +285,11 @@ void ComputeTopologyLocked(CpuTopologyState& state) {
     });
 
     const s64 fastest = cores.front().weight;
+    for (const auto& core : cores) {
+        if (core.weight == fastest) {
+            CPU_SET(core.cpu, &state.fastest);
+        }
+    }
     size_t taken = 0;
     for (const auto& core : cores) {
         const bool fast_enough =
@@ -628,6 +635,43 @@ void PinCurrentThreadFromEnvironment(const char* variable) {
         return;
     }
     LOG_INFO(Common, "{}: thread {} kept on CPUs {}", variable, tid, value);
+
+    std::scoped_lock policy_lock{state.policy_mutex};
+    ThreadPolicy& policy = AcquirePolicyLocked(state, tid);
+    policy.pin = pin;
+    policy.has_pin = true;
+    SnapshotCanaryLocked(state);
+#else
+    (void)variable;
+#endif
+}
+
+void PinCurrentThreadToFastestCores(const char* variable) {
+#if defined(__ANDROID__)
+    if (const char* const value = std::getenv(variable); value != nullptr && *value != '\0') {
+        if (std::strcmp(value, "off") != 0) {
+            PinCurrentThreadFromEnvironment(variable);
+        }
+        return;
+    }
+    const pid_t tid = gettid();
+    (void)&t_policy_registration;
+
+    CpuTopologyState& state = State();
+    std::scoped_lock topology_lock{state.topology_mutex};
+    EnsureTopologyLocked(state);
+    // A cluster of its own: a single top core is shared with whatever else the kernel puts there
+    // (the thread alone on one of the Odin 3's two was not better than free placement).
+    const int count = CPU_COUNT(&state.fastest);
+    if (count < 2 || count >= CPU_COUNT(&state.allowed)) {
+        return;
+    }
+    const cpu_set_t pin = state.fastest;
+    if (!ApplyCoreGroupLocked(state, tid, CoreGroup::Unrestricted, nullptr, &pin)) {
+        return;
+    }
+    LOG_INFO(Common, "Thread {} kept on the {} fastest CPUs ({}=off: free placement)", tid, count,
+             variable);
 
     std::scoped_lock policy_lock{state.policy_mutex};
     ThreadPolicy& policy = AcquirePolicyLocked(state, tid);

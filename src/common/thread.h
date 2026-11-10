@@ -115,6 +115,9 @@ void SetCurrentThreadToAllCores();
 /// Keeps the current thread on the CPUs that the environment variable `variable` lists ("7", "6-7",
 /// "0,2-3") in place of its core group. Android only; nothing when the variable is not set.
 void PinCurrentThreadFromEnvironment(const char* variable);
+/// As PinCurrentThreadFromEnvironment; where `variable` is not set, the thread is kept on the
+/// fastest CPUs if those are a cluster of two or more beside slower ones ("off": no CPU list).
+void PinCurrentThreadToFastestCores(const char* variable);
 
 void RefreshThreadPolicies();
 void PollThreadPolicies();

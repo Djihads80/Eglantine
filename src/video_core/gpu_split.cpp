@@ -678,9 +678,13 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     back_running.store(true, std::memory_order_release);
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();
-    // EDEN_NX2_BACK_CPUS (e.g. "7" or "6-7"): the CPUs of this thread, for placement tests.
-    // EDEN_NX2_FRONT_CPUS and EDEN_NX2_WORKER_CPUS: the same for the GPU and VulkanWorker threads.
-    Common::PinCurrentThreadFromEnvironment("EDEN_NX2_BACK_CPUS");
+    // This thread is the one that limits the frame rate (Mario Kart World on the Odin 3: busy
+    // 87% of the time, the game's cores asleep for 56%). Left to the kernel it spent half its
+    // time on the 3.5 GHz cores of a CPU whose two prime cores reach 4.3 GHz: on Android it is
+    // kept on the fastest cluster (+2.5 fps there). EDEN_NX2_BACK_CPUS=<list> ("7", "6-7")
+    // names the CPUs, =off leaves it to the kernel. EDEN_NX2_FRONT_CPUS and
+    // EDEN_NX2_WORKER_CPUS: CPU lists for the GPU and VulkanWorker threads (placement tests).
+    Common::PinCurrentThreadToFastestCores("EDEN_NX2_BACK_CPUS");
     system->RegisterHostThread();
 #ifdef _WIN32
     g_back_thread_id.store(GetCurrentThreadId(), std::memory_order_relaxed);
