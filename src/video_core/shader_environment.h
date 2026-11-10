@@ -28,6 +28,11 @@ namespace Tegra {
 class Memorymanager;
 }
 
+namespace Shader::Ampere {
+struct Instruction;
+struct LoweredProgram;
+} // namespace Shader::Ampere
+
 namespace VideoCommon {
 
 /// A native (Switch 2) program after capture and lowering to Maxwell code. The shader cache keeps
@@ -287,6 +292,12 @@ private:
     u32 initial_offset{};
     u32 viewport_transform_state = 1;
 };
+
+/// Builds the shader cache's lowered code for a captured native program: the program header, the
+/// lowered instructions with Maxwell scheduling words, then the native address map.
+[[nodiscard]] std::shared_ptr<LoweredNativeCode> MakeLoweredNativeCode(
+    std::span<const Shader::Ampere::Instruction> native, Shader::Ampere::LoweredProgram& lowered,
+    const Shader::ProgramHeader& sph, u32 native_header_size);
 
 void SerializePipeline(std::span<const char> key, std::span<const GenericEnvironment* const> envs,
                        const std::filesystem::path& filename, u32 cache_version,

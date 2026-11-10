@@ -509,6 +509,37 @@ void GenericEnvironment::InitializeNativeCode(std::shared_ptr<const LoweredNativ
     lowered_native = std::move(lowered);
 }
 
+std::shared_ptr<LoweredNativeCode> MakeLoweredNativeCode(
+    std::span<const Shader::Ampere::Instruction> native, Shader::Ampere::LoweredProgram& lowered,
+    const Shader::ProgramHeader& sph, u32 native_header_size) {
+    VideoCommon::ApplyMkwZeroDepthFallback(native, lowered);
+    auto result = std::make_shared<LoweredNativeCode>();
+    result->native_program_key = Shader::Ampere::NativeProgramKey(native);
+    static const bool hash_for_indirect_reset = [] {
+        const char* value = std::getenv("EDEN_NX2_RESETFIX");
+        return !value || std::string_view{value} != "0";
+    }();
+    if (hash_for_indirect_reset) {
+        result->diagnostic_key = result->native_program_key;
+    }
+    result->texture_bound = lowered.required_texture_buffer;
+    result->source_size = native_header_size + lowered.source_size;
+    auto& lowered_code = result->code;
+    lowered_code.resize(sizeof(sph) / sizeof(u64));
+    std::memcpy(lowered_code.data(), &sph, sizeof(sph));
+    for (const u64 instruction : lowered.instructions) {
+        if ((lowered_code.size() * sizeof(u64)) % 32 == 0) {
+            lowered_code.push_back(0); // Maxwell scheduling word, absent from native instructions.
+        }
+        lowered_code.push_back(instruction);
+    }
+    // Keep the original padding ABI, then retain the native address map as
+    // unreachable data. Existing disk-cache serialization carries it with code.
+    lowered_code.push_back(0);
+    Shader::Ampere::AppendNativeAddressMap(lowered_code, lowered.source_instruction_offsets);
+    return result;
+}
+
 std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32 source_header_size,
                                                                             bool geometry) {
     using Shader::Ampere::Instruction;
@@ -641,33 +672,9 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
             program_base, lowered.error_offset, lowered.error, words[0] & 0xfff, words[0],
             words[1], words[2], words[3]);
     }
-    VideoCommon::ApplyMkwZeroDepthFallback(native, lowered);
-    auto result = std::make_shared<LoweredNativeCode>();
-    result->native_program_key = Shader::Ampere::NativeProgramKey(native);
-    static const bool hash_for_indirect_reset = [] {
-        const char* value = std::getenv("EDEN_NX2_RESETFIX");
-        return !value || std::string_view{value} != "0";
-    }();
-    if (hash_for_indirect_reset) {
-        result->diagnostic_key = result->native_program_key;
-    }
-    result->texture_bound = lowered.required_texture_buffer;
-    result->source_size = native_header_size + lowered.source_size;
-    auto& lowered_code = result->code;
-    lowered_code.resize(sizeof(sph) / sizeof(u64));
-    std::memcpy(lowered_code.data(), &sph, sizeof(sph));
-    for (const u64 instruction : lowered.instructions) {
-        if ((lowered_code.size() * sizeof(u64)) % 32 == 0) {
-            lowered_code.push_back(0); // Maxwell scheduling word, absent from native instructions.
-        }
-        lowered_code.push_back(instruction);
-    }
-    // Keep the original padding ABI, then retain the native address map as
-    // unreachable data. Existing disk-cache serialization carries it with code.
-    lowered_code.push_back(0);
-    Shader::Ampere::AppendNativeAddressMap(lowered_code, lowered.source_instruction_offsets);
+    auto result = MakeLoweredNativeCode(native, lowered, sph, native_header_size);
     // What Analyze returns for this program once the environment holds the lowered code.
-    const u64 shader_hash = NativeShaderHash(lowered_code);
+    const u64 shader_hash = NativeShaderHash(result->code);
     if (VideoCommon::Nx2Diag::Active()) {
         VideoCommon::Nx2Diag::Diagnostics::Get().RegisterProgram(
             program_base, result->native_program_key, shader_hash);
