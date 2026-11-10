@@ -281,8 +281,13 @@ public:
                         func(page, static_cast<const u8*>(shadow), BYTES_PER_PAGE);
                         continue;
                     }
-                    const u64 begin = query_cpu_range > page ? query_cpu_range - page : 0;
-                    const u64 end = (std::min<u64>)(query_cpu_range + query_size - page,
+                    // Per epoch the whole page is compared (it then counts as checked); else
+                    // only the bytes this synchronization covers.
+                    const u64 begin =
+                        per_epoch ? 0 : (query_cpu_range > page ? query_cpu_range - page : 0);
+                    const u64 end =
+                        per_epoch ? BYTES_PER_PAGE
+                                  : (std::min<u64>)(query_cpu_range + query_size - page,
                                                     BYTES_PER_PAGE);
                     if (std::memcmp(guest + begin, shadow + begin, end - begin) == 0) {
                         ++hot_stats.unchanged;
