@@ -22,6 +22,7 @@
 #include "video_core/engines/kepler_memory.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
+#include "video_core/buffer_cache/hot_pages.h"
 #include "video_core/engines/puller.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_split.h"
@@ -646,6 +647,11 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             return;
         }
         if (acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
+            // Met by the word in memory: the CPU may have released it, after writing what the
+            // commands behind it use (hot pages are compared again, buffer_cache/hot_pages.h).
+            if (VideoCommon::HotPages::Enabled()) {
+                OnBack([] { VideoCommon::HotPages::NextWriteEpoch(); });
+            }
             return;
         }
         // Registered before the fences run, so a release among them that meets the value counts

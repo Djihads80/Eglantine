@@ -18,6 +18,7 @@
 #include "core/core.h"
 #include "core/memory.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/buffer_cache/hot_pages.h"
 #include "video_core/dma_pusher.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/engines/kepler_compute.h"
@@ -166,6 +167,16 @@ void DmaPusher::DispatchCalls() {
     dma_state.is_last_call = true;
     // A submission: the CPU may have written the texture pools since the last one.
     Tegra::Nx2BumpPoolGeneration();
+    // And hot pages (buffer_cache/hot_pages.h): a channel also comes here when it resumes after a
+    // semaphore the CPU released, which is how Ocarina of Time says the data of a list it
+    // submitted earlier is ready. In the order of the back's work.
+    if (VideoCommon::HotPages::Enabled()) {
+        if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+            split.Defer([] { VideoCommon::HotPages::NextWriteEpoch(); });
+        } else {
+            VideoCommon::HotPages::NextWriteEpoch();
+        }
+    }
     while (system.IsPoweredOn()) {
         if (!Step()) {
             break;
