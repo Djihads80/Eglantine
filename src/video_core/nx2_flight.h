@@ -3,8 +3,10 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <vector>
 
 #include "common/common_types.h"
 
@@ -58,6 +60,19 @@ inline std::atomic<bool> g_enabled{};
 inline std::array<std::atomic<u32>, Count> g_counters{};
 /// The number of the frame being presented (its record's).
 inline std::atomic<u32> g_frame{};
+
+/// The frame's draws and dispatches in order (the recording thread only): one word each, the
+/// pipeline's id in bits 0-31, a count (vertices or task workgroups, or the dispatch's width) in
+/// bits 32-51, flags in bits 52-55 and the channel in bits 56-63.
+inline std::vector<u64> g_sequence;
+inline constexpr u64 StepIndexed = 1, StepMesh = 2, StepEmpty = 4, StepCompute = 8;
+
+inline void Step(u64 pipeline_id, u64 count, u64 flags, u64 channel) {
+    if (g_enabled.load(std::memory_order_relaxed)) [[unlikely]] {
+        g_sequence.push_back((pipeline_id & 0xffffffffULL) | ((std::min)(count, u64{0xfffff}) << 32) |
+                             ((flags & 0xf) << 52) | ((channel & 0xff) << 56));
+    }
+}
 
 inline void Note(Counter counter, u32 amount = 1) {
     if (g_enabled.load(std::memory_order_relaxed)) [[unlikely]] {

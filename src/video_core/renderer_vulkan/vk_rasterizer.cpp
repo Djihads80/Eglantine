@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <unordered_set>
 #include <map>
 #include <algorithm>
 #include <array>
@@ -442,6 +443,26 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     }
     // Task/mesh pipelines: the draw's vertex count is the number of task workgroups.
     mesh_draw = pipeline->IsMeshPipeline();
+    if (VideoCommon::Nx2Flight::g_enabled.load(std::memory_order_relaxed)) [[unlikely]] {
+        namespace Flight = VideoCommon::Nx2Flight;
+        const auto& flight_state = maxwell3d->draw_manager.draw_state;
+        const u64 count =
+            is_indexed ? flight_state.index_buffer.count : flight_state.vertex_buffer.count;
+        const u64 id = reinterpret_cast<u64>(pipeline) >> 4;
+        static std::unordered_set<u64> described;
+        if (described.insert(id & 0xffffffffULL).second) {
+            const auto& hashes = pipeline->ShaderHashes();
+            LOG_INFO(Render_Vulkan,
+                     "Flight pipeline {:08x}: shaders {:016x} {:016x} {:016x} {:016x} {:016x} "
+                     "{:016x}{}",
+                     id & 0xffffffffULL, hashes[0], hashes[1], hashes[2], hashes[3], hashes[4],
+                     hashes[5], mesh_draw ? ", task/mesh" : "");
+        }
+        Flight::Step(id, count,
+                     (is_indexed ? Flight::StepIndexed : 0) | (mesh_draw ? Flight::StepMesh : 0) |
+                         (mesh_draw && count == 0 ? Flight::StepEmpty : 0),
+                     gpu_memory->GetID());
+    }
     mesh_emulation_buffer.draw = {};
     // EDEN_NX2_NO_MESH=1: skip task/mesh draws as before they were supported (A/B comparisons).
     // EDEN_NX2_NO_MESH_FILE=<path>: skip them while that file exists (checked every 1024 draws),
@@ -1345,6 +1366,17 @@ void RasterizerVulkan::DispatchCompute() {
         }
         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute pipeline unavailable");
         return;
+    }
+    if (VideoCommon::Nx2Flight::g_enabled.load(std::memory_order_relaxed)) [[unlikely]] {
+        namespace Flight = VideoCommon::Nx2Flight;
+        const u64 id = reinterpret_cast<u64>(pipeline) >> 4;
+        static std::unordered_set<u64> described;
+        if (described.insert(id & 0xffffffffULL).second) {
+            LOG_INFO(Render_Vulkan, "Flight pipeline {:08x}: compute, shader {:016x}, program {:#x}",
+                     id & 0xffffffffULL, pipeline->ShaderHash(), dump_program());
+        }
+        Flight::Step(id, kepler_compute->launch_description.grid_dim_x, Flight::StepCompute,
+                     gpu_memory->GetID());
     }
     // By the shader hash (of the lowered code, as frame dumps name dispatches) or the native
     // program key (of the game's own code, as EDEN_NX2_SHADER_DUMP names files), which stays

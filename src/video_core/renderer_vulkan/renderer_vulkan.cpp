@@ -249,6 +249,19 @@ void FlightEndFrame() {
     }
     Flight::g_frame.store(frame, std::memory_order_relaxed);
     std::fwrite(&record, sizeof(record), 1, file);
+    static std::FILE* const draws = std::fopen(
+        (Common::FS::GetEdenPathString(Common::FS::EdenPath::LogDir) + "/nx2_flight_draws.bin")
+            .c_str(),
+        "wb");
+    if (draws != nullptr) {
+        const std::array<u32, 2> header{frame, static_cast<u32>(Flight::g_sequence.size())};
+        std::fwrite(header.data(), sizeof(header), 1, draws);
+        std::fwrite(Flight::g_sequence.data(), sizeof(u64), Flight::g_sequence.size(), draws);
+        if (frame % 64 == 0) {
+            std::fflush(draws);
+        }
+    }
+    Flight::g_sequence.clear();
     if (frame % 64 == 0) {
         std::fflush(file);
     }
