@@ -548,6 +548,12 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
             draw_func();
         }
     }
+    // After the draw is recorded: nothing between can end its pass.
+    if (const auto& draw_regs = maxwell3d->regs;
+        (draw_regs.depth_test_enable != 0 && draw_regs.depth_write_enabled != 0) ||
+        draw_regs.stencil_enable != 0) {
+        scheduler.NoteRenderPassDepthWrite();
+    }
     submitted = true;
     static u32 native_capture_count{};
     if (maxwell3d->GetNativeMacroEngine().native_turing &&
@@ -1184,6 +1190,10 @@ void RasterizerVulkan::Clear(u32 layer_count) {
                                  (!use_color || color_full_channels) && ds_deferrable;
     if (!can_defer_clear) {
         scheduler.RequestRenderpass(framebuffer);
+    }
+    if (ds_used) {
+        // In the active pass, or in the one a deferred clear begins.
+        scheduler.NoteRenderPassDepthWrite();
     }
 
     query_cache.NotifySegment(true);

@@ -180,6 +180,19 @@ public:
         return render_pass_has_stores;
     }
 
+    /// The depth or stencil attachment was written since the active render pass began (or will
+    /// be when the next one begins: a deferred clear): by a draw that writes depth or stencil,
+    /// or by a clear. Until the pass ends, the attachment's memory holds older values than the
+    /// pass (a tile GPU keeps the new ones in tile memory), so a draw that samples the bound
+    /// depth buffer must end the pass first (TextureCacheRuntime::BarrierFeedbackLoop).
+    void NoteRenderPassDepthWrite() {
+        render_pass_wrote_depth = true;
+    }
+
+    [[nodiscard]] bool RenderPassWroteDepth() const {
+        return render_pass_wrote_depth;
+    }
+
     /// Update the pipeline to the current execution context.
     bool UpdateGraphicsPipeline(GraphicsPipeline* pipeline);
 
@@ -488,6 +501,7 @@ private:
     bool graphics_pipeline_missing{};
     bool fragment_barrier_pending{};
     bool render_pass_has_stores{};
+    bool render_pass_wrote_depth{};
     std::unique_ptr<CommandPool> command_pool;
 
     VideoCommon::QueryCacheBase<QueryCacheParams>* query_cache = nullptr;

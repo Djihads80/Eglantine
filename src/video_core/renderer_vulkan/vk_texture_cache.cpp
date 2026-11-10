@@ -1523,6 +1523,19 @@ void TextureCacheRuntime::EraseResolveShadow(VkImage msaa_image) {
 }
 
 void TextureCacheRuntime::BarrierFeedbackLoop() {
+    // The draw samples the depth buffer it is bound to draw to. The render pass ends so that what
+    // the pass wrote to it is in its memory. When the pass wrote nothing to it, its memory is up
+    // to date and the pass can go on: titles draw hundreds of such draws in a row (soft particles,
+    // decals, water) with depth writes off, and each ended pass is a tile store and load on a
+    // phone GPU (Ocarina of Time: ~520 of its ~820 render passes a frame).
+    // EDEN_NX2_FEEDBACK_DEPTH_WRITES=0 ends the pass at every such draw, as before.
+    static const bool only_after_writes = [] {
+        const char* const value = std::getenv("EDEN_NX2_FEEDBACK_DEPTH_WRITES");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (only_after_writes && !scheduler.RenderPassWroteDepth()) {
+        return;
+    }
     scheduler.RequestOutsideRenderPassOperationContext();
 }
 

@@ -771,6 +771,7 @@ void Scheduler::EndRenderPass()
         ++recording_epoch;
         fragment_barrier_pending = false;
         render_pass_has_stores = false;
+        render_pass_wrote_depth = false;
 
         query_cache->CounterClose(VideoCommon::QueryType::StreamingByteCount);
 
