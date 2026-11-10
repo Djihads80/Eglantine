@@ -40,6 +40,8 @@ inline std::atomic<u32> g_frames{};
 /// record holds how many submissions the GPU has not finished (0: the GPU is idle).
 inline std::atomic<u64> g_gpu_submitted{};
 inline std::atomic<u64> g_gpu_done{};
+/// Render passes begun on the host (Scheduler::CommitRenderPassBegin).
+inline std::atomic<u32> g_render_passes{};
 constinit inline thread_local Role t_role{Role::None};
 
 /// The current thread takes `role`. The first call starts the sampler if EDEN_NX2_SAMPLE is set.

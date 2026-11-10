@@ -15,6 +15,7 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include "video_core/nx2_sampler.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 
 #include "common/logging.h"
@@ -245,6 +246,7 @@ void Scheduler::CommitRenderPassBegin() {
         return;
     }
     begin_pending = false;
+    VideoCommon::Nx2Sampler::g_render_passes.fetch_add(1, std::memory_order_relaxed);
     std::unique_ptr<CommandChunk> pass = std::move(chunk);
     chunk = std::move(outer_chunk);
     for (std::unique_ptr<CommandChunk>& phase : pre_chunks) {

@@ -74,7 +74,8 @@ struct Tick {
     std::array<u8, RoleCount> asked; ///< A stack was asked for in this record
     u8 gpu_pending;       ///< Submissions the GPU has not finished (255: that many or more)
     u8 has_gpu_pending;   ///< 1: gpu_pending is filled
-    std::array<u8, 4> padding;
+    u16 render_passes;    ///< Low bits of the render passes begun so far
+    u16 submissions;      ///< Low bits of the host GPU tick last submitted
     /// 1 + the stack that arrived in this record (asked for in an earlier one); 0: none.
     std::array<u32, RoleCount> stacks;
     std::array<char, 12> states; ///< 'R', 'S', 'D'... of the roles, then of WatchedNames; 0: none
@@ -308,6 +309,8 @@ void SamplerLoop() {
         const u64 done = g_gpu_done.load(std::memory_order_relaxed);
         record.gpu_pending = static_cast<u8>(submitted > done ? (std::min<u64>)(submitted - done, 255) : 0);
         record.has_gpu_pending = 1;
+        record.render_passes = static_cast<u16>(g_render_passes.load(std::memory_order_relaxed));
+        record.submissions = static_cast<u16>(submitted);
         for (size_t i = 0; i < WatchedCount; ++i) {
             char state{};
             u8 cpu = 0xff;
