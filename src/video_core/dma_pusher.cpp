@@ -4,6 +4,9 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <map>
+#include <string>
+#include <unordered_map>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -74,6 +77,94 @@ struct EntrySyncStats {
     u64 newly_written{};   ///< Of waits: the pages were GPU-written after it (the wait mattered)
 };
 EntrySyncStats g_entry_sync_stats;
+
+// EDEN_NX2_LIST_DIFF=1: every 10 s, how the command lists the GPU writes differ from the last time
+// the list at the same address was read: the same length, the same method headers, how many
+// argument words changed and of which methods. The GPU thread waits for each of these lists
+// (Ocarina of Time: ~15 ms a frame); a list whose methods stay the same and whose changing words
+// are draw arguments could be drawn from the GPU's copy without reading it back.
+void NoteGpuWrittenListDiff(GPUVAddr address, std::span<const CommandHeader> commands) {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_LIST_DIFF");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (!enabled) {
+        return;
+    }
+    struct Stats {
+        u64 lists{};
+        u64 words{};
+        u64 same_size{};
+        u64 same_headers{};
+        u64 identical{};
+        u64 diff_words{};
+        u64 diff_lists{};
+        u64 min_words{~u64{0}};
+        u64 max_words{};
+    };
+    // Only the GPU thread reads lists.
+    static std::unordered_map<u64, std::vector<u32>> last;
+    static std::map<u32, u64> by_method;
+    static Stats stats;
+    static auto window_start = std::chrono::steady_clock::now();
+    const size_t count = commands.size();
+    ++stats.lists;
+    stats.words += count;
+    stats.min_words = (std::min<u64>)(stats.min_words, count);
+    stats.max_words = (std::max<u64>)(stats.max_words, count);
+    std::vector<u32>& previous = last[address];
+    if (previous.size() == count) {
+        ++stats.same_size;
+        bool headers_same = true;
+        u64 diffs = 0;
+        for (size_t i = 0; i < count;) {
+            const CommandHeader header = commands[i];
+            headers_same &= header.argument == previous[i];
+            const u32 mode = static_cast<u32>(header.mode.Value());
+            if (mode == 4) { // inline: the argument is in the header
+                ++i;
+                continue;
+            }
+            const u32 arguments = header.method_count;
+            for (u32 k = 0; k < arguments && i + 1 + k < count; ++k) {
+                if (commands[i + 1 + k].argument != previous[i + 1 + k]) {
+                    ++diffs;
+                    // The method the word goes to: increasing (0, 1), once (5), not (2, 3).
+                    const u32 step = mode == 0 || mode == 1 ? k : (mode == 5 ? (std::min)(k, 1U) : 0);
+                    ++by_method[header.method + step];
+                }
+            }
+            i += 1 + size_t{arguments};
+        }
+        stats.same_headers += headers_same ? 1 : 0;
+        stats.identical += headers_same && diffs == 0 ? 1 : 0;
+        stats.diff_words += diffs;
+        stats.diff_lists += diffs != 0 ? 1 : 0;
+    }
+    previous.resize(count);
+    std::memcpy(previous.data(), commands.data(), count * sizeof(u32));
+    const auto now = std::chrono::steady_clock::now();
+    if (now - window_start < std::chrono::seconds{10}) {
+        return;
+    }
+    std::vector<std::pair<u32, u64>> top(by_method.begin(), by_method.end());
+    std::sort(top.begin(), top.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    std::string text;
+    for (size_t i = 0; i < top.size() && i < 16; ++i) {
+        text += fmt::format(" {:#x}:{}", top[i].first, top[i].second);
+    }
+    LOG_INFO(HW_GPU,
+             "GPU-written command lists in 10 s: {} lists at {} addresses, {} words ({}-{} each) | "
+             "{} as long as last time, {} with the same method headers, {} identical | {} "
+             "argument words differ in {} lists, by method:{}",
+             stats.lists, last.size(), stats.words, stats.min_words, stats.max_words,
+             stats.same_size, stats.same_headers, stats.identical, stats.diff_words,
+             stats.diff_lists, text);
+    stats = {};
+    by_method.clear();
+    window_start = now;
+}
 
 void NoteEntrySync(bool sync, bool written, bool waited, bool newly_written) {
     EntrySyncStats& stats = g_entry_sync_stats;
@@ -632,6 +723,9 @@ bool DmaPusher::Step() {
             const std::span<const CommandHeader> commands{command_headers.data(), header.size};
             RecordParsedEntry(header, commands);
             NoteEntryWords(header, "GPU-written list copy", commands, command_resume_offset);
+            if (command_resume_offset == 0) {
+                NoteGpuWrittenListDiff(dma_state.dma_get, commands);
+            }
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else {
