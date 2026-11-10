@@ -294,13 +294,23 @@ inline void Nx2MarkCommandListPage(u64 device_address) {
 /// for the tick of the last GPU write to those pages itself and copies the bytes from the
 /// buffer's memory under the cache locks; the GPU thread only submits when that write is not
 /// submitted yet. Anything else (data the host can't read, a page written again and again) falls
-/// back to the GPU thread. Off by default.
+/// back to the GPU thread. EDEN_NX2_GUEST_FLUSH=0/1 overrides the default: on for Android
+/// titles that run without the GPU thread split (Ocarina of Time on the Odin 3: 43.5 -> 39.2 ms
+/// a frame, 98.7% of ~1,600 such stores a second needing no wait at all), off elsewhere (the
+/// split's back owns the caches).
 [[nodiscard]] inline bool Nx2GuestFlush() {
-    static const bool enabled = [] {
+    static const int forced = [] {
         const char* const value = std::getenv("EDEN_NX2_GUEST_FLUSH");
-        return value != nullptr && value[0] == '1';
+        return value != nullptr ? int{value[0] != '0'} : -1;
     }();
-    return enabled;
+    if (forced >= 0) {
+        return forced != 0;
+    }
+#ifdef __ANDROID__
+    return Nx2SplitMode() == '0';
+#else
+    return false;
+#endif
 }
 
 /// Whether the per-page write ticks below are kept.
