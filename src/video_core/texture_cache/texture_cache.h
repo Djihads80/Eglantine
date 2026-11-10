@@ -750,11 +750,12 @@ void TextureCache<P>::CheckFeedbackLoop(std::span<const ImageViewInOut> views) {
 }
 
 template <class P>
-bool TextureCache<P>::SamplesRenderTarget(std::span<const ImageViewInOut> views) {
+bool TextureCache<P>::SamplesRenderTarget(std::span<const ImageViewInOut> views,
+                                          bool depth_written) {
     if (rt_active_mask == 0) {
         return false;
     }
-    const bool depth_active = (rt_active_mask & (1u << NUM_RT)) != 0;
+    const bool depth_active = depth_written && (rt_active_mask & (1u << NUM_RT)) != 0;
     for (const auto& view : views) {
         if (!view.id) {
             continue;

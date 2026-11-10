@@ -18,6 +18,38 @@
 
 namespace Tegra {
 
+/// EDEN_NX2_LIST_PREDICT=<n>|a (DmaPusher::PredictGpuWrittenCommands): the unchanged reads a
+/// GPU-written command list needs before it is run with the words of its read before ("a": 0);
+/// -1: off. Read on first use, after env.txt.
+[[nodiscard]] inline int Nx2ListPredict() {
+    static const int streak = [] {
+        const char* const value = std::getenv("EDEN_NX2_LIST_PREDICT");
+        if (value != nullptr && value[0] == 'a') {
+            return 0;
+        }
+        if (value != nullptr && value[0] >= '1' && value[0] <= '9') {
+            return std::atoi(value);
+        }
+        return -1;
+    }();
+    return streak;
+}
+
+/// With list prediction (and channels that suspend on a pending copy, EDEN_NX2_LIST_SUSPEND),
+/// the copies of GPU-written command list pages are not submitted right after their writer: a
+/// predicted list doesn't wait for its copy, and a list that does wait asks for the submission
+/// (RasterizerInterface::IsGpuTickDone). Ocarina of Time made ~124 submissions a frame.
+/// EDEN_NX2_LIST_LAZY_SUBMIT=0: submit at once as before.
+[[nodiscard]] inline bool Nx2ListLazySubmit() {
+    static const bool lazy = [] {
+        const char* const off = std::getenv("EDEN_NX2_LIST_LAZY_SUBMIT");
+        const char* const suspend = std::getenv("EDEN_NX2_LIST_SUSPEND");
+        return Nx2ListPredict() >= 0 && (off == nullptr || off[0] != '0') &&
+               (suspend == nullptr || suspend[0] != '0');
+    }();
+    return lazy;
+}
+
 /// EDEN_NX2_LIST_DIFF: macro calls left to trace (their parameters and method writes are logged):
 /// set when a GPU-written command list is read, to see what its words are for.
 inline std::atomic<int> g_nx2_trace_macros{0};

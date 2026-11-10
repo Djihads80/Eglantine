@@ -116,9 +116,9 @@ public:
         return GpuWrittenList::Unknown;
     }
 
-    /// Whether the host GPU passed `tick`, without waiting. Asks for deferred work to be
-    /// submitted when the tick is not submitted yet, so it completes.
-    virtual bool IsGpuTickDone([[maybe_unused]] u64 tick) {
+    /// Whether the host GPU passed `tick`, without waiting. With `submit`, work not submitted
+    /// yet that the tick needs is submitted (or asked for), so it completes.
+    virtual bool IsGpuTickDone([[maybe_unused]] u64 tick, [[maybe_unused]] bool submit = true) {
         return true;
     }
 

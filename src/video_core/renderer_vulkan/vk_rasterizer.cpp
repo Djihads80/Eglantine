@@ -1502,7 +1502,15 @@ void Vulkan::RasterizerVulkan::DisableGraphicsUniformBuffer(size_t stage, u32 in
 void RasterizerVulkan::FlushAll() {}
 
 void RasterizerVulkan::SubmitNx2ListCopies() {
-    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick()) && !scheduler.DeferFlush()) {
+    if (!buffer_cache.Nx2CopyListPages(scheduler.CurrentTick())) {
+        return;
+    }
+    // Tegra::Nx2ListLazySubmit: a list that waits for its copy asks for the submission
+    // (IsGpuTickDone); the others' copies go with the next one.
+    if (Tegra::Nx2ListLazySubmit() && !VideoCommon::GpuSplit::Get().Active()) {
+        return;
+    }
+    if (!scheduler.DeferFlush()) {
         scheduler.Flush();
     }
 }
@@ -1522,9 +1530,19 @@ VideoCore::RasterizerInterface::GpuWrittenList RasterizerVulkan::ReadGpuWrittenC
     }
 }
 
-bool RasterizerVulkan::IsGpuTickDone(u64 tick) {
+bool RasterizerVulkan::IsGpuTickDone(u64 tick, bool submit) {
     if (scheduler.IsFree(tick)) {
         return true;
+    }
+    if (!submit) {
+        scheduler.GetMasterSemaphore().Refresh();
+        return scheduler.IsFree(tick);
+    }
+    // Copies left unsubmitted (SubmitNx2ListCopies): on the GPU thread, which owns the scheduler
+    // without the split.
+    if (!scheduler.IsSubmitted(tick) && Tegra::Nx2ListLazySubmit() &&
+        !VideoCommon::GpuSplit::Get().Active()) {
+        scheduler.Flush();
     }
     // A deferred submission (Scheduler::DeferFlush) is only made by the split's back: ask it to
     // submit, or the tick never completes while the front polls.
@@ -1862,6 +1880,19 @@ void RasterizerVulkan::WaitForIdle() {
 
     query_cache.NotifyWFI();
 
+    // Inside a render pass, as a fragment barrier (FragmentBarrier): the next draw ends the pass
+    // only if it reads what the pass wrote; a copy, a dispatch or another framebuffer end it
+    // anyway. Ocarina of Time ended ~80 render passes a frame here, Mario Kart World ~35.
+    // EDEN_NX2_DEFER_WAIT_FOR_IDLE=0 ends the render pass here as before.
+    static const bool defer = [] {
+        const char* value = std::getenv("EDEN_NX2_DEFER_WAIT_FOR_IDLE");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (defer && scheduler.IsRenderPassActive()) {
+        scheduler.DeferFragmentBarrier();
+        fence_manager.SignalOrdering();
+        return;
+    }
     scheduler.RequestOutsideRenderPassOperationContext();
     scheduler.Record([event = *wfi_event, flags](vk::CommandBuffer cmdbuf) {
         cmdbuf.SetEvent(event, flags);
@@ -2201,7 +2232,8 @@ bool AccelerateDMA::BufferCopy(GPUVAddr src_address, GPUVAddr dest_address, u64 
     std::scoped_lock lock{buffer_cache.mutex};
     buffer_cache.Nx2CollectListCopies(true);
     const bool copied = buffer_cache.DMACopy(src_address, dest_address, amount);
-    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick())) {
+    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick()) &&
+        !(Tegra::Nx2ListLazySubmit() && !VideoCommon::GpuSplit::Get().Active())) {
         scheduler.Flush();
     }
     buffer_cache.Nx2CollectListCopies(false);

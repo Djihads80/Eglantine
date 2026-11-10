@@ -364,13 +364,7 @@ bool ListSuspendEnabled() {
 // -1: off. Read on the first list read, after env.txt.
 int ListPredictStreak() {
     static const int streak = [] {
-        const char* value = std::getenv("EDEN_NX2_LIST_PREDICT");
-        int result = -1;
-        if (value != nullptr && value[0] == 'a') {
-            result = 0;
-        } else if (value != nullptr && value[0] >= '1' && value[0] <= '9') {
-            result = std::atoi(value);
-        }
+        const int result = Tegra::Nx2ListPredict();
         if (result >= 0) {
             LOG_INFO(HW_GPU,
                      "GPU-written command lists: run with the words of the read before after {} "
@@ -511,7 +505,8 @@ void DmaPusher::CheckPredictedLists() {
     for (size_t i = 0; i < predicted_checks.size();) {
         const GPUVAddr address = predicted_checks[i];
         PredictedList& list = predicted_lists[address];
-        if (!list.check_tick || !rasterizer->IsGpuTickDone(*list.check_tick)) {
+        // Without asking for a submission: the check can wait for the next one.
+        if (!list.check_tick || !rasterizer->IsGpuTickDone(*list.check_tick, false)) {
             ++i;
             continue;
         }

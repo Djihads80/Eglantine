@@ -897,7 +897,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         }();
         if (scheduler.HasFragmentBarrier() &&
             ((stores_end_pass && scheduler.RenderPassHasStores()) ||
-             texture_cache.SamplesRenderTarget(view_span))) {
+             texture_cache.SamplesRenderTarget(view_span, scheduler.RenderPassWroteDepth()))) {
             scheduler.RequestOutsideRenderPassOperationContext();
         }
     }

@@ -278,7 +278,9 @@ public:
     void CheckFeedbackLoop(std::span<const ImageViewInOut> views);
 
     /// Whether any of the views is of an image bound as an active render target.
-    [[nodiscard]] bool SamplesRenderTarget(std::span<const ImageViewInOut> views);
+    /// `depth_written`: false when the active render pass has not written its depth buffer (its
+    /// memory is up to date: sampling it needs no end of the pass).
+    [[nodiscard]] bool SamplesRenderTarget(std::span<const ImageViewInOut> views, bool depth_written = true);
 
     /// Get the sampler from the graphics/compute descriptor table in the specified index
     Sampler* GetSampler(u32 index, bool compute);
