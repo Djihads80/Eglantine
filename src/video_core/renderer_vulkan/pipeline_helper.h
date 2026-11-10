@@ -27,11 +27,17 @@ namespace Vulkan {
 
 using Shader::Backend::SPIRV::NUM_TEXTURE_AND_IMAGE_SCALING_WORDS;
 
+/// Set on the shader precompile's threads, whose builds would use up ReportPipelineBuild's lines.
+inline thread_local bool skip_pipeline_build_reports = false;
+
 // Timing of pipelines built on the workers, logged only when slow, to tell a wait for the worker
 // queue from a slow driver compile, and how long a draw/dispatch held the submission thread.
 inline void ReportPipelineBuild(const char* kind, u64 hash,
                                 std::chrono::steady_clock::time_point queued,
                                 std::chrono::steady_clock::time_point started) {
+    if (skip_pipeline_build_reports) {
+        return;
+    }
     static std::atomic<u32> logged{};
     const auto now = std::chrono::steady_clock::now();
     const auto ms = [](auto d) { return std::chrono::duration<double, std::milli>(d).count(); };
