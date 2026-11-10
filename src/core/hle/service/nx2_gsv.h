@@ -585,6 +585,10 @@ private:
                       address, size, w[3]);
             if (size != 0) {
                 Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(address, size);
+                // The device (SMMU) ranges made for this memory go too, behind the GPU unmaps
+                // above. Left allocated, a long session ran the SMMU space out ("out of SMMU
+                // space": no new mappings, invisible geometry).
+                Nvidia::Devices::Nx2GpuMemoryRegistry::Get().ReleaseBacking(address, size);
             }
             if (size == 0x2000) {
                 Tegra::Nx2RemoveSemaphoreRegion(address);
