@@ -5,12 +5,15 @@
 // SPDX-FileCopyrightText: 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
 #include <atomic>
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <span>
@@ -1122,6 +1125,174 @@ struct Memory::Impl {
         return done;
     }
 
+    /// EDEN_NX2_SNAPSHOT_WRITES=1 (NCE, Switch 2 programs with held writes): a guest store that
+    /// faults on a page with GPU-written data waited for the GPU thread to download the page
+    /// first, since a fault does not say which bytes the guest writes and the page's next upload
+    /// would send the stale guest copy over the GPU's bytes. Mario Kart World does that ~500
+    /// times a second (~0.4 ms each) on a few pages it fills with small records. Instead: copy
+    /// the page, let the guest write, and have the GPU thread protect it again later
+    /// (ApplyWriteSnapshots) and hand the words that changed to the caches as held writes, which
+    /// upload just those bytes and leave the page GPU-owned. A store of the bytes the copy
+    /// already held is not seen: right as long as the guest does not write the GPU's own words
+    /// without waiting for the GPU, which would be a race on the console too.
+    static bool SnapshotWritesEnabled() {
+        static const bool enabled = [] {
+            const char* const value = std::getenv("EDEN_NX2_SNAPSHOT_WRITES");
+            return value != nullptr && value[0] == '1';
+        }();
+        return enabled;
+    }
+
+    using SnapshotBytes = std::array<u8, YUZU_PAGESIZE>;
+    struct WriteSnapshot {
+        u64 vaddr{};
+        DAddr device_addr{};
+        const u8* host{};
+        std::unique_ptr<SnapshotBytes> bytes;
+    };
+
+    /// The fault handler's part; false leaves the fault to the wait for the GPU thread.
+    bool SnapshotWrite(u64 vaddr, u8* host) {
+        if (!current_page_table->fastmem_arena) {
+            return false;
+        }
+        constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
+        const size_t core = (std::min)(system.GetCurrentHostThreadID(), sys_core);
+        if (!gpu_device_memory) [[unlikely]] {
+            gpu_device_memory = &system.Host1x().MemoryManager();
+        }
+        // One device address (no aliases), as the page's caches know it.
+        u32 count = 0;
+        DAddr device_addr = 0;
+        {
+            // The last core's scratch buffer is shared with the other threads.
+            if (core == sys_core) [[unlikely]] {
+                sys_core_guard.lock();
+            }
+            SCOPE_EXIT {
+                if (core == sys_core) [[unlikely]] {
+                    sys_core_guard.unlock();
+                }
+            };
+            gpu_device_memory->ApplyOpOnPointer(host, scratch_buffers[core], [&](DAddr value) {
+                ++count;
+                device_addr = value;
+            });
+        }
+        if (count != 1 || device_addr == 0) {
+            return false;
+        }
+        if (system.GPU().TryInvalidateRegion(device_addr, YUZU_PAGESIZE)) {
+            // No GPU-written data on the page: invalidated in place, as without snapshots.
+            return true;
+        }
+        std::scoped_lock lock{snapshot_mutex};
+        for (const WriteSnapshot& snapshot : write_snapshots) {
+            if (snapshot.vaddr == vaddr) {
+                // Protected again since (the caches took the page back): the copy still stands.
+                host_buffer->Protect(vaddr, YUZU_PAGESIZE, Common::MemoryPermission::ReadWrite);
+                return true;
+            }
+        }
+        std::unique_ptr<SnapshotBytes> bytes;
+        if (!snapshot_pool.empty()) {
+            bytes = std::move(snapshot_pool.back());
+            snapshot_pool.pop_back();
+        } else {
+            bytes = std::make_unique<SnapshotBytes>();
+        }
+        std::memcpy(bytes->data(), host, YUZU_PAGESIZE);
+        write_snapshots.push_back({vaddr, device_addr, host, std::move(bytes)});
+        write_snapshot_count.store(write_snapshots.size(), std::memory_order_release);
+        host_buffer->Protect(vaddr, YUZU_PAGESIZE, Common::MemoryPermission::ReadWrite);
+        return true;
+    }
+
+    /// The GPU thread's part (with the held writes): every copied page is protected again, then
+    /// its changed 32-bit words go to `callback` as device ranges.
+    void ApplyWriteSnapshots(const std::function<void(PAddr, size_t)>& callback) {
+        if (write_snapshot_count.load(std::memory_order_acquire) == 0) {
+            return;
+        }
+        std::vector<WriteSnapshot> taken;
+        {
+            std::scoped_lock lock{snapshot_mutex};
+            taken.swap(write_snapshots);
+            write_snapshot_count.store(0, std::memory_order_release);
+            const bool reactive_flushing = Settings::values.use_reactive_flushing.GetValue();
+            for (const WriteSnapshot& snapshot : taken) {
+                // Before the compare: a store from here on faults and gets a new copy.
+                const auto& entry =
+                    current_page_table->entries.GetUnchecked(snapshot.vaddr >> YUZU_PAGEBITS);
+                if (entry.Type() != Common::PageType::RasterizerCachedMemory) {
+                    // The caches let the page go meanwhile: it stays writable.
+                    continue;
+                }
+                if (reactive_flushing) {
+                    host_buffer->Protect(snapshot.vaddr, YUZU_PAGESIZE, Common::MemoryPermission{});
+                } else {
+                    host_buffer->Protect(snapshot.vaddr, YUZU_PAGESIZE,
+                                         Common::MemoryPermission::Read);
+                    ProtectArmedPages(snapshot.vaddr, YUZU_PAGESIZE);
+                }
+            }
+        }
+        u64 pages = 0;
+        u64 ranges = 0;
+        u64 bytes_changed = 0;
+        for (WriteSnapshot& snapshot : taken) {
+            constexpr size_t Words = YUZU_PAGESIZE / sizeof(u32);
+            size_t word = 0;
+            while (word < Words) {
+                u32 now;
+                u32 before;
+                std::memcpy(&now, snapshot.host + word * sizeof(u32), sizeof(u32));
+                std::memcpy(&before, snapshot.bytes->data() + word * sizeof(u32), sizeof(u32));
+                if (now == before) {
+                    ++word;
+                    continue;
+                }
+                const size_t begin = word;
+                do {
+                    ++word;
+                    if (word == Words) {
+                        break;
+                    }
+                    std::memcpy(&now, snapshot.host + word * sizeof(u32), sizeof(u32));
+                    std::memcpy(&before, snapshot.bytes->data() + word * sizeof(u32),
+                                sizeof(u32));
+                } while (now != before);
+                callback(snapshot.device_addr + begin * sizeof(u32), (word - begin) * sizeof(u32));
+                ++ranges;
+                bytes_changed += (word - begin) * sizeof(u32);
+            }
+            ++pages;
+        }
+        {
+            std::scoped_lock lock{snapshot_mutex};
+            for (WriteSnapshot& snapshot : taken) {
+                if (snapshot_pool.size() < 64) {
+                    snapshot_pool.push_back(std::move(snapshot.bytes));
+                }
+            }
+        }
+        // Every 10 s: what the snapshots carried.
+        snapshot_stats.pages += pages;
+        snapshot_stats.ranges += ranges;
+        snapshot_stats.bytes += bytes_changed;
+        const auto now_time = std::chrono::steady_clock::now();
+        if (now_time - snapshot_stats.since >= std::chrono::seconds{10}) {
+            if (snapshot_stats.since != std::chrono::steady_clock::time_point{}) {
+                LOG_INFO(HW_Memory,
+                         "Write snapshots in {:.1f} s: {} pages, {} changed ranges, {} bytes",
+                         std::chrono::duration<double>(now_time - snapshot_stats.since).count(),
+                         snapshot_stats.pages, snapshot_stats.ranges, snapshot_stats.bytes);
+            }
+            snapshot_stats = {};
+            snapshot_stats.since = now_time;
+        }
+    }
+
     void InvalidateGPUMemory(u8* p, size_t size) {
         constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
         const size_t core = (std::min)(system.GetCurrentHostThreadID(),
@@ -1169,6 +1340,17 @@ struct Memory::Impl {
     std::array<Common::ScratchBuffer<u32>, Core::Hardware::NUM_CPU_CORES> scratch_buffers{};
     std::span<Core::GPUDirtyMemoryManager> gpu_dirty_managers;
     std::mutex sys_core_guard;
+    /// Write snapshots (SnapshotWrite): under snapshot_mutex, but for the count.
+    std::mutex snapshot_mutex;
+    std::vector<WriteSnapshot> write_snapshots;
+    std::vector<std::unique_ptr<SnapshotBytes>> snapshot_pool;
+    std::atomic<size_t> write_snapshot_count{};
+    struct SnapshotStats {
+        std::chrono::steady_clock::time_point since{};
+        u64 pages{};
+        u64 ranges{};
+        u64 bytes{};
+    } snapshot_stats; ///< The GPU thread's
 #ifdef __ANDROID__
     std::optional<Common::HeapTracker> heap_tracker;
     Common::HeapTracker* host_buffer{};
@@ -1392,7 +1574,14 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size, bool is_re
     }
     const bool invalidated = rasterizer && !read_trap && !separate_heap_mapped;
     if (invalidated) {
-        impl->InvalidateGPUMemory(ptr, size);
+        // A store on a page with GPU-written data: copied and let through (SnapshotWrite),
+        // or the wait for the GPU thread as before.
+        const bool snapshot = !is_read && size == YUZU_PAGESIZE &&
+                              Impl::SnapshotWritesEnabled() &&
+                              impl->SnapshotWrite(GetInteger(vaddr) & ~u64{YUZU_PAGEMASK}, ptr);
+        if (!snapshot) {
+            impl->InvalidateGPUMemory(ptr, size);
+        }
         VideoCommon::HotPages::NoteFault();
     }
 
@@ -1409,6 +1598,10 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size, bool is_re
     }
 
     return mapped && ptr != nullptr;
+}
+
+void Memory::ApplyWriteSnapshots(const std::function<void(PAddr, size_t)>& callback) {
+    impl->ApplyWriteSnapshots(callback);
 }
 
 bool Memory::RepairNceReadTrapPage(Common::ProcessAddress vaddr) {

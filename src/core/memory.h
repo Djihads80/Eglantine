@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -522,6 +523,11 @@ public:
     /// An NCE fault that keeps coming back on a page a read trap was armed on, which is no longer
     /// GPU-cached: gives it an uncached page's permissions. Returns whether it did.
     bool RepairNceReadTrapPage(Common::ProcessAddress vaddr);
+
+    /// EDEN_NX2_SNAPSHOT_WRITES: the GPU thread takes the pages NCE copied at a store that
+    /// faulted on GPU-written data (memory.cpp, SnapshotWrite): they are protected again and
+    /// the bytes that changed go to `callback` as device ranges, like held writes.
+    void ApplyWriteSnapshots(const std::function<void(PAddr, size_t)>& callback);
 
     /// Whether the page at vaddr is GPU-cached (its host pages are write-protected).
     bool IsRasterizerCachedPage(Common::ProcessAddress vaddr) const;

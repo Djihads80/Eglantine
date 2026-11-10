@@ -774,6 +774,10 @@ void System::GatherGPUDirtyMemory(std::function<void(PAddr, size_t)>& callback) 
     for (auto& manager : impl->gpu_dirty_memory_managers) {
         manager.Gather(callback);
     }
+    // The pages NCE copied at a store on GPU-written data (EDEN_NX2_SNAPSHOT_WRITES).
+    if (auto* const process = ApplicationProcess(); process != nullptr) {
+        process->GetMemory().ApplyWriteSnapshots(callback);
+    }
 }
 
 PerfStatsResults System::GetAndResetPerfStats() {
