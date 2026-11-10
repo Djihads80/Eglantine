@@ -339,6 +339,11 @@ public:
         return properties.driver.driverID;
     }
 
+    /// Returns the UUID that identifies which pipeline caches the device accepts.
+    std::span<const u8, VK_UUID_SIZE> GetPipelineCacheUUID() const {
+        return properties.properties.pipelineCacheUUID;
+    }
+
     bool IsSparseBindingSupported() const {
         return features.features.sparseBinding && graphics_family_sparse_binding;
     }

@@ -70,6 +70,11 @@ public:
         return is_built.load(std::memory_order::acquire);
     }
 
+    /// Whether the build created a Vulkan pipeline (a failed build is marked built without one).
+    [[nodiscard]] bool HasPipeline() const noexcept {
+        return static_cast<bool>(pipeline);
+    }
+
     [[nodiscard]] u64 ShaderHash() const noexcept {
         return shader_hash;
     }

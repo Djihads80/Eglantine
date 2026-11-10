@@ -256,6 +256,11 @@ public:
         return is_built.load(std::memory_order::relaxed);
     }
 
+    /// Whether the build created a Vulkan pipeline (a failed build is marked built without one).
+    [[nodiscard]] bool HasPipeline() const noexcept {
+        return static_cast<bool>(pipeline);
+    }
+
     template <typename Spec>
     static auto MakeConfigureSpecFunc() {
         return [](GraphicsPipeline* pl, bool is_indexed) { return pl->ConfigureImpl<Spec>(is_indexed); };

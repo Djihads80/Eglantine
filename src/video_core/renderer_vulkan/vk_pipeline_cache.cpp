@@ -398,6 +398,31 @@ bool DriverCachesPipelines(const Device& device) {
 }
 } // Anonymous namespace
 
+// Mesa's desktop GPU drivers keep built pipelines in their disk shader cache, on unless
+// MESA_SHADER_CACHE_DISABLE says otherwise. Turnip is left out: on Android it usually has no disk
+// cache.
+bool DriverKeepsPipelines(const Device& device) {
+    switch (device.GetDriverID()) {
+    case VK_DRIVER_ID_MESA_RADV:
+    case VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA:
+    case VK_DRIVER_ID_MESA_NVK: {
+        const char* disable = std::getenv("MESA_SHADER_CACHE_DISABLE");
+        return disable == nullptr ||
+               std::string_view{"1tTyY"}.find(disable[0]) == std::string_view::npos;
+    }
+    default:
+        return DriverCachesPipelines(device);
+    }
+}
+
+u32 PipelineCacheVersion() {
+    return CACHE_VERSION;
+}
+
+size_t PipelineBuildThreads(const Device& device) {
+    return device.HasBrokenParallelShaderCompiling() ? size_t{1} : GetTotalPipelineWorkers();
+}
+
 PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                              const Device& device_, Scheduler& scheduler_,
                              DescriptorPool& descriptor_pool_,
@@ -715,6 +740,7 @@ bool PreloadAllPipelines() {
 } // Anonymous namespace
 
 PipelineCache::~PipelineCache() {
+    StopPrecompile();
     StopBackgroundPipelines();
     SaveUsedPipelines();
     if (use_vulkan_pipeline_cache && !vulkan_pipeline_cache_filename.empty()) {
@@ -1011,7 +1037,9 @@ ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
 
 void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                                       const VideoCore::DiskResourceLoadCallback& callback) {
+    // Returning before RunPrecompile also stops the RomFS scan, which would run on during play.
     if (title_id == 0) {
+        StopPrecompile();
         return;
     }
     if (!pipeline_cache_filename.empty()) {
@@ -1029,6 +1057,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     }
     if (!Common::FS::CreateDir(shader_dir) || !Common::FS::CreateDir(base_dir)) {
         LOG_ERROR(Common_Filesystem, "Failed to create pipeline cache directories");
+        StopPrecompile();
         return;
     }
     pipeline_cache_filename = base_dir / "vulkan.bin";
@@ -1167,6 +1196,9 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
             key.state.driver_version != dynamic_features.driver_version) {
             key.state.driver_id = dynamic_features.driver_id;
             key.state.driver_version = dynamic_features.driver_version;
+        }
+        if (!loading_mesh_file) {
+            NoteRecordedPipeline(key);
         }
         const u64 hash = key.Hash();
         if (stored_hash != hash) {
@@ -1311,6 +1343,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     finish_upgrade(main_upgrade, pipeline_cache_filename);
     finish_upgrade(mesh_upgrade, mesh_pipeline_cache_filename);
 
+    RunPrecompile(stop_loading, callback);
+
     if (!deferred_graphics.empty() && !stop_loading.stop_requested()) {
         const size_t threads = BackgroundPipelineThreads();
         LOG_INFO(Render_Vulkan, "Building {} cached graphics pipelines in the background ({} threads)",
@@ -1367,6 +1401,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         last_cache_size.store(size, std::memory_order_relaxed);
         last_flush = std::chrono::steady_clock::now();
     }
+    SavePrecompiled(precompile_unsaved);
+    precompile_unsaved = {};
 
     if (state.statistics) {
         state.statistics->Report();
@@ -2679,6 +2715,7 @@ void PipelineCache::SerializeVulkanPipelineCache(const std::filesystem::path& fi
 
 vk::PipelineCache PipelineCache::LoadVulkanPipelineCache(const std::filesystem::path& filename,
                                                          u32 expected_cache_version) {
+    vulkan_pipeline_cache_loaded = false;
     const auto create_pipeline_cache = [this](size_t data_size, const void* data) {
         VkPipelineCacheCreateInfo pipeline_cache_ci = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
@@ -2734,6 +2771,7 @@ vk::PipelineCache PipelineCache::LoadVulkanPipelineCache(const std::filesystem::
         LOG_INFO(Render_Vulkan,
                  "Loaded Vulkan driver pipeline cache: ", Common::FS::PathToUTF8String(filename));
 
+        vulkan_pipeline_cache_loaded = cache_size != 0;
         return create_pipeline_cache(cache_size, cache_data.data());
 
     } catch (const std::ios_base::failure& e) {

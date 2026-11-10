@@ -43,6 +43,7 @@
 #include "core/cpu_manager.h"
 #include "core/crypto/key_manager.h"
 #include "core/file_sys/common_funcs.h"
+#include "core/file_sys/native_shader_programs.h"
 #include "core/file_sys/nup_writer.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/vfs/vfs_real.h"
@@ -663,6 +664,9 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     state->system.GPU().Start();
     state->system.GetCpuManager().OnGpuReady();
 
+    // Scans the game's files while the pipeline cache loads; compiled at the end of the loading.
+    FileSys::PrecompileApplicationShaders(state->system,
+                                          state->system.GetApplicationProcessProgramID());
     if (Settings::values.use_disk_shader_cache.GetValue()) {
         state->system.Renderer().ReadRasterizer()->LoadDiskResources(
             state->system.GetApplicationProcessProgramID(), std::stop_token{},

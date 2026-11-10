@@ -16,6 +16,7 @@
 #include <unordered_set>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -33,10 +34,12 @@
 #include "shader_recompiler/profile.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
+#include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
+#include "video_core/renderer_vulkan/vk_pipeline_precompile.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/shader_cache.h"
 
@@ -90,6 +93,8 @@ namespace Vulkan {
 
 class ComputePipeline;
 class DescriptorPool;
+struct PrecompileBuildCounts;
+struct PrecompileJobList;
 class Device;
 class PipelineStatistics;
 class RenderPassCache;
@@ -165,6 +170,12 @@ public:
     void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                            const VideoCore::DiskResourceLoadCallback& callback);
 
+    /// Collects the game's native programs on a background thread; at the end of
+    /// LoadDiskResources, throwaway pipelines are built from them for the render setups the
+    /// recorded pipelines use. The driver keeps what it compiled, so the game's own pipelines
+    /// that use those programs are not compiled when first drawn.
+    void PrecompileNativePrograms(const VideoCore::RasterizerInterface::NativeProgramSource& open);
+
 private:
     [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipelineSlowPath(bool is_indexed);
 
@@ -222,6 +233,7 @@ private:
     VideoCore::ShaderNotify& shader_notify;
     bool use_asynchronous_shaders{};
     bool use_vulkan_pipeline_cache{};
+    bool vulkan_pipeline_cache_loaded{}; ///< vulkan_pipelines.bin held pipelines at boot
 
     GraphicsPipelineCacheKey graphics_key{};
     GraphicsPipeline* current_pipeline{};
@@ -335,8 +347,44 @@ private:
     std::atomic<size_t> background_left{};
     size_t background_taken{}; ///< Under background_mutex
     std::chrono::steady_clock::time_point background_start{};
-    /// Last: destroyed (its threads joined) before the state above.
+    /// Destroyed (its threads joined) before the state above, which its tasks use.
     std::unique_ptr<Common::ThreadWorker> background_workers;
+
+    /// Native program precompilation (PrecompileNativePrograms, vk_pipeline_precompile.cpp).
+    void NoteRecordedPipeline(const GraphicsPipelineCacheKey& key);
+    void RunPrecompile(std::stop_token stop_loading,
+                       const VideoCore::DiskResourceLoadCallback& callback);
+    PrecompileProgramInfo PrecompileFirstPass(PrecompileRunLog& run_log, bool graphics,
+                                              const VideoCore::DiskResourceLoadCallback& callback,
+                                              std::stop_token stop_loading);
+    PrecompileJobList MakePrecompileJobs(const PrecompileProgramInfo& info,
+                                         const PrecompileRunLog& run_log, bool graphics) const;
+    PrecompileBuildCounts BuildPrecompileJobs(const PrecompileJobList& list,
+                                              const PrecompileProgramInfo& info,
+                                              PrecompileRunLog& run_log,
+                                              const VideoCore::DiskResourceLoadCallback& callback,
+                                              std::stop_token stop_loading);
+    enum class PrecompileResult {
+        Built,
+        Rejected, ///< By the recompiler or the device limits, the same way on every boot
+        Failed,   ///< The driver failed to create it
+    };
+    PrecompileResult PrecompilePipeline(size_t vertex_index, size_t pixel_index,
+                                        const GraphicsPipelineCacheKey& key);
+    PrecompileResult PrecompileCompute(size_t program, const ComputePipelineCacheKey& key);
+    PrecompileFileIdentity PrecompileIdentity() const;
+    /// A precompile file beside the pipeline cache (empty without one)
+    std::filesystem::path PrecompileFile(std::string_view name) const;
+    void LoadPrecompiled();
+    void SavePrecompiled(const std::unordered_set<u64>& done);
+    void StopPrecompile();
+    std::mutex precompile_mutex;
+    Shader::Ampere::NativeProgramSet precompile_set;
+    PrecompileRecords precompile_records;
+    std::unordered_set<u64> precompile_done; ///< Key hashes of pipelines built or rejected
+    std::unordered_set<u64> precompile_unsaved; ///< Records for precompiled.bin, once written
+    std::jthread precompile_collector;
+    std::optional<Common::ThreadWorker> precompile_workers;
 };
 
 } // namespace Vulkan
