@@ -1432,9 +1432,15 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         const char* const value = std::getenv("EDEN_NX2_BANK_REUPLOAD");
         return value != nullptr && value[0] != '\0' ? value[0] : '1';
     }();
+    if (bank_mode == 'v' && has_host_buffer && size != 0 && gpu_memory != nullptr &&
+        gpu_memory->UsesNativeTiling() &&
+        (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000) {
+        Nx2VerifyBank(device_addr, size);
+    }
     {
         Nx2Profile::Scope bank_scope{Nx2Profile::Zone::UboBank};
-        if (bank_mode != '0' && has_host_buffer && size != 0 && gpu_memory != nullptr &&
+        if (bank_mode != '0' && bank_mode != 'v' && has_host_buffer && size != 0 &&
+            gpu_memory != nullptr &&
             gpu_memory->UsesNativeTiling() &&
             (bank_mode == '3' || (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000) &&
             !memory_tracker.IsRegionGpuModified(device_addr, size) &&
@@ -2971,6 +2977,9 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
             u8* const src_pointer = staging_pointer.data() + copy.src_offset;
             const DAddr device_addr = buffer.CpuAddr() + copy.dst_offset;
             device_memory.ReadBlockUnsafe(device_addr, src_pointer, copy.size);
+            if (!bank_shadows.empty()) [[unlikely]] {
+                Nx2UpdateBankShadows(device_addr, src_pointer, copy.size);
+            }
             if (Tegra::Nx2ClSpeculate()) {
                 Tegra::Nx2NoteUploadSig(device_addr, std::span<const u8>(src_pointer, copy.size));
             }
@@ -3188,6 +3197,9 @@ void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_
     auto& buffer = slot_buffers[buffer_id];
     SynchronizeBuffer(buffer, dest_address, static_cast<u32>(copy_size));
     memory_tracker.UpdateHotShadows(dest_address, inlined_buffer.first(copy_size));
+    if (!bank_shadows.empty()) [[unlikely]] {
+        Nx2UpdateBankShadows(dest_address, inlined_buffer.data(), copy_size);
+    }
 
     if constexpr (USE_MEMORY_MAPS_FOR_UPLOADS) {
         auto upload_staging = runtime.UploadStagingBuffer(copy_size);
@@ -3206,6 +3218,115 @@ void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_
         runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true, can_reorder);
     } else {
         buffer.ImmediateUpload(buffer.Offset(dest_address), inlined_buffer.first(copy_size));
+    }
+}
+
+template <class P>
+void BufferCache<P>::Nx2UpdateBankShadows(DAddr device_addr, const u8* bytes, u64 size) {
+    const auto now = std::chrono::steady_clock::now();
+    const DAddr end = device_addr + size;
+    for (DAddr page = device_addr & ~DAddr{0xfff}; page < end; page += 0x1000) {
+        const auto it = bank_shadows.find(page >> 12);
+        if (it == bank_shadows.end()) {
+            continue;
+        }
+        const DAddr begin = (std::max)(page, device_addr);
+        const DAddr stop = (std::min)(page + 0x1000, end);
+        std::memcpy(it->second->bytes.data() + (begin - page), bytes + (begin - device_addr),
+                    stop - begin);
+        it->second->uploaded = now;
+    }
+}
+
+template <class P>
+void BufferCache<P>::Nx2VerifyBank(DAddr device_addr, u32 size) {
+    struct Stats {
+        u64 binds{};
+        u64 pages{};
+        u64 dirty{};
+        u64 gpu{};
+        u64 fresh{};
+        u64 missed{};
+        u64 missed_unprotected{};
+        u64 missed_bytes{};
+        std::chrono::steady_clock::time_point window_start{std::chrono::steady_clock::now()};
+    };
+    static Stats stats;
+    static u32 logged = 0;
+    ++stats.binds;
+    const auto now = std::chrono::steady_clock::now();
+    const DAddr end = device_addr + size;
+    for (DAddr page = device_addr & ~DAddr{0xfff}; page < end; page += 0x1000) {
+        const u8* const guest = device_memory.template GetPointer<u8>(page);
+        if (guest == nullptr) {
+            break;
+        }
+        ++stats.pages;
+        if (memory_tracker.IsRegionGpuModified(page, 0x1000)) {
+            ++stats.gpu;
+            bank_shadows.erase(page >> 12); // the buffer holds bytes guest memory may not
+            continue;
+        }
+        if (memory_tracker.IsRegionCpuModified(page, 0x1000)) {
+            ++stats.dirty; // seen: uploaded by the synchronization that follows
+            continue;
+        }
+        auto& shadow = bank_shadows[page >> 12];
+        if (!shadow) {
+            if (bank_shadows.size() > 16384) {
+                bank_shadows.clear();
+                return;
+            }
+            shadow = std::make_unique<BankShadow>();
+            std::memcpy(shadow->bytes.data(), guest, 0x1000);
+            shadow->uploaded = now;
+            ++stats.fresh;
+            continue;
+        }
+        if (std::memcmp(shadow->bytes.data(), guest, 0x1000) == 0) {
+            continue;
+        }
+        // Clean for the tracker, yet not the bytes last uploaded: a write it did not see.
+        u32 first = 0x1000;
+        u32 last = 0;
+        u32 changed = 0;
+        for (u32 i = 0; i < 0x1000; ++i) {
+            if (shadow->bytes[i] != guest[i]) {
+                first = (std::min)(first, i);
+                last = i;
+                ++changed;
+            }
+        }
+        const u32 cached = device_memory.CachedCountOf(page);
+        ++stats.missed;
+        stats.missed_unprotected += cached == 0 ? 1 : 0;
+        stats.missed_bytes += changed;
+        if (logged < 60) {
+            ++logged;
+            u32 old_word{};
+            u32 new_word{};
+            std::memcpy(&old_word, shadow->bytes.data() + (first & ~3U), 4);
+            std::memcpy(&new_word, guest + (first & ~3U), 4);
+            LOG_INFO(HW_GPU,
+                     "Uniform bank page {:#x} (bank {:#x}+{:#x}) changed unnoticed: {} bytes in "
+                     "[{:#x}, {:#x}], first word {:#010x} -> {:#010x}, {} ms after its upload, "
+                     "held by {} caches, protected through guest address {:#x}",
+                     page, device_addr, size, changed, first, last, old_word, new_word,
+                     std::chrono::duration_cast<std::chrono::milliseconds>(now - shadow->uploaded)
+                         .count(),
+                     cached, device_memory.CpuBackingOf(page));
+        }
+        memory_tracker.MarkRegionAsCpuModified(page, 0x1000);
+    }
+    if (now - stats.window_start >= std::chrono::seconds{10}) {
+        LOG_INFO(HW_GPU,
+                 "Uniform bank check in 10 s: {} binds, {} pages ({} already marked written, {} "
+                 "GPU-written, {} new), {} changed unnoticed ({} of them not write-protected, "
+                 "{} bytes)",
+                 stats.binds, stats.pages, stats.dirty, stats.gpu, stats.fresh, stats.missed,
+                 stats.missed_unprotected, stats.missed_bytes);
+        stats = {};
+        stats.window_start = now;
     }
 }
 

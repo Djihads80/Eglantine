@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <algorithm>
 #include <cstdlib>
 #include <array>
@@ -435,6 +436,16 @@ public:
     bool any_buffer_uploaded = false;
     /// Indirectly read banks of native programs already uploaded this frame.
     std::unordered_set<DAddr> native_indirect_uniforms_this_frame;
+
+    /// EDEN_NX2_BANK_REUPLOAD=v: the bytes last uploaded of the pages of bound 64 KiB uniform
+    /// banks, to find the writes the memory tracker doesn't see (Nx2VerifyBank).
+    struct BankShadow {
+        std::array<u8, 4096> bytes;
+        std::chrono::steady_clock::time_point uploaded;
+    };
+    std::unordered_map<u64, std::unique_ptr<BankShadow>> bank_shadows;
+    void Nx2VerifyBank(DAddr device_addr, u32 size);
+    void Nx2UpdateBankShadows(DAddr device_addr, const u8* bytes, u64 size);
 
 private:
     template <typename Mask, typename Func>

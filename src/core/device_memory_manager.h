@@ -131,6 +131,16 @@ public:
     void UnregisterProcess(Asid id);
 
     void UpdatePagesCachedCount(DAddr addr, size_t size, s32 delta);
+    /// Diagnostics: how many caches hold the page (0: the guest's page is not write-protected),
+    /// and the guest virtual address it is protected through (0: none known).
+    [[nodiscard]] u32 CachedCountOf(DAddr addr) {
+        const size_t page = addr >> 12;
+        return static_cast<u32>(
+            cached_pages->at(page >> subentries_shift).Count(page).load(std::memory_order_relaxed));
+    }
+    [[nodiscard]] u64 CpuBackingOf(DAddr addr) {
+        return ExtractCPUBacking(addr >> 12).second;
+    }
 
     // New batch API to update multiple ranges with a single lock acquisition.
     void UpdatePagesCachedBatch(std::span<const std::pair<DAddr, size_t>> ranges, s32 delta);
