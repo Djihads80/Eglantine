@@ -12,8 +12,11 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDir>
 #include <QDirIterator>
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QSet>
 #include <QString>
 #include <QToolButton>
 #include <QVariant>
@@ -226,14 +229,38 @@ void ConfigureUi::RetranslateUI() {
 void ConfigureUi::InitializeLanguageComboBox() {
     ui->language_combobox->addItem(tr("<System>"), QString{});
     ui->language_combobox->addItem(tr("English"), QStringLiteral("en"));
-    QDirIterator it(QStringLiteral(":/languages"), QDirIterator::NoIteratorFlags);
-    while (it.hasNext()) {
-        QString locale = it.next();
-        locale.truncate(locale.lastIndexOf(QLatin1Char{'.'}));
-        locale.remove(0, locale.lastIndexOf(QLatin1Char{'/'}) + 1);
-        const QString lang = QLocale::languageToString(QLocale(locale).language());
-        const QString country = QLocale::territoryToString(QLocale(locale).territory());
-        ui->language_combobox->addItem(QStringLiteral("%1 (%2)").arg(lang, country), locale);
+
+    QSet<QString> seen_locales;
+    seen_locales.insert(QStringLiteral("en"));
+
+    const QString exe_lang_dir =
+        QCoreApplication::applicationDirPath() + QStringLiteral("/languages");
+    const QString user_lang_dir =
+        QString::fromStdString(Common::FS::GetEdenPathString(Common::FS::EdenPath::ConfigDir)) +
+        QStringLiteral("/languages");
+
+    const QStringList search_dirs = {
+        QStringLiteral(":/languages"),
+        exe_lang_dir,
+        user_lang_dir,
+    };
+
+    for (const auto& dir_path : search_dirs) {
+        if (!QDir(dir_path).exists()) {
+            continue;
+        }
+        QDirIterator it(dir_path, {QStringLiteral("*.qm")}, QDir::Files);
+        while (it.hasNext()) {
+            it.next();
+            const QString locale = it.fileInfo().completeBaseName();
+            if (seen_locales.contains(locale)) {
+                continue;
+            }
+            seen_locales.insert(locale);
+            const QString lang = QLocale::languageToString(QLocale(locale).language());
+            const QString country = QLocale::territoryToString(QLocale(locale).territory());
+            ui->language_combobox->addItem(QStringLiteral("%1 (%2)").arg(lang, country), locale);
+        }
     }
 
     // Unlike other configuration changes, interface language changes need to be reflected on the

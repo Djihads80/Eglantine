@@ -5316,15 +5316,33 @@ void MainWindow::UpdateUITheme() {
 }
 
 void MainWindow::LoadTranslation() {
-    bool loaded;
+    bool loaded = false;
+    const auto lang = UISettings::values.language.GetValue();
+    const QString lang_str = QString::fromStdString(lang);
 
-    if (UISettings::values.language.GetValue().empty()) {
-        // If the selected language is empty, use system locale
-        loaded = translator.load(QLocale(), {}, {}, QStringLiteral(":/languages/"));
-    } else {
-        // Otherwise load from the specified file
-        loaded = translator.load(QString::fromStdString(UISettings::values.language.GetValue()),
-                                 QStringLiteral(":/languages/"));
+    const QString exe_lang_dir =
+        QCoreApplication::applicationDirPath() + QStringLiteral("/languages");
+    const QString user_lang_dir =
+        QString::fromStdString(Common::FS::GetEdenPathString(Common::FS::EdenPath::ConfigDir)) +
+        QStringLiteral("/languages");
+
+    const QStringList search_dirs = {
+        QStringLiteral(":/languages/"),
+        exe_lang_dir + QStringLiteral("/"),
+        user_lang_dir + QStringLiteral("/"),
+    };
+
+    for (const auto& dir : search_dirs) {
+        if (dir.startsWith(QLatin1Char{':'}) || QDir(dir).exists()) {
+            if (lang.empty()) {
+                loaded = translator.load(QLocale(), {}, {}, dir);
+            } else {
+                loaded = translator.load(lang_str, dir);
+            }
+            if (loaded) {
+                break;
+            }
+        }
     }
 
     if (loaded)
