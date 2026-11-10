@@ -21,7 +21,10 @@
 #include "core/arm/debug.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/k_hardware_timer.h"
 #include "core/hle/kernel/k_light_lock.h"
+#include "core/hle/kernel/k_timer_task.h"
+#include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/frontend/graphics_context.h"
 #include "video_core/control/scheduler.h"
@@ -72,6 +75,9 @@ void DumpGuestWaits(Core::System& system, long waited_us) {
         return;
     }
     std::string text;
+    // A thread's timer fires at its tick (a sleep's end, a timed wait's timeout): printed from
+    // now, and only meaningful while the thread waits with one.
+    const s64 now_tick = system.Kernel().HardwareTimer().GetTick();
     {
         Kernel::KScopedLightLock lk{process->GetListLock()};
         for (const Kernel::KThread& thread : process->GetThreadList()) {
@@ -81,10 +87,12 @@ void DumpGuestWaits(Core::System& system, long waited_us) {
             for (size_t i = 0; i < backtrace.size() && i < 5; ++i) {
                 frames += fmt::format(" {}+{:#x}", backtrace[i].module, backtrace[i].offset);
             }
-            text += fmt::format("\n  thread {} ({}): {} / {}, svc {:#x}{}, at{}",
+            text += fmt::format("\n  thread {} ({}): {} / {}, timer in {} us, at{}",
                                 thread.GetThreadId(), name ? *name : std::string{"?"},
                                 Core::GetThreadState(&thread), Core::GetThreadWaitReason(&thread),
-                                thread.GetSvcId(), thread.IsCallingSvc() ? " (in it)" : "",
+                                (static_cast<const Kernel::KTimerTask&>(thread).GetTime() -
+                                 now_tick) /
+                                    1000,
                                 frames);
         }
     }
