@@ -114,6 +114,22 @@ inline constexpr u64 Nx2OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
     }
 }
 
+/// Whether the rasterizer skips telling its caches about the GPU thread's own writes to guest
+/// memory (MemoryManager::FlushCaching -> InnerInvalidation), as the skip_cpu_inner_invalidation
+/// setting does for every title. EDEN_NX2_SKIP_INNER_INVALIDATION=0/1 overrides the title's
+/// default: on for Mario Kart World, where it took 1.9 of the 23 ms of a frame on the GPU back
+/// thread (Odin 3: ~+2 fps, the picture unchanged in the race).
+[[nodiscard]] inline bool Nx2SkipInnerInvalidation() {
+    static const int forced = [] {
+        const char* const value = std::getenv("EDEN_NX2_SKIP_INNER_INVALIDATION");
+        return value != nullptr ? int{value[0] != '0'} : -1;
+    }();
+    if (forced >= 0) {
+        return forced != 0;
+    }
+    return Nx2DefaultsProgramId() == Nx2MarioKartWorldProgramId;
+}
+
 /// How long the GPU thread sleeps between polls of channels suspended on a semaphore the CPU
 /// releases (gpu_thread.cpp, #446), in microseconds. EDEN_NX2_PENDING_SLEEP_US=<us> (> 0)
 /// overrides the title's default: 50 us for Ocarina of Time, which waits there ~330 times a
