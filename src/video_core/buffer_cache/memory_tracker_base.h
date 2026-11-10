@@ -215,9 +215,11 @@ public:
     }
 
     /// EDEN_NX2_HOT_PAGES: synchronizes the hot pages of a range, which ForEachUploadRange
-    /// skips. Each one is compared with its shadow (the bytes its GPU copy came from); when
-    /// they differ, or it has no shadow yet, the shadow is refreshed from guest memory and
-    /// func(page_address, shadow_bytes) uploads the page from it. Pages that are not whole in
+    /// skips. The bytes of each that the range covers are compared with the page's shadow (the
+    /// bytes its GPU copy came from); when they differ the shadow takes them and
+    /// func(address, shadow_bytes, size) uploads them from it. A page without a shadow yet is
+    /// taken whole. The GPU copy of a hot page so always equals its shadow, also for the bytes
+    /// no synchronization has looked at since the guest wrote them. Pages that are not whole in
     /// [buffer_begin, buffer_end) or not mapped go back to write tracking (normal upload).
     /// Call it before ForEachUploadRange on the same range.
     template <typename Func>
@@ -268,16 +270,30 @@ public:
                     }
                     ++hot_stats.compares;
                     u64& valid = manager->Span(Type::HotValid)[index];
-                    if ((valid & bit) != 0 && std::memcmp(guest, shadow, BYTES_PER_PAGE) == 0) {
+                    if ((valid & bit) == 0) {
+                        // No shadow of what the GPU has: the whole page.
+                        std::memcpy(shadow, guest, BYTES_PER_PAGE);
+                        valid |= bit;
+                        manager->Span(Type::Faulted)[index] |= bit;
+                        NoteHotActivity(manager);
+                        ++hot_stats.uploads;
+                        hot_stats.upload_bytes += BYTES_PER_PAGE;
+                        func(page, static_cast<const u8*>(shadow), BYTES_PER_PAGE);
+                        continue;
+                    }
+                    const u64 begin = query_cpu_range > page ? query_cpu_range - page : 0;
+                    const u64 end = (std::min<u64>)(query_cpu_range + query_size - page,
+                                                    BYTES_PER_PAGE);
+                    if (std::memcmp(guest + begin, shadow + begin, end - begin) == 0) {
                         ++hot_stats.unchanged;
                         continue;
                     }
-                    std::memcpy(shadow, guest, BYTES_PER_PAGE);
-                    valid |= bit;
+                    std::memcpy(shadow + begin, guest + begin, end - begin);
                     manager->Span(Type::Faulted)[index] |= bit;
                     NoteHotActivity(manager);
                     ++hot_stats.uploads;
-                    func(page, static_cast<const u8*>(shadow));
+                    hot_stats.upload_bytes += end - begin;
+                    func(page + begin, static_cast<const u8*>(shadow + begin), end - begin);
                 }
             });
         });

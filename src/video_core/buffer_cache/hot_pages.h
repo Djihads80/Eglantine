@@ -63,7 +63,10 @@ namespace VideoCommon::HotPages {
 /// epoch, at its first synchronization: every synchronization compared it before, 315,000 times a
 /// second in Mario Kart World, which cost what the saved mprotect calls had. The guest's data for
 /// a list is written before the list is submitted, so a list sees it.
-/// EDEN_NX2_HOT_PAGES_EPOCH=0 compares at every synchronization as before.
+/// EDEN_NX2_HOT_PAGES_EPOCH=1 turns it on. Off by default: Ocarina of Time writes a list's data
+/// after it submitted the list and lost a device with it even with the epoch following channel
+/// resumes. Every synchronization compares instead, but only the bytes it covers (a uniform
+/// block is a few hundred bytes of its page), which costs a tenth of a whole-page comparison.
 inline std::atomic<u64> g_write_epoch{1};
 
 inline void NextWriteEpoch() noexcept {
@@ -73,7 +76,7 @@ inline void NextWriteEpoch() noexcept {
 [[nodiscard]] inline bool ComparePerEpoch() noexcept {
     static const bool per_epoch = [] {
         const char* const value = std::getenv("EDEN_NX2_HOT_PAGES_EPOCH");
-        return value == nullptr || value[0] != '0';
+        return value != nullptr && value[0] == '1';
     }();
     return per_epoch;
 }
@@ -134,6 +137,7 @@ struct Stats {
     u64 compares{};   ///< hot page comparisons
     u64 unchanged{};  ///< ... that found the guest page equal to its shadow
     u64 uploads{};    ///< hot pages uploaded (changed, or no shadow yet)
+    u64 upload_bytes{}; ///< ... and their bytes
     u64 promoted{};
     u64 demoted{};
     u64 refused{};    ///< candidates that may never turn hot (GPU-written, command lists)

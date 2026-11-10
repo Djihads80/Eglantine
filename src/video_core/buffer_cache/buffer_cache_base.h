@@ -562,7 +562,13 @@ private:
     void MappedUploadMemory(Buffer& buffer, u64 total_size_bytes, std::span<BufferCopy> copies);
 
     /// EDEN_NX2_HOT_PAGES: uploads whole hot pages from their shadow copies (hot_pages.h).
-    void UploadHotPages(Buffer& buffer, std::span<const std::pair<DAddr, const u8*>> pages);
+    /// EDEN_NX2_HOT_PAGES: bytes of a hot page to upload (from its shadow copy).
+    struct HotUpload {
+        DAddr address;
+        const u8* bytes;
+        u64 size;
+    };
+    void UploadHotPages(Buffer& buffer, std::span<const HotUpload> pages);
 
     /// EDEN_NX2_HOT_PAGES, from TickFrame: the hot page tick and a statistics line every ~10 s.
     void TickHotPages();
@@ -636,7 +642,7 @@ private:
     std::array<Binding, 32> v_buffer{};
 
     boost::container::small_vector<BufferCopy, 4> upload_copies;
-    std::vector<std::pair<DAddr, const u8*>> hot_uploads; ///< EDEN_NX2_HOT_PAGES
+    std::vector<HotUpload> hot_uploads; ///< EDEN_NX2_HOT_PAGES
     std::vector<BufferCopy> hot_copies;
     u64 hot_bank_pages = 0; ///< bank re-uploads that kept their write protection
 

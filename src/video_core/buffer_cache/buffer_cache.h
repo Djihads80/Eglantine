@@ -2851,8 +2851,8 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
         hot_uploads.clear();
         memory_tracker.ForEachHotUpload(device_addr, size, buffer.CpuAddr(),
                                         buffer.CpuAddr() + buffer.SizeBytes(),
-                                        [&](DAddr page, const u8* bytes) {
-                                            hot_uploads.emplace_back(page, bytes);
+                                        [&](DAddr address, const u8* bytes, u64 bytes_size) {
+                                            hot_uploads.push_back({address, bytes, bytes_size});
                                         });
         if (!hot_uploads.empty()) {
             UploadHotPages(buffer, hot_uploads);
@@ -2991,17 +2991,17 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
 }
 
 template <class P>
-void BufferCache<P>::UploadHotPages(Buffer& buffer,
-                                    std::span<const std::pair<DAddr, const u8*>> pages) {
-    constexpr u64 page_size = Core::DEVICE_PAGESIZE;
-    for (const auto& [page, bytes] : pages) {
+void BufferCache<P>::UploadHotPages(Buffer& buffer, std::span<const HotUpload> pages) {
+    u64 total_size = 0;
+    for (const auto& [page, bytes, page_size] : pages) {
         MarkVertexBuffersStale(page, page_size);
+        total_size += page_size;
     }
     if constexpr (USE_MEMORY_MAPS_FOR_UPLOADS) {
-        auto upload_staging = runtime.UploadStagingBuffer(pages.size() * page_size);
+        auto upload_staging = runtime.UploadStagingBuffer(total_size);
         hot_copies.clear();
         u64 src_offset = 0;
-        for (const auto& [page, bytes] : pages) {
+        for (const auto& [page, bytes, page_size] : pages) {
             std::memcpy(upload_staging.mapped_span.data() + src_offset, bytes, page_size);
             if (Tegra::Nx2ClSpeculate()) {
                 Tegra::Nx2NoteUploadSig(page, std::span<const u8>(bytes, page_size));
@@ -3028,7 +3028,7 @@ void BufferCache<P>::UploadHotPages(Buffer& buffer,
         }
         runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true, can_reorder);
     } else {
-        for (const auto& [page, bytes] : pages) {
+        for (const auto& [page, bytes, page_size] : pages) {
             buffer.ImmediateUpload(buffer.Offset(page), std::span<const u8>(bytes, page_size));
         }
         any_buffer_uploaded = true;
@@ -3056,6 +3056,7 @@ void BufferCache<P>::TickHotPages() {
     };
     static auto last_time = std::chrono::steady_clock::now();
     static Totals last{};
+    static u64 last_upload_bytes = 0;
     static u64 frames = 0;
     static bool announced = false;
     ++frames;
@@ -3108,10 +3109,10 @@ void BufferCache<P>::TickHotPages() {
              compares != 0 ? 100.0 * static_cast<double>(totals.unchanged - last.unchanged) /
                                  static_cast<double>(compares)
                            : 0.0,
-             rate(totals.uploads, last.uploads) * static_cast<double>(Core::DEVICE_PAGESIZE) /
-                 1024.0,
+             static_cast<double>(stats.upload_bytes - last_upload_bytes) / seconds / 1024.0,
              rate(totals.bank_pages, last.bank_pages));
     last = totals;
+    last_upload_bytes = stats.upload_bytes;
     last_time = now;
 }
 
