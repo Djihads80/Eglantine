@@ -299,6 +299,70 @@ private:
     std::span<const Shader::Ampere::Instruction> native, Shader::Ampere::LoweredProgram& lowered,
     const Shader::ProgramHeader& sph, u32 native_header_size);
 
+/// A native program found in the game's files (Shader::Ampere::ScanNativePrograms), translated
+/// before the game binds it. Translation reads GPU state the program will only see once bound, so
+/// this answers with what nearly all programs read: 2D textures with float formats, storage
+/// pointers that are mapped, zero for constant buffer values.
+class ScannedEnvironment final : public Shader::Environment {
+public:
+    /// header: the 0x50-byte program header of a graphics program. Returns nothing when the
+    /// lowering rejects the program.
+    [[nodiscard]] static std::optional<ScannedEnvironment> Create(
+        std::span<const Shader::Ampere::Instruction> code, std::span<const u8> header,
+        Shader::Stage stage);
+
+    [[nodiscard]] u64 ReadInstruction(u32 address) override;
+
+    [[nodiscard]] u32 TranslateProgramAddress(u32 address) const override;
+
+    [[nodiscard]] bool IsNativeProgram() const override {
+        return true;
+    }
+
+    [[nodiscard]] u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) override;
+
+    [[nodiscard]] Shader::TextureType ReadTextureType(u32 handle) override;
+
+    [[nodiscard]] Shader::TexturePixelFormat ReadTexturePixelFormat(u32 handle) override;
+
+    [[nodiscard]] bool IsTexturePixelFormatInteger(u32 handle) override;
+
+    [[nodiscard]] u32 ReadViewportTransformState() override;
+
+    [[nodiscard]] u32 LocalMemorySize() const override;
+
+    [[nodiscard]] u32 SharedMemorySize() const override;
+
+    [[nodiscard]] u32 TextureBoundBuffer() const override;
+
+    [[nodiscard]] std::array<u32, 3> WorkgroupSize() const override;
+
+    [[nodiscard]] std::optional<Shader::ReplaceConstant> GetReplaceConstBuffer(u32 bank,
+                                                                               u32 offset) override;
+
+    [[nodiscard]] bool HasHLEMacroState() const override {
+        return false;
+    }
+
+    void Dump(u64 pipeline_hash, u64 shader_hash) override {}
+
+    /// Compute programs: the workgroup and shared memory a dispatch gives them.
+    void SetComputeDispatch(const std::array<u32, 3>& workgroup, u32 shared_memory) {
+        workgroup_size = workgroup;
+        shared_memory_size = shared_memory;
+    }
+
+    /// The shader hash pipeline keys use for this program, as for the program once bound.
+    [[nodiscard]] u64 Hash() const;
+
+private:
+    std::shared_ptr<const LoweredNativeCode> lowered;
+    u32 texture_bound{};
+    u32 local_memory_size{};
+    std::array<u32, 3> workgroup_size{};
+    u32 shared_memory_size{};
+};
+
 void SerializePipeline(std::span<const char> key, std::span<const GenericEnvironment* const> envs,
                        const std::filesystem::path& filename, u32 cache_version,
                        bool with_mesh_state = false);

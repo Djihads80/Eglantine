@@ -1119,6 +1119,104 @@ std::optional<Shader::ReplaceConstant> FileEnvironment::GetReplaceConstBuffer(u3
     return it->second;
 }
 
+std::optional<ScannedEnvironment> ScannedEnvironment::Create(
+    std::span<const Shader::Ampere::Instruction> code, std::span<const u8> header,
+    Shader::Stage stage_) {
+    std::optional<ScannedEnvironment> env{std::in_place};
+    if (!header.empty()) {
+        if (header.size() < sizeof(env->sph)) {
+            return std::nullopt;
+        }
+        std::memcpy(&env->sph, header.data(), sizeof(env->sph));
+    }
+    // Lowered without tensor options: programs with tensor instructions (Donkey Kong Bananza and
+    // Ocarina of Time networks) are rejected, so they are not precompiled.
+    auto lowered =
+        Shader::Ampere::LowerToMaxwell(code, {.geometry = stage_ == Shader::Stage::Geometry});
+    if (!lowered) {
+        return std::nullopt;
+    }
+    const u32 header_size = header.empty() ? 0 : 128;
+    env->lowered = MakeLoweredNativeCode(code, lowered, env->sph, header_size);
+    env->stage = stage_;
+    // Compute programs have no header; their code still starts after a zeroed one.
+    const bool compute = stage_ == Shader::Stage::Compute;
+    env->start_address = compute ? static_cast<u32>(sizeof(env->sph)) : 0;
+    env->is_proprietary_driver = true;
+    // The engine's bindless slot, which programs that name no buffer use: most graphics programs
+    // see 2, compute dispatches 0.
+    const u32 engine_slot = compute ? 0 : 2;
+    env->texture_bound =
+        env->lowered->texture_bound != ~0U ? env->lowered->texture_bound : engine_slot;
+    if (!header.empty()) {
+        env->local_memory_size = static_cast<u32>(env->sph.LocalMemorySize()) +
+                                 env->sph.common3.shader_local_memory_crs_size;
+    }
+    return env;
+}
+
+u64 ScannedEnvironment::ReadInstruction(u32 address) {
+    const auto& code = lowered->code;
+    if (address % sizeof(u64) != 0 || address / sizeof(u64) >= code.size()) {
+        throw Shader::LogicError("Out of bounds address {}", address);
+    }
+    return code[address / sizeof(u64)];
+}
+
+u32 ScannedEnvironment::TranslateProgramAddress(u32 address) const {
+    if (const auto translated = Shader::Ampere::NativeProgramAddress(lowered->code, address)) {
+        return *translated;
+    }
+    if (Shader::Ampere::HasNativeAddressMap(lowered->code)) {
+        throw Shader::RuntimeError("Invalid scanned native indirect branch address {:#x}", address);
+    }
+    return address;
+}
+
+u32 ScannedEnvironment::ReadCbufValue(u32, u32) {
+    return 0;
+}
+
+Shader::TextureType ScannedEnvironment::ReadTextureType(u32) {
+    return Shader::TextureType::Color2D;
+}
+
+Shader::TexturePixelFormat ScannedEnvironment::ReadTexturePixelFormat(u32) {
+    return Shader::TexturePixelFormat::A8B8G8R8_UNORM;
+}
+
+bool ScannedEnvironment::IsTexturePixelFormatInteger(u32) {
+    return false;
+}
+
+u32 ScannedEnvironment::ReadViewportTransformState() {
+    return 1;
+}
+
+u32 ScannedEnvironment::LocalMemorySize() const {
+    return local_memory_size;
+}
+
+u32 ScannedEnvironment::SharedMemorySize() const {
+    return shared_memory_size;
+}
+
+u32 ScannedEnvironment::TextureBoundBuffer() const {
+    return texture_bound;
+}
+
+std::array<u32, 3> ScannedEnvironment::WorkgroupSize() const {
+    return workgroup_size;
+}
+
+std::optional<Shader::ReplaceConstant> ScannedEnvironment::GetReplaceConstBuffer(u32, u32) {
+    return std::nullopt;
+}
+
+u64 ScannedEnvironment::Hash() const {
+    return NativeShaderHash(lowered->code);
+}
+
 void SerializePipeline(std::span<const char> key, std::span<const GenericEnvironment* const> envs,
                        const std::filesystem::path& filename, u32 cache_version,
                        bool with_mesh_state) try {
