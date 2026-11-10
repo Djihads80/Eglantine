@@ -27,6 +27,35 @@ namespace FS = Common::FS;
 Config::Config(const ConfigType config_type)
     : type(config_type), global{config_type == ConfigType::GlobalConfig} {}
 
+void Config::ReadGlobalSettingEarly(const std::string& config_name,
+                                    Settings::BasicSetting& setting) {
+    const auto path = FS::GetEdenPath(FS::EdenPath::ConfigDir) / fmt::format("{}.ini", config_name);
+    FILE* fp = nullptr;
+#ifdef _WIN32
+    _wfopen_s(&fp, path.c_str(), L"rb, ccs=UTF-8");
+#else
+    fp = fopen(path.c_str(), "rb");
+#endif
+    if (fp == nullptr) {
+        return;
+    }
+    CSimpleIniA ini;
+    ini.SetUnicode(true);
+    const SI_Error rc = ini.LoadFile(fp);
+    fclose(fp);
+    if (rc < 0) {
+        return;
+    }
+    const char* const section = Settings::TranslateCategory(setting.GetCategory());
+    const std::string key = AdjustKey(setting.GetLabel());
+    if (ini.GetBoolValue(section, std::string(key).append("\\default").c_str(), true)) {
+        return;
+    }
+    if (const char* const value = ini.GetValue(section, key.c_str())) {
+        setting.LoadString(value);
+    }
+}
+
 void Config::Initialize(const std::string& config_name) {
     const std::filesystem::path fs_config_loc = FS::GetEdenPath(FS::EdenPath::ConfigDir);
     const auto config_file = fmt::format("{}.ini", config_name);

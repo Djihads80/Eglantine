@@ -269,6 +269,15 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Enables GPU vendor-specific pipeline cache.\nThis option can improve shader loading "
               "time significantly in cases where the Vulkan driver does not store pipeline cache "
               "files internally."));
+    INSERT(Settings, private_driver_shader_cache, QString(), QString());
+#if defined(__linux__)
+    INSERT(Settings, driver_shader_cache_size, tr("Separate driver shader cache"),
+           tr("Keeps the NVIDIA driver's shader cache for this emulator in its own folder, up to "
+              "this size, so other applications can't evict it.\nTurn it off to use the "
+              "driver's shared cache instead.\nTakes effect at the next start."));
+#else
+    INSERT(Settings, driver_shader_cache_size, QString(), QString());
+#endif
     INSERT(Settings, enable_compute_pipelines, tr("Enable Compute Pipelines (Intel Vulkan Only)"),
            tr("Required by some games.\nThis setting only exists for Intel "
               "proprietary drivers and may crash if enabled.\nCompute pipelines are always enabled "

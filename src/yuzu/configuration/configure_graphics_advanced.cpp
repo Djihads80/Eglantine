@@ -41,7 +41,11 @@ void ConfigureGraphicsAdvanced::Setup(const ConfigurationShared::Builder& builde
 
     for (auto setting :
          Settings::values.linkage.by_category[Settings::Category::RendererAdvanced]) {
-        ConfigurationShared::Widget* widget = builder.BuildWidget(setting, apply_funcs);
+        ConfigurationShared::Widget* widget =
+            setting->Id() == Settings::values.driver_shader_cache_size.Id()
+                ? builder.BuildWidget(setting, apply_funcs, nullptr,
+                                      ConfigurationShared::RequestType::SpinBox, tr(" GiB"))
+                : builder.BuildWidget(setting, apply_funcs);
 
         if (widget == nullptr) {
             continue;

@@ -601,6 +601,21 @@ struct Values {
         linkage, true, "use_vulkan_driver_pipeline_cache", Category::RendererAdvanced,
         Specialization::Default};
 
+    // Linux: the GPU driver's shader cache in a folder of our own (ConfigureDriverShaderCache),
+    // with its size limit in GiB. Applied at startup, before anything loads a driver.
+    Setting<bool> private_driver_shader_cache{linkage, true, "private_driver_shader_cache",
+                                              Category::RendererAdvanced, Specialization::Paired};
+    Setting<u32, true> driver_shader_cache_size{linkage,
+                                                10,
+                                                1,
+                                                1024,
+                                                "driver_shader_cache_size",
+                                                Category::RendererAdvanced,
+                                                Specialization::Countable,
+                                                true,
+                                                false,
+                                                &private_driver_shader_cache};
+
     SwitchableSetting<bool> enable_compute_pipelines{linkage, false, "enable_compute_pipelines",
                                                      Category::RendererAdvanced};
 

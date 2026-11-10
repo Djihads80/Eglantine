@@ -9,6 +9,7 @@
 #endif
 
 #include <boost/algorithm/string/split.hpp>
+#include "common/driver_shader_cache.h"
 #include "common/fs/path_util.h"
 #include "common/game_presets.h"
 #include "common/settings.h"
@@ -384,6 +385,7 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     QtCommon::Init(this);
 
     Common::FS::CreateEdenPaths();
+    Common::CreateDriverShaderCacheFolder();
     this->config = std::make_unique<QtConfig>();
 
     Common::Log::Filter filter;

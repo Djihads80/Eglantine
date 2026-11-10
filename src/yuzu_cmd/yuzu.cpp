@@ -476,7 +476,6 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     SetUnhandledExceptionFilter(WriteCrashDump);
 #endif
     Nx2Sampler::StartFromEnvironment();
-    Common::ConfigureDriverShaderCache();
     // SDL calls SDL_AppIterate back to back by default, which kept a host core at 100% polling
     // input; 240 Hz is plenty for input and the key script.
     SDL_SetHint(SDL_HINT_MAIN_CALLBACK_RATE, "240");
@@ -523,6 +522,10 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     LocalFree(argv_w);
 #endif
     SdlConfig config{lp.config_path};
+    // Before anything loads a GPU driver.
+    Common::ConfigureDriverShaderCache(Settings::values.private_driver_shader_cache.GetValue(),
+                                       Settings::values.driver_shader_cache_size.GetValue());
+    Common::CreateDriverShaderCacheFolder();
 
     Core::ApplyLaunchParams(lp);
 
