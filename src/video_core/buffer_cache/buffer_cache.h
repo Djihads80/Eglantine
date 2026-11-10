@@ -2983,6 +2983,49 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
             copy.src_offset += upload_staging.offset;
         }
         const bool can_reorder = runtime.CanReorderUpload(buffer, copies);
+        // EDEN_NX2_PASS_BREAKS=1: uploads that go ahead of the command buffer against those that
+        // must stay in order (their target was used in it: each ends the render pass), by size.
+        static const bool upload_stats = [] {
+            const char* const value = std::getenv("EDEN_NX2_PASS_BREAKS");
+            return value != nullptr && value[0] == '1';
+        }();
+        if (upload_stats) [[unlikely]] {
+            struct Stats {
+                u64 uploads{};
+                u64 bytes{};
+                u64 ordered{};
+                u64 ordered_bytes{};
+                u64 ordered_copies{};
+                std::array<u64, 6> sizes{}; // of ordered uploads: <=256, 1K, 4K, 16K, 64K, more
+                std::array<u64, 4> buffers{}; // of ordered uploads: buffer size <=64K, 1M, 16M, more
+            };
+            static Stats stats;
+            static auto window_start = std::chrono::steady_clock::now();
+            ++stats.uploads;
+            stats.bytes += total_size_bytes;
+            if (!can_reorder) {
+                ++stats.ordered;
+                stats.ordered_bytes += total_size_bytes;
+                stats.ordered_copies += copies.size();
+                const u64 size = total_size_bytes;
+                ++stats.sizes[size <= 256 ? 0 : size <= 1024 ? 1 : size <= 4096 ? 2 : size <= 16384 ? 3 : size <= 65536 ? 4 : 5];
+                const u64 whole = buffer.SizeBytes();
+                ++stats.buffers[whole <= 65536 ? 0 : whole <= (1 << 20) ? 1 : whole <= (16 << 20) ? 2 : 3];
+            }
+            if (const auto now = std::chrono::steady_clock::now();
+                now - window_start >= std::chrono::seconds{10}) {
+                LOG_INFO(HW_GPU,
+                         "Buffer uploads in 10 s: {} ({} KiB), {} in order ({} KiB, {} ranges): "
+                         "sizes <=256 {} <=1K {} <=4K {} <=16K {} <=64K {} more {} | their "
+                         "buffers <=64K {} <=1M {} <=16M {} more {}",
+                         stats.uploads, stats.bytes >> 10, stats.ordered, stats.ordered_bytes >> 10,
+                         stats.ordered_copies, stats.sizes[0], stats.sizes[1], stats.sizes[2],
+                         stats.sizes[3], stats.sizes[4], stats.sizes[5], stats.buffers[0],
+                         stats.buffers[1], stats.buffers[2], stats.buffers[3]);
+                stats = {};
+                window_start = now;
+            }
+        }
         for (const BufferCopy& copy : copies) {
             NoteGpuWrite(buffer, buffer.CpuAddr() + copy.dst_offset, copy.size);
         }
