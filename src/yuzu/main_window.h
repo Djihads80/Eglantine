@@ -13,6 +13,7 @@
 #include <QElapsedTimer>
 #include <QFutureWatcher>
 #include <QMainWindow>
+#include <QPointer>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTimer>
@@ -56,6 +57,7 @@ class MultiplayerState;
 class QPushButton;
 class QProgressDialog;
 class NupProgressDialog;
+class ShaderWarmDialog;
 class QSlider;
 class QHBoxLayout;
 class WaitTreeWidget;
@@ -366,6 +368,8 @@ private slots:
     void OnGameListDumpRomFS(u64 program_id, const std::string& game_path, DumpRomFSTarget target);
     void OnGameListVerifyIntegrity(const std::string& game_path);
     void OnGameListConvertToNup(const std::string& game_path);
+    void OnGameListPrepareShaderWarm(u64 program_id, const std::string& game_path);
+    void OnGameListDeleteShaderWarm(u64 program_id);
     void OnGameListExtractNup(const std::string& game_path);
     void OnGameListEditNupMetadata(const std::string& game_path);
     void OnGameListCopyTID(u64 program_id);
@@ -642,6 +646,7 @@ private:
     QFutureWatcher<FileSys::Nup::PackResult> nup_watcher;
     std::shared_ptr<std::atomic_bool> nup_cancel;
     bool nup_running{};
+    QPointer<ShaderWarmDialog> shader_warm_dialog;
     std::string nup_source_path;
 
     // Last game booted, used for multi-process apps

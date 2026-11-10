@@ -50,12 +50,29 @@ constexpr size_t INST_SIZE = sizeof(u64);
 
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
 
-// The shader hash of lowered native code (frame dump "shaders", pipeline cache keys), with a
-// version tag that isolates this experimental ABI.
-static u64 NativeShaderHash(std::span<const u64> code) {
+// A version tag in the hash isolates this experimental ABI.
+u64 NativeShaderHash(std::span<const u64> code) {
     return Common::CityHash64(reinterpret_cast<const char*>(code.data()),
                               code.size() * sizeof(u64)) ^
            0x4f554e4345000002ULL;
+}
+
+std::vector<u64> LayOutLoweredNativeCode(std::span<const u64> header,
+                                         std::span<const Shader::Ampere::Instruction> native,
+                                         Shader::Ampere::LoweredProgram& lowered) {
+    VideoCommon::ApplyMkwZeroDepthFallback(native, lowered);
+    std::vector<u64> code(header.begin(), header.end());
+    for (const u64 instruction : lowered.instructions) {
+        if ((code.size() * sizeof(u64)) % 32 == 0) {
+            code.push_back(0); // Maxwell scheduling word, absent from native instructions.
+        }
+        code.push_back(instruction);
+    }
+    // Keep the original padding ABI, then retain the native address map as
+    // unreachable data. Existing disk-cache serialization carries it with code.
+    code.push_back(0);
+    Shader::Ampere::AppendNativeAddressMap(code, lowered.source_instruction_offsets);
+    return code;
 }
 
 static u64 MakeCbufKey(u32 index, u32 offset) {
@@ -631,7 +648,6 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
             program_base, lowered.error_offset, lowered.error, words[0] & 0xfff, words[0],
             words[1], words[2], words[3]);
     }
-    VideoCommon::ApplyMkwZeroDepthFallback(native, lowered);
     auto result = std::make_shared<LoweredNativeCode>();
     result->native_program_key = Shader::Ampere::NativeProgramKey(native);
     static const bool hash_for_indirect_reset = [] {
@@ -643,21 +659,11 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
     }
     result->texture_bound = lowered.required_texture_buffer;
     result->source_size = native_header_size + lowered.source_size;
-    auto& lowered_code = result->code;
-    lowered_code.resize(sizeof(sph) / sizeof(u64));
-    std::memcpy(lowered_code.data(), &sph, sizeof(sph));
-    for (const u64 instruction : lowered.instructions) {
-        if ((lowered_code.size() * sizeof(u64)) % 32 == 0) {
-            lowered_code.push_back(0); // Maxwell scheduling word, absent from native instructions.
-        }
-        lowered_code.push_back(instruction);
-    }
-    // Keep the original padding ABI, then retain the native address map as
-    // unreachable data. Existing disk-cache serialization carries it with code.
-    lowered_code.push_back(0);
-    Shader::Ampere::AppendNativeAddressMap(lowered_code, lowered.source_instruction_offsets);
+    std::array<u64, sizeof(sph) / sizeof(u64)> header;
+    std::memcpy(header.data(), &sph, sizeof(sph));
+    result->code = LayOutLoweredNativeCode(header, native, lowered);
     // What Analyze returns for this program once the environment holds the lowered code.
-    const u64 shader_hash = NativeShaderHash(lowered_code);
+    const u64 shader_hash = NativeShaderHash(result->code);
     if (VideoCommon::Nx2Diag::Active()) {
         VideoCommon::Nx2Diag::Diagnostics::Get().RegisterProgram(
             program_base, result->native_program_key, shader_hash);
@@ -1099,17 +1105,26 @@ bool FileEnvironment::IsNativeProgram() const {
     return Shader::Ampere::HasNativeAddressMap(code);
 }
 
+/// Recorded classification of the constant buffer word at `index`/`offset` as a storage buffer
+/// pointer. Without a record, the guess when one is set, else throws.
 bool FileEnvironment::IsCbufStorageBufferPointer(u32 index, u32 offset) {
     const auto it = storage_pointer_types.find(MakeCbufKey(index, offset));
     if (it == storage_pointer_types.end()) {
+        if (guess) {
+            return index == 0 ? guess->storage_pointer_bank0 : guess->storage_pointer_other;
+        }
         throw Shader::LogicError("Uncached storage pointer classification");
     }
     return it->second != 0;
 }
 
+/// Same as IsCbufStorageBufferPointer for a pointer read through an indirect table.
 bool FileEnvironment::IsCbufIndirectStorageBufferPointer(u32 index, u32 offset, u32 indirect) {
     const auto it = storage_pointer_types.find(MakeIndirectCbufKey(index, offset, indirect));
     if (it == storage_pointer_types.end()) {
+        if (guess) {
+            return index == 0 ? guess->storage_pointer_bank0 : guess->storage_pointer_other;
+        }
         throw Shader::LogicError("Uncached storage pointer table classification");
     }
     return it->second != 0;
@@ -1122,25 +1137,39 @@ u64 FileEnvironment::ReadInstruction(u32 address) {
     return code[(address - read_lowest) / sizeof(u64)];
 }
 
+/// Recorded constant buffer value at `cbuf_index`/`cbuf_offset`. Without a record, the guess when
+/// one is set, else throws.
 u32 FileEnvironment::ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) {
     const auto it{cbuf_values.find(MakeCbufKey(cbuf_index, cbuf_offset))};
     if (it == cbuf_values.end()) {
+        if (guess) {
+            return cbuf_index == 0 ? guess->cbuf_bank0 : guess->cbuf_other;
+        }
         throw Shader::LogicError("Uncached read texture type");
     }
     return it->second;
 }
 
+/// Recorded texture type of `handle`. Without a record, the guess when one is set, else throws.
 Shader::TextureType FileEnvironment::ReadTextureType(u32 handle) {
     const auto it{texture_types.find(handle)};
     if (it == texture_types.end()) {
+        if (guess) {
+            return guess->texture_type;
+        }
         throw Shader::LogicError("Uncached read texture type");
     }
     return it->second;
 }
 
+/// Recorded texture pixel format of `handle`. Without a record, the guess when one is set, else
+/// throws.
 Shader::TexturePixelFormat FileEnvironment::ReadTexturePixelFormat(u32 handle) {
     const auto it{texture_pixel_formats.find(handle)};
     if (it == texture_pixel_formats.end()) {
+        if (guess) {
+            return guess->pixel_format;
+        }
         throw Shader::LogicError("Uncached read texture pixel format");
     }
     return it->second;

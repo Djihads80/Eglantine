@@ -325,6 +325,11 @@ public:
     }
 
     /// Returns the current driver version provided in Vulkan-formatted version numbers.
+    /// Returns the PCI device ID of the physical device.
+    u32 GetDeviceID() const {
+        return properties.properties.deviceID;
+    }
+
     u32 GetDriverVersion() const {
         return properties.properties.driverVersion;
     }

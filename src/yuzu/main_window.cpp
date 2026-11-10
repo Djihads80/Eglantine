@@ -44,6 +44,7 @@
 #include "util/util.h"
 #include "yuzu/game/game_list.h"
 #include "yuzu/nup_dialogs.h"
+#include "yuzu/shader_warm_dialog.h"
 #ifdef YUZU_ENABLE_MCP
 #include <atomic>
 #include <thread>
@@ -1882,6 +1883,10 @@ void MainWindow::ConnectWidgetEvents() {
     connect(game_list, &GameList::VerifyIntegrityRequested, this,
             &MainWindow::OnGameListVerifyIntegrity);
     connect(game_list, &GameList::ConvertToNupRequested, this, &MainWindow::OnGameListConvertToNup);
+    connect(game_list, &GameList::PrepareShaderWarmRequested, this,
+            &MainWindow::OnGameListPrepareShaderWarm);
+    connect(game_list, &GameList::DeleteShaderWarmRequested, this,
+            &MainWindow::OnGameListDeleteShaderWarm);
     connect(game_list, &GameList::ExtractNupRequested, this, &MainWindow::OnGameListExtractNup);
     connect(game_list, &GameList::EditNupMetadataRequested, this,
             &MainWindow::OnGameListEditNupMetadata);
@@ -2318,6 +2323,15 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         QMessageBox::information(this, tr("Conversion in Progress"),
                                  tr("This game cannot be started while its dump is being "
                                     "converted."));
+        return;
+    }
+    if (shader_warm_dialog && shader_warm_dialog->IsRunning()) {
+        // The builder reads game files through the same system the boot sets up.
+        QMessageBox::information(this, tr("Pre-compiling Shaders"),
+                                 tr("Games cannot be started while shaders are being "
+                                    "pre-compiled. Wait for it to finish or cancel it."));
+        shader_warm_dialog->raise();
+        shader_warm_dialog->activateWindow();
         return;
     }
     if (boot_in_progress || close_pending) {
@@ -4648,6 +4662,59 @@ void MainWindow::OnGameListConvertToNup(const std::string& game_path) {
             Qt::QueuedConnection);
         return result;
     }));
+}
+
+/// Opens the pre-compile dialog for the game and starts it, or brings a running one to the front.
+/// Refused while a game runs or while this game is being converted.
+void MainWindow::OnGameListPrepareShaderWarm(u64 program_id, const std::string& game_path) {
+    if (shader_warm_dialog) {
+        if (shader_warm_dialog->IsRunning()) {
+            shader_warm_dialog->raise();
+            shader_warm_dialog->activateWindow();
+            return;
+        }
+        shader_warm_dialog->close();
+    }
+    if (QtCommon::emu_thread != nullptr) {
+        QMessageBox::information(this, tr("Pre-compile Shaders"),
+                                 tr("Close the running game first."));
+        return;
+    }
+    if (nup_running && game_path == nup_source_path) {
+        QMessageBox::information(this, tr("Pre-compile Shaders"),
+                                 tr("This game is being converted. Try again when it is done."));
+        return;
+    }
+    const auto path = std::filesystem::path{std::u8string{game_path.begin(), game_path.end()}};
+    shader_warm_dialog = new ShaderWarmDialog(*QtCommon::system, path, program_id, this);
+    shader_warm_dialog->setAttribute(Qt::WA_DeleteOnClose);
+    shader_warm_dialog->show();
+    shader_warm_dialog->Start();
+}
+
+/// Deletes the game's pre-compiled shaders after a confirmation.
+void MainWindow::OnGameListDeleteShaderWarm(u64 program_id) {
+    if (shader_warm_dialog && shader_warm_dialog->IsRunning() &&
+        shader_warm_dialog->TitleId() == program_id) {
+        QMessageBox::information(this, tr("Delete Pre-compiled Shaders"),
+                                 tr("This game's shaders are being pre-compiled. Try again when "
+                                    "it is done."));
+        shader_warm_dialog->raise();
+        shader_warm_dialog->activateWindow();
+        return;
+    }
+    if (QMessageBox::question(this, tr("Delete Pre-compiled Shaders"),
+                              tr("Delete the pre-compiled shaders of this game? You can "
+                                 "pre-compile them again at any time."),
+                              QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) {
+        return;
+    }
+    std::string error;
+    if (!DeleteShaderWarmFiles(program_id, error)) {
+        QMessageBox::critical(this, tr("Delete Pre-compiled Shaders"),
+                              tr("The files could not be deleted: %1")
+                                  .arg(QString::fromStdString(error)));
+    }
 }
 
 void MainWindow::OnGameListExtractNup(const std::string& game_path) {

@@ -47,6 +47,8 @@
 #include "video_core/shader_cache.h"
 #include "video_core/shader_environment.h"
 #include "video_core/shader_notify.h"
+#include "video_core/shader_warm/shader_warm_builder.h"
+#include "video_core/shader_warm/warm_records.h"
 #include "video_core/surface.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -74,6 +76,8 @@ using VideoCommon::GraphicsEnvironment;
 // too only when the record layout (environment or key serialization) changes, which deletes older
 // caches. 20 changed the environment layout; the keys last changed before it.
 constexpr u32 CACHE_VERSION = 31;
+static_assert(CACHE_VERSION == VideoCommon::ShaderWarm::WarmCacheVersion,
+              "Shader precache files use the pipeline cache version");
 constexpr u32 MIN_COMPATIBLE_CACHE_VERSION = 20;
 constexpr size_t VULKAN_CACHE_FLUSH_PIPELINES = 128;
 constexpr size_t VULKAN_CACHE_FLUSH_MIN_SECONDS = 30;
@@ -742,6 +746,13 @@ bool PreloadAllPipelines() {
 } // Anonymous namespace
 
 PipelineCache::~PipelineCache() {
+    StopShaderPrecache();
+    if (!precache_keys.empty()) {
+        LOG_INFO(Render_Vulkan,
+                 "Shader precache: {} of the {} compute pipelines new this session were in the "
+                 "precache file",
+                 precached_compute_pipelines, new_compute_pipelines);
+    }
     // Translations queue driver compiles: end them before anything below touches the workers.
     translation_workers.reset();
     {
@@ -865,6 +876,10 @@ ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
             }
         }
         return pipeline.get();
+    }
+    ++new_compute_pipelines;
+    if (precache_keys.contains(key.Hash())) {
+        ++precached_compute_pipelines;
     }
     pipeline = CreateComputePipeline(key, shader);
     return pipeline.get();
@@ -1181,6 +1196,9 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     if (state.statistics) {
         state.statistics->Report();
     }
+    if (!stop_loading.stop_requested()) {
+        StartShaderPrecache(title_id);
+    }
 }
 
 void PipelineCache::QueueVulkanPipelineCacheFlush() {
@@ -1370,6 +1388,128 @@ void PipelineCache::StopBackgroundPipelines() {
     background_stop.store(true, std::memory_order_relaxed);
     // Joins the threads: a build in progress finishes, queued ones are dropped.
     background_workers.reset();
+}
+
+void PipelineCache::StartShaderPrecache(u64 title_id) {
+    namespace ShaderWarm = VideoCommon::ShaderWarm;
+    const std::filesystem::path warm_file = ShaderWarm::ComputeWarmPath(title_id);
+    std::error_code ec;
+    if (!std::filesystem::exists(warm_file, ec)) {
+        return;
+    }
+    const std::string path = Common::FS::PathToUTF8String(warm_file);
+    const u32 driver = device.GetDriverVersion();
+    const u32 device_id = device.GetDeviceID();
+    const auto marker = ShaderWarm::ReadWarmMarker(warm_file);
+    const auto current = ShaderWarm::CurrentWarmStamp(warm_file, 0, driver, device_id, CACHE_VERSION);
+    const bool done = current && marker && marker->Matches(*current);
+
+    std::vector<std::pair<ComputePipelineCacheKey, FileEnvironment>> programs;
+    size_t entries = 0;
+    size_t in_disk_cache = 0;
+    try {
+        // Its own reader: the disk cache loader deletes files it rejects.
+        std::ifstream file(warm_file, std::ios::binary | std::ios::ate);
+        file.exceptions(std::ifstream::failbit);
+        const auto end{file.tellg()};
+        file.seekg(0, std::ios::beg);
+        std::array<char, 8> magic;
+        u32 version{};
+        file.read(magic.data(), magic.size())
+            .read(reinterpret_cast<char*>(&version), sizeof(version));
+        constexpr std::array<char, 8> expected_magic{'y', 'u', 'z', 'u', 'c', 'a', 'c', 'h'};
+        if (magic != expected_magic || version != CACHE_VERSION) {
+            LOG_WARNING(Render_Vulkan,
+                        "Shader precache: {} is not a version {} file; pre-compile the game's "
+                        "shaders again",
+                        path, CACHE_VERSION);
+            return;
+        }
+        while (file.tellg() != end) {
+            u32 num_envs{};
+            file.read(reinterpret_cast<char*>(&num_envs), sizeof(num_envs));
+            FileEnvironment env;
+            env.Deserialize(file);
+            if (num_envs != 1 || env.ShaderStage() != Shader::Stage::Compute) {
+                throw std::runtime_error("unexpected entry");
+            }
+            ComputePipelineCacheKey key;
+            file.read(reinterpret_cast<char*>(&key), sizeof(key));
+            ++entries;
+            precache_keys.insert(key.Hash());
+            // Programs already in the disk cache were built at boot.
+            if (compute_cache.contains(key)) {
+                ++in_disk_cache;
+            } else if (!done) {
+                programs.emplace_back(key, std::move(env));
+            }
+        }
+    } catch (const std::exception& e) {
+        LOG_WARNING(Render_Vulkan, "Shader precache: reading {} failed: {}", path, e.what());
+        precache_keys.clear();
+        return;
+    }
+    // How well the precache matches what the game ran: the disk cache holds the compute
+    // pipelines of earlier sessions.
+    LOG_INFO(Render_Vulkan,
+             "Shader precache: {} compute programs; {} of the {} compute pipelines in the disk "
+             "cache are among them",
+             entries, in_disk_cache, compute_cache.size());
+    if (done) {
+        LOG_INFO(Render_Vulkan, "Shader precache: already built for this driver");
+        return;
+    }
+    const auto write_marker = [warm_file, driver, device_id, entries] {
+        if (const auto stamp = VideoCommon::ShaderWarm::CurrentWarmStamp(
+                warm_file, entries, driver, device_id, CACHE_VERSION)) {
+            VideoCommon::ShaderWarm::WriteWarmMarker(warm_file, *stamp);
+        }
+    };
+    if (programs.empty()) {
+        write_marker();
+        return;
+    }
+    const size_t threads = BackgroundPipelineThreads();
+    LOG_INFO(Render_Vulkan,
+             "Shader precache: building {} of {} compute programs in the background ({} threads)",
+             programs.size(), entries, threads);
+    precache_left.store(programs.size(), std::memory_order_relaxed);
+    precache_start = std::chrono::steady_clock::now();
+    precache_workers.reset(new Common::ThreadWorker(threads, "VkShaderPrecache", {},
+                                                    Common::ThreadPlacement::Background));
+    for (auto& [key, env] : programs) {
+        precache_workers->QueueWork([this, key, env = std::move(env), write_marker]() mutable {
+            if (precache_stop.load(std::memory_order_relaxed)) {
+                return;
+            }
+            try {
+                static const VideoCommon::GuessMissing guess{};
+                env.SetGuessMissing(&guess);
+                ShaderPools pools;
+                // Built and destroyed here, never bound: only the driver's cache keeps it.
+                if (CreateComputePipeline(pools, key, env, nullptr, false)) {
+                    precache_built.fetch_add(1, std::memory_order_relaxed);
+                }
+            } catch (const std::exception& e) {
+                LOG_DEBUG(Render_Vulkan, "Shader precache: {}", e.what());
+            }
+            if (precache_left.fetch_sub(1, std::memory_order_acq_rel) == 1 &&
+                !precache_stop.load(std::memory_order_relaxed)) {
+                write_marker();
+                LOG_INFO(Render_Vulkan, "Shader precache: {} compute programs built in {:.1f} s",
+                         precache_built.load(std::memory_order_relaxed),
+                         std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                       precache_start)
+                             .count());
+            }
+        });
+    }
+}
+
+void PipelineCache::StopShaderPrecache() {
+    precache_stop.store(true, std::memory_order_relaxed);
+    // Joins the threads: a build in progress finishes, queued ones are dropped.
+    precache_workers.reset();
 }
 
 GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const noexcept {

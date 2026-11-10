@@ -291,6 +291,24 @@ private:
     /// Last: destroyed (its threads joined) before the state above.
     std::unique_ptr<Common::ThreadWorker> background_workers;
 
+    /// Shader precache ("Pre-compile shaders" in the game list): the compute programs of the
+    /// title's precache file, made from the game files with the reads it lacks guessed, are built
+    /// on background threads once the boot is done, then thrown away. They only fill the driver's
+    /// shader cache, so a dispatch that converts to the same SPIR-V finds the driver's work done.
+    /// A marker skips it after it ran to the end for this driver and device.
+    void StartShaderPrecache(u64 title_id);
+    void StopShaderPrecache();
+    std::atomic_bool precache_stop{};
+    std::atomic<size_t> precache_left{};
+    std::atomic<size_t> precache_built{};
+    std::chrono::steady_clock::time_point precache_start{};
+    /// Key hashes of the precache file's programs (written before the game runs).
+    std::unordered_set<u64> precache_keys;
+    size_t new_compute_pipelines{}; ///< GPU thread
+    size_t precached_compute_pipelines{}; ///< Of those, in the precache file (GPU thread)
+    /// Last: destroyed (its threads joined) before the state above.
+    std::unique_ptr<Common::ThreadWorker> precache_workers;
+
     std::chrono::microseconds translation_wait{};         ///< Per pipeline
     std::chrono::microseconds translation_frame_budget{}; ///< Per frame
     std::chrono::microseconds translation_frame_left{};
