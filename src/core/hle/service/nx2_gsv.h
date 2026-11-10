@@ -50,6 +50,7 @@
 #include "core/hle/kernel/k_event.h"
 #include "core/hle/kernel/k_hardware_timer.h"
 #include "core/hle/kernel/k_readable_event.h"
+#include "core/hle/kernel/k_scheduler.h"
 #include "core/hle/kernel/k_session.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/k_transfer_memory.h"
@@ -2604,16 +2605,57 @@ private:
 
     void StartVsyncTimer() {
         if (!m_vsync_timer) {
+            // EDEN_NX2_VSYNC_ADAPTIVE=0/1: a game that waits for a fresh vblank between frames
+            // idles until the next 60 Hz tick whenever a frame runs past one, so its frame time
+            // is a whole number of 16.7 ms: Ocarina of Time on the Odin 3 needs ~38 ms a frame
+            // and got 50 (the GPU thread polled a suspended channel for 15 ms of each frame with
+            // every guest core asleep). Adaptive: the timer looks every half millisecond and
+            // signals a vblank once a 60th of a second has passed since the last one and the
+            // game has taken that one (the event is clear again). A vblank nobody took stays
+            // pending, as before; no more than 60 a second, as before.
+            static const bool adaptive = [] {
+                const char* const value = std::getenv("EDEN_NX2_VSYNC_ADAPTIVE");
+                return value != nullptr && value[0] == '1';
+            }();
+            m_vsync->adaptive = adaptive;
             m_vsync_timer = Core::Timing::CreateEvent(
                 "nx2:vi2 vsync",
                 [vsync_state = m_vsync, &kernel = system.Kernel()](
                     s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
                     std::scoped_lock lk{vsync_state->mutex};
+                    if (vsync_state->adaptive) {
+                        constexpr std::chrono::nanoseconds Interval{1'000'000'000LL / 60};
+                        const auto now = std::chrono::steady_clock::now();
+                        if (now - vsync_state->last_vblank < Interval ||
+                            vsync_state->events.empty()) {
+                            return std::nullopt;
+                        }
+                        bool taken = false;
+                        {
+                            Kernel::KScopedSchedulerLock sl{kernel};
+                            for (auto* vsync : vsync_state->events) {
+                                taken |= !vsync->GetReadableEvent().IsSignaled(kernel);
+                            }
+                        }
+                        if (!taken) {
+                            return std::nullopt;
+                        }
+                        // On time: keep the 60 Hz phase. After a miss: from now.
+                        vsync_state->last_vblank = now - vsync_state->last_vblank < 2 * Interval
+                                                       ? vsync_state->last_vblank + Interval
+                                                       : now;
+                    }
                     for (auto* vsync : vsync_state->events) {
                         vsync->Signal(kernel);
                     }
                     return std::nullopt;
                 });
+            if (adaptive) {
+                constexpr std::chrono::nanoseconds Look{std::chrono::microseconds{500}};
+                LOG_INFO(Service, "nx2:vi2 adaptive vblank (EDEN_NX2_VSYNC_ADAPTIVE)");
+                system.CoreTiming().ScheduleLoopingEvent(Look, Look, m_vsync_timer);
+                return;
+            }
             // EDEN_NX2_VSYNC_HZ=<rate> (experiment): the game starts frames on this event, so a
             // frame that misses a 60 Hz tick idles until the next one.
             static const std::chrono::nanoseconds VblankInterval{[] {
@@ -2633,6 +2675,8 @@ private:
     struct VsyncState {
         std::mutex mutex;
         std::vector<Kernel::KEvent*> events;
+        bool adaptive{};                                    ///< EDEN_NX2_VSYNC_ADAPTIVE
+        std::chrono::steady_clock::time_point last_vblank{}; ///< Adaptive: the last one signalled
     };
     std::shared_ptr<VsyncState> m_vsync = std::make_shared<VsyncState>();
     std::shared_ptr<Core::Timing::EventType> m_vsync_timer;
