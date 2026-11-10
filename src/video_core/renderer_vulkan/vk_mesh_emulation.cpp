@@ -7,6 +7,7 @@
 #include <cstring>
 #include <mutex>
 
+#include "video_core/nx2_flight.h"
 #include "common/alignment.h"
 #include "common/logging.h"
 #include "common/settings.h"
@@ -375,6 +376,7 @@ MeshEmulationRegion MeshEmulationBuffer::Allocate(VkDeviceSize request, bool arg
     // A chunk the GPU is done with.
     for (size_t index = 0; index < chunks.size(); ++index) {
         if (chunks[index].size >= size && scheduler.IsFree(chunks[index].tick)) {
+            VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::MeshChunkReuses);
             chunks[index].used = 0;
             return take(index);
         }
@@ -391,6 +393,7 @@ MeshEmulationRegion MeshEmulationBuffer::Allocate(VkDeviceSize request, bool arg
         }
         return true;
     });
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::MeshChunkNew);
     const VkDeviceSize chunk_size = std::bit_ceil(std::max<VkDeviceSize>(size, 4ULL << 20));
     vk::Buffer buffer = memory_allocator.CreateBuffer(
         VkBufferCreateInfo{

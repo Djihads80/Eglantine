@@ -16,6 +16,7 @@
 #include <vector>
 #include <fmt/ranges.h>
 
+#include "video_core/nx2_flight.h"
 #include "common/cityhash.h"
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
@@ -1489,6 +1490,20 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         return small_host && memory_tracker.IsRegionGpuModified(device_addr, size);
     }();
     const bool use_fast_buffer = needs_alignment_stream || (small_host && !gpu_modified);
+    if (VideoCommon::Nx2Flight::g_enabled.load(std::memory_order_relaxed)) [[unlikely]] {
+        VideoCommon::Nx2Flight::Note((use_fast_buffer ? VideoCommon::Nx2Flight::UboFast
+                                         : VideoCommon::Nx2Flight::UboCached));
+        // Bound data that starts with 16 zero bytes.
+        if (size >= 16 && (device_addr & 0xfff) <= 0xff0) {
+            if (const u8* const bytes = device_memory.template GetPointer<u8>(device_addr)) {
+                u64 words[2];
+                std::memcpy(words, bytes, sizeof(words));
+                if ((words[0] | words[1]) == 0) {
+                    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::UboZero);
+                }
+            }
+        }
+    }
     if (use_fast_buffer) {
         if constexpr (IS_OPENGL) {
             if (runtime.HasFastBufferSubData()) {
@@ -2755,6 +2770,7 @@ void BufferCache<P>::JoinOverlap(BufferId new_buffer_id, BufferId overlap_id,
 template <class P>
 BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size,
                                       bool sparse_compatible) {
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::BuffersCreated);
     DAddr device_addr_end = Common::AlignUp(device_addr + wanted_size, CACHING_PAGESIZE);
     device_addr = Common::AlignDown(device_addr, CACHING_PAGESIZE);
     wanted_size = static_cast<u32>(device_addr_end - device_addr);
@@ -2836,6 +2852,7 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
     // has a clean dirty bitmap. Walking that bitmap on every later draw is the bulk of
     // the "update buffers" time (#562).
     if (!memory_tracker.HasPendingCpuUpload(device_addr, size)) {
+        VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::SyncSkipClean);
         static u64 skips = 0;
         ++skips;
         if (skips == 1 || skips == 100000 || skips % 1000000 == 0) {
@@ -2860,8 +2877,10 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
     SyncedRange& synced = synced_ranges[((device_addr >> 8) ^ size) % synced_ranges.size()];
     if (generation != 0 && synced.generation == generation && synced.device_addr == device_addr &&
         synced.size == size && synced.buffer == &buffer) {
+        VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::SyncSkipCached);
         return true;
     }
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::SyncWalks);
     if (generation != 0) {
         synced = SyncedRange{&buffer, device_addr, size, generation};
     }
@@ -3008,6 +3027,10 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
             copy.src_offset += upload_staging.offset;
         }
         const bool can_reorder = runtime.CanReorderUpload(buffer, copies);
+        VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::Uploads);
+        if (!can_reorder) {
+            VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::OrderedUploads);
+        }
         // EDEN_NX2_PASS_BREAKS=1: uploads that go ahead of the command buffer against those that
         // must stay in order (their target was used in it: each ends the render pass), by size.
         static const bool upload_stats = [] {
@@ -3205,6 +3228,7 @@ bool BufferCache<P>::InlineMemory(DAddr dest_address, size_t copy_size,
 template <class P>
 void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_size,
                                                 std::span<const u8> inlined_buffer) {
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::InlineUploads);
     ClearDownload(dest_address, copy_size);
     gpu_modified_ranges.Subtract(dest_address, copy_size);
     MarkVertexBuffersStale(dest_address, copy_size);
@@ -3589,6 +3613,7 @@ void BufferCache<P>::DownloadBufferRanges(Buffer& buffer,
     if (total_size_bytes == 0) {
         return;
     }
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::BufferDownloads);
     const Common::RangeSet<DAddr> cpu_written = PendingCpuWriteRanges();
     if constexpr (requires { runtime.CanReadBuffersDirectly(); buffer.HostView(); }) {
         // An integrated GPU's buffers are in the memory the host reads: wait for the GPU to
@@ -3673,6 +3698,7 @@ void BufferCache<P>::DownloadBufferRanges(Buffer& buffer,
 
 template <class P>
 void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::BuffersDeleted);
     if (buffer_id == inline_buffer_id) {
         // The garbage collector can delete the inline index buffer; recreate it on next use.
         inline_buffer_id = NULL_BUFFER_ID;

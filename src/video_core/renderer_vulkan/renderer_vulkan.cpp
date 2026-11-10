@@ -4,6 +4,9 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+#include <cstdio>
+#include <chrono>
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -14,6 +17,8 @@
 
 #include <fmt/ranges.h>
 
+#include "common/fs/path_util.h"
+#include "video_core/nx2_flight.h"
 #include "common/logging.h"
 #include <ranges>
 #include "common/scope_exit.h"
@@ -207,6 +212,49 @@ RendererVulkan::~RendererVulkan() {
     void(device.GetLogical().WaitIdle());
 }
 
+namespace {
+// EDEN_NX2_FLIGHT (nx2_flight.h): the record of the frame that is about to be presented.
+void FlightEndFrame() {
+    namespace Flight = VideoCommon::Nx2Flight;
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_FLIGHT");
+        const bool on = value != nullptr && value[0] == '1';
+        Flight::g_enabled.store(on, std::memory_order_relaxed);
+        return on;
+    }();
+    if (!enabled) {
+        return;
+    }
+    static std::FILE* const file = std::fopen(
+        (Common::FS::GetEdenPathString(Common::FS::EdenPath::LogDir) + "/nx2_flight.bin").c_str(),
+        "wb");
+    if (file == nullptr) {
+        return;
+    }
+    struct Record {
+        u32 magic;
+        u32 frame;
+        u64 time_ns;
+        std::array<u32, Flight::Count> counters;
+    };
+    static u32 frame = 0;
+    Record record{};
+    record.magic = 0x54474c46; // "FLGT"
+    record.frame = ++frame;
+    record.time_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count());
+    for (size_t i = 0; i < record.counters.size(); ++i) {
+        record.counters[i] = Flight::g_counters[i].exchange(0, std::memory_order_relaxed);
+    }
+    Flight::g_frame.store(frame, std::memory_order_relaxed);
+    std::fwrite(&record, sizeof(record), 1, file);
+    if (frame % 64 == 0) {
+        std::fflush(file);
+    }
+}
+} // Anonymous namespace
+
 void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebuffers) {
     SCOPE_EXIT {
         render_window.OnFrameDisplayed();
@@ -219,6 +267,7 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     }
 
     RenderScreenshot(framebuffers);
+    FlightEndFrame();
     Frame* frame = present_manager.GetRenderFrame();
 
     scheduler.RequestOutsideRenderPassOperationContext();

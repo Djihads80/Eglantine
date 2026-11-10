@@ -22,6 +22,7 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include "video_core/nx2_flight.h"
 #include "video_core/nx2_sampler.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 
@@ -81,6 +82,7 @@ void NotePassBreak(void* frame, int kind);
 
 u64 Scheduler::Flush(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {
     NotePassBreak(__builtin_frame_address(0), 1);
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::Flushes);
     if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
         VideoCommon::GpuSplit::CheckOwner("Scheduler::Flush");
     }
@@ -155,6 +157,7 @@ bool Scheduler::WaitSubmitted(u64 tick) {
 
 void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {
     NotePassBreak(__builtin_frame_address(0), 1);
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::Flushes);
     if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
         VideoCommon::GpuSplit::CheckOwner("Scheduler::Finish");
     }
@@ -788,6 +791,7 @@ void Scheduler::EndRenderPass()
             return;
         }
         NotePassBreak(__builtin_frame_address(0), 0);
+        VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::PassEnds);
         ++recording_epoch;
         fragment_barrier_pending = false;
         render_pass_has_stores = false;

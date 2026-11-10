@@ -16,6 +16,7 @@
 #include <boost/container/small_vector.hpp>
 #include <bit>
 #include <numeric>
+#include "video_core/nx2_flight.h"
 #include "common/alignment.h"
 #include "common/bit_util.h"
 #include "common/memory_detect.h"
@@ -1536,6 +1537,7 @@ void TextureCacheRuntime::BarrierFeedbackLoop() {
     if (only_after_writes && !scheduler.RenderPassWroteDepth()) {
         return;
     }
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::FeedbackEnds);
     scheduler.RequestOutsideRenderPassOperationContext();
 }
 

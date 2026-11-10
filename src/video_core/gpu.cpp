@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "video_core/nx2_flight.h"
 #include "common/assert.h"
 #include "common/settings.h"
 #include "common/settings_enums.h"
@@ -193,6 +194,7 @@ struct GPU::Impl {
             sync_requests.pop_front();
             sync_request_mutex.unlock();
             request();
+            VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::SyncOps);
             current_sync_fence.fetch_add(1, std::memory_order_release);
             sync_request_mutex.lock();
             sync_request_cv.notify_all();
@@ -354,6 +356,7 @@ struct GPU::Impl {
                     }
                     case GuestFlush::Wait:
                         waits.fetch_add(1, std::memory_order_relaxed);
+                        VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::GuestFlushWaits);
                         rasterizer->WaitGpuTick(tick);
                         break;
                     case GuestFlush::No:
@@ -380,6 +383,7 @@ struct GPU::Impl {
                 }
             }
             if (guest_flushed) {
+                VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::GuestFlushes);
                 return;
             }
             if (!rasterizer->TryCacheInvalidation(addr, size)) {

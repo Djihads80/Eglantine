@@ -16,6 +16,7 @@
 #include <vector>
 #include <optional>
 #include <bit>
+#include "video_core/nx2_flight.h"
 #include "common/container/unordered_map.h"
 #include <boost/container/small_vector.hpp>
 
@@ -1892,6 +1893,7 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         stale_pages.IsAll(image.cpu_addr, image.guest_size_bytes)) {
         if (!Tegra::Nx2MayBeGpuWritten(image.cpu_addr, image.guest_size_bytes)) {
             ++tc_stale_skips;
+            VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::StaleSkips);
             tc_stale_skip_bytes += image.guest_size_bytes;
             runtime.TransitionImageLayout(image);
             return;
@@ -1943,6 +1945,7 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         return;
     }
     ++images_uploaded;
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::ImageUploads);
     uploaded_bytes += image.guest_size_bytes;
     largest_upload = (std::max<u64>)(largest_upload, image.guest_size_bytes);
     if (!UploadInChunks(image)) {
@@ -2118,6 +2121,7 @@ void TextureCache<P>::RefreshSparseTiles(Image& image) {
         image.UploadMemory(staging, copies);
         runtime.InsertUploadMemoryBarrier();
         ++images_uploaded;
+        VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::ImageUploads);
         uploaded_bytes += bytes;
     }
 }
@@ -2250,6 +2254,7 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
             }
             image.UploadMemory(staging, copies);
             ++images_uploaded;
+            VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::ImageUploads);
             uploaded_bytes += u64{image.info.layer_stride} * layers.size();
             ++layer_uploads;
             return;
@@ -2271,6 +2276,7 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
         }
         runtime.AccelerateImageUploadLayers(image, staging, uploads, layers);
         ++images_uploaded;
+        VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::ImageUploads);
         uploaded_bytes += tail * layers.size();
         ++layer_uploads;
     }
@@ -2925,6 +2931,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             shape.second = gpu_addr;
         }
         ++images_created;
+        VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::ImagesCreated);
     }
 
     if (!gpu_memory->IsContinuousRange(new_image.gpu_addr, new_image.guest_size_bytes) &&
@@ -3743,6 +3750,7 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     ++nx2_quick_generation;
     ImageBase& image = slot_images[image_id];
     ++images_deleted;
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::ImagesDeleted);
     // Drop every decode still queued for it, whatever IsDecoding says: an image re-decoded while
     // a decode was in flight has two, and the first to finish clears the flag. A decode left
     // behind was uploaded into the next image to take this slot (another texture's data: garbage
@@ -4032,6 +4040,7 @@ void TextureCache<P>::PrepareImageView(ImageViewId image_view_id, bool is_modifi
 
 template <class P>
 void TextureCache<P>::CopyImage(ImageId dst_id, ImageId src_id, std::vector<ImageCopy> copies) {
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::AliasCopies);
     Image& dst = slot_images[dst_id];
     Image& src = slot_images[src_id];
     if (True(dst.flags & ImageFlagBits::UnwrittenSparse) ||

@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "video_core/nx2_flight.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -440,6 +441,7 @@ bool DmaPusher::PredictGpuWrittenCommands(GPUVAddr address, u32 count, u64 tick)
     predicted_entry = address;
     predicted_entry_words = list.words;
     ++stats.predicted;
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::ListsPredicted);
     return true;
 }
 
@@ -546,6 +548,7 @@ void DmaPusher::CheckPredictedLists() {
             continue;
         }
         ++stats.wrong;
+        VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::ListsWrong);
         stats.wrong_words += wrong_words;
         static u32 logged = 0;
         if (logged < 48) {
@@ -1683,6 +1686,7 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count, bool* pendin
                 }
                 // The copy is still on the GPU: the channel waits for it without blocking the
                 // others (Step parses this entry again once IsGpuTickDone).
+                VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::ListWaits);
                 pending_list_tick = tick;
                 *pending = true;
                 return false;

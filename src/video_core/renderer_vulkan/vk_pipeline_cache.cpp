@@ -17,6 +17,7 @@
 #include <vector>
 #include <bit>
 #include <numeric>
+#include "video_core/nx2_flight.h"
 #include "common/cityhash.h"
 #include "common/scope_exit.h"
 #include "common/fs/fs.h"
@@ -1270,6 +1271,7 @@ void ReportNewPipelineKey(const GraphicsPipelineCacheKey& key) {
 } // Anonymous namespace
 
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::PipelineLookups);
     auto it{graphics_cache.find(graphics_key)};
     if (it == graphics_cache.end()) {
         if (const auto translating = translating_graphics.find(graphics_key);

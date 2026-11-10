@@ -23,6 +23,7 @@
 
 #include <fmt/format.h>
 
+#include "video_core/nx2_flight.h"
 #include "video_core/renderer_vulkan/renderer_vulkan.h"
 
 #include "common/assert.h"
@@ -584,6 +585,10 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
             draw_func();
         }
     }
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::Draws);
+    if (mesh_draw) {
+        VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::MeshDraws);
+    }
     // After the draw is recorded: nothing between can end its pass.
     if (const auto& draw_regs = maxwell3d->regs;
         (draw_regs.depth_test_enable != 0 && draw_regs.depth_write_enabled != 0) ||
@@ -1117,6 +1122,7 @@ void RasterizerVulkan::DrawTexture() {
 }
 
 void RasterizerVulkan::Clear(u32 layer_count) {
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::Clears);
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Clear};
     if (Tegra::Engines::g_nx2_trace_draws_after_upscale > 0) {
         const auto& regs = maxwell3d->regs;
@@ -1318,6 +1324,7 @@ void RasterizerVulkan::Clear(u32 layer_count) {
 }
 
 void RasterizerVulkan::DispatchCompute() {
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::Dispatches);
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Compute};
     FlushWork();
     gpu_memory->FlushCaching();
@@ -3327,6 +3334,7 @@ void RasterizerVulkan::InitializeChannel(Tegra::Control::ChannelState& channel) 
 }
 
 void RasterizerVulkan::BindChannel(Tegra::Control::ChannelState& channel) {
+    VideoCommon::Nx2Flight::Note(VideoCommon::Nx2Flight::ChannelSwitches);
     const s32 channel_id = channel.bind_id;
     BindToChannel(channel_id);
     {

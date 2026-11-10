@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include "video_core/nx2_flight.h"
 #include "core/frontend/framebuffer_layout.h"
 #include "video_core/framebuffer_config.h"
 #include "video_core/host_shaders/vulkan_present_vert_spv.h"
@@ -69,6 +71,10 @@ void WindowAdaptPass::Draw(const Device& device, RasterizerVulkan& rasterizer, S
         layer_it++;
     }
 
+    // EDEN_NX2_FLIGHT: the frame's number, 16 bits as black or white squares after a white and a
+    // black one, along the bottom left edge.
+    const bool flight_marker = VideoCommon::Nx2Flight::g_enabled.load(std::memory_order_relaxed);
+    const u32 flight_frame = VideoCommon::Nx2Flight::g_frame.load(std::memory_order_relaxed);
     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
         const f32 bg_red = Settings::values.bg_red.GetValue() / 255.0f;
         const f32 bg_green = Settings::values.bg_green.GetValue() / 255.0f;
@@ -101,6 +107,27 @@ void WindowAdaptPass::Draw(const Device& device, RasterizerVulkan& rasterizer, S
             cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline_layout, 0,
                                       descriptor_sets[i], {});
             cmdbuf.Draw(4, 1, 0, 0);
+        }
+        if (flight_marker) {
+            const u32 side = (std::max)(render_area.width / 64, 4U);
+            for (u32 square = 0; square < 18; ++square) {
+                const bool white =
+                    square == 0 || (square >= 2 && ((flight_frame >> (square - 2)) & 1) != 0);
+                const f32 value = white ? 1.0f : 0.0f;
+                const VkClearAttachment attachment{
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .colorAttachment = 0,
+                    .clearValue = {.color = {.float32 = {value, value, value, 1.0f}}},
+                };
+                const VkClearRect rect{
+                    .rect = {.offset = {static_cast<s32>(square * side),
+                                        static_cast<s32>(render_area.height - side)},
+                             .extent = {side, side}},
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                };
+                cmdbuf.ClearAttachments({attachment}, {rect});
+            }
         }
 
         cmdbuf.EndRenderPass();

@@ -18,6 +18,7 @@
 #include <boost/container/static_vector.hpp>
 #include <fmt/format.h>
 
+#include "video_core/nx2_flight.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 #include "video_core/gpu_split.h"
 #include "video_core/nx2_quick_bind.h"
@@ -924,6 +925,8 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
             last_descriptor_payload.size() == num_descriptor_entries &&
             std::memcmp(last_descriptor_payload.data(), entries,
                         num_descriptor_entries * sizeof(DescriptorUpdateEntry)) == 0;
+        VideoCommon::Nx2Flight::Note((reuse_allocation ? VideoCommon::Nx2Flight::DescriptorReuses
+                                           : VideoCommon::Nx2Flight::DescriptorWrites));
         if (reuse_allocation) {
             descriptor_buffer_offset = last_descriptor_buffer_offset;
             descriptor_buffer_chunk = last_descriptor_buffer_chunk;
