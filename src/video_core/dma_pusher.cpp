@@ -354,7 +354,219 @@ bool ListSuspendEnabled() {
     }();
     return enabled;
 }
+
+// EDEN_NX2_LIST_PREDICT=<n>: a GPU-written command list whose copy the GPU has not finished is run
+// with the words its read before got, when its last n reads each found the words of the read
+// before ("a": whenever a read before of the same length exists). The channel doesn't wait for the
+// GPU then (Ocarina of Time: ~15 ms a frame, all guest threads asleep meanwhile). The words are
+// compared with the copy once it is done: a list that did change was run one frame late (culling
+// results of the frame before) and is waited for again until it has stayed the same n times.
+// -1: off. Read on the first list read, after env.txt.
+int ListPredictStreak() {
+    static const int streak = [] {
+        const char* value = std::getenv("EDEN_NX2_LIST_PREDICT");
+        int result = -1;
+        if (value != nullptr && value[0] == 'a') {
+            result = 0;
+        } else if (value != nullptr && value[0] >= '1' && value[0] <= '9') {
+            result = std::atoi(value);
+        }
+        if (result >= 0) {
+            LOG_INFO(HW_GPU,
+                     "GPU-written command lists: run with the words of the read before after {} "
+                     "unchanged reads, checked afterwards (EDEN_NX2_LIST_PREDICT)",
+                     result);
+        }
+        return result;
+    }();
+    return streak;
+}
+
+struct ListPredictStats {
+    u64 read{};
+    u64 changed{};
+    u64 predicted{};
+    u64 right{};
+    u64 wrong{};
+    u64 superseded{};
+    u64 lost{};
+    u64 no_words{};
+    u64 other_length{};
+    u64 low_streak{};
+    u64 unchecked{};
+    u64 wrong_words{};
+    std::chrono::steady_clock::time_point window_start{std::chrono::steady_clock::now()};
+};
+ListPredictStats list_predict_stats; // GPU thread only
+
+void ReportListPredictions(size_t lists) {
+    ListPredictStats& stats = list_predict_stats;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - stats.window_start < std::chrono::seconds{10}) {
+        return;
+    }
+    LOG_INFO(HW_GPU,
+             "GPU-written command lists in 10 s ({} known): {} read from the GPU's copy ({} "
+             "changed), {} run with the words of the read before: {} right, {} wrong ({} words), "
+             "{} read again first, {} unreadable | not predicted: {} first reads, {} of another "
+             "length, {} changed lately, {} not checked yet",
+             lists, stats.read, stats.changed, stats.predicted, stats.right, stats.wrong,
+             stats.wrong_words, stats.superseded, stats.lost, stats.no_words, stats.other_length,
+             stats.low_streak, stats.unchecked);
+    stats = {};
+    stats.window_start = now;
+}
 } // Anonymous namespace
+
+bool DmaPusher::PredictGpuWrittenCommands(GPUVAddr address, u32 count, u64 tick) {
+    const int min_streak = ListPredictStreak();
+    ListPredictStats& stats = list_predict_stats;
+    const auto it = predicted_lists.find(address);
+    if (it == predicted_lists.end() || it->second.words.empty()) {
+        ++stats.no_words;
+        return false;
+    }
+    PredictedList& list = it->second;
+    if (list.words.size() != count) {
+        ++stats.other_length;
+        return false;
+    }
+    if (list.check_tick) {
+        ++stats.unchecked;
+        return false;
+    }
+    if (list.streak < static_cast<u32>(min_streak)) {
+        ++stats.low_streak;
+        return false;
+    }
+    list.check_tick = tick;
+    predicted_checks.push_back(address);
+    command_headers.resize_destructive(count);
+    std::memcpy(command_headers.data(), list.words.data(), size_t{count} * sizeof(u32));
+    predicted_entry = address;
+    predicted_entry_words = list.words;
+    ++stats.predicted;
+    return true;
+}
+
+void DmaPusher::NoteGpuWrittenCommands(GPUVAddr address, u32 count) {
+    ListPredictStats& stats = list_predict_stats;
+    // A game that moves its lists around must not grow this without bound.
+    if (predicted_lists.size() > 4096 && predicted_checks.empty()) {
+        predicted_lists.clear();
+    }
+    PredictedList& list = predicted_lists[address];
+    if (list.check_tick) {
+        // Read (waited for) before the check: these are a later write's words.
+        list.check_tick.reset();
+        std::erase(predicted_checks, address);
+        ++stats.superseded;
+    }
+    const bool same =
+        list.words.size() == count &&
+        std::memcmp(list.words.data(), command_headers.data(), size_t{count} * sizeof(u32)) == 0;
+    ++stats.read;
+    if (same) {
+        ++list.streak;
+    } else {
+        stats.changed += list.words.empty() ? 0 : 1;
+        list.streak = 0;
+        const u32* const words = reinterpret_cast<const u32*>(command_headers.data());
+        list.words.assign(words, words + count);
+    }
+    ReportListPredictions(predicted_lists.size());
+}
+
+DmaPusher::ListWords DmaPusher::ReadListWords(GPUVAddr address, std::span<u8> out, u64& tick) {
+    using GpuWrittenList = VideoCore::RasterizerInterface::GpuWrittenList;
+    const GPUVAddr end = address + out.size();
+    for (GPUVAddr chunk = address; chunk < end;) {
+        const GPUVAddr chunk_end = (std::min)(end, (chunk & ~GPUVAddr{0xfff}) + 0x1000);
+        const std::span<u8> part{out.data() + (chunk - address),
+                                 static_cast<size_t>(chunk_end - chunk)};
+        const auto device = memory_manager.GpuToCpuAddress(chunk);
+        if (!device) {
+            return ListWords::Unknown;
+        }
+        GpuWrittenList where = GpuWrittenList::Synced;
+        if (Tegra::Nx2IsGpuWritten(*device)) {
+            where = rasterizer->ReadGpuWrittenCommandList(*device, part, &tick);
+            if (where == GpuWrittenList::Pending) {
+                return ListWords::Pending;
+            }
+            if (where == GpuWrittenList::Unknown) {
+                return ListWords::Unknown;
+            }
+        }
+        if (where == GpuWrittenList::Synced) {
+            memory_manager.ReadBlockUnsafe(chunk, part.data(), part.size());
+        }
+        chunk = chunk_end;
+    }
+    return ListWords::Read;
+}
+
+void DmaPusher::CheckPredictedLists() {
+    ListPredictStats& stats = list_predict_stats;
+    for (size_t i = 0; i < predicted_checks.size();) {
+        const GPUVAddr address = predicted_checks[i];
+        PredictedList& list = predicted_lists[address];
+        if (!list.check_tick || !rasterizer->IsGpuTickDone(*list.check_tick)) {
+            ++i;
+            continue;
+        }
+        const size_t count = list.words.size();
+        predicted_check_words.resize(count);
+        u64 tick = 0;
+        const ListWords result = ReadListWords(
+            address,
+            std::span<u8>{reinterpret_cast<u8*>(predicted_check_words.data()), count * sizeof(u32)},
+            tick);
+        if (result == ListWords::Pending) {
+            // Written again since: that copy tells as much about how stable the list is.
+            list.check_tick = tick;
+            ++i;
+            continue;
+        }
+        list.check_tick.reset();
+        predicted_checks[i] = predicted_checks.back();
+        predicted_checks.pop_back();
+        if (result == ListWords::Unknown) {
+            list.words.clear();
+            list.streak = 0;
+            ++stats.lost;
+            continue;
+        }
+        size_t wrong_words = 0;
+        size_t first = count;
+        for (size_t word = 0; word < count; ++word) {
+            if (list.words[word] != predicted_check_words[word]) {
+                ++wrong_words;
+                first = (std::min)(first, word);
+            }
+        }
+        if (wrong_words == 0) {
+            ++list.streak;
+            ++stats.right;
+            continue;
+        }
+        ++stats.wrong;
+        stats.wrong_words += wrong_words;
+        static u32 logged = 0;
+        if (logged < 48) {
+            ++logged;
+            LOG_INFO(HW_GPU,
+                     "GPU-written command list {:#x} ({} words) was run with the words of the "
+                     "read before, {} differ: word {} was {:#010x}, is {:#010x} (after {} "
+                     "unchanged reads)",
+                     address, count, wrong_words, first, list.words[first],
+                     predicted_check_words[first], list.streak);
+        }
+        list.streak = 0;
+        list.words = predicted_check_words;
+    }
+    ReportListPredictions(predicted_lists.size());
+}
 
 // Before an entry's words are parsed: keep them when parsing from its start.
 void DmaPusher::NoteEntryWords(const CommandListHeader& header, const char* source,
@@ -406,6 +618,9 @@ void DmaPusher::NoteEntryWords(const CommandListHeader& header, const char* sour
 }
 
 bool DmaPusher::Step() {
+    if (!predicted_checks.empty()) {
+        CheckPredictedLists();
+    }
     if (!ib_enable || dma_pushbuffer.empty()) {
         return false;
     }
@@ -1405,6 +1620,20 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count, bool* pendin
     if (!written) {
         return false;
     }
+    // EDEN_NX2_LIST_PREDICT (not with the split: its back owns the copies).
+    const bool predict = ListPredictStreak() >= 0 && !VideoCommon::GpuSplit::Get().Active();
+    if (predict) {
+        if (command_resume_offset == 0) {
+            predicted_entry = 0;
+        } else if (predicted_entry == address && predicted_entry_words.size() == count) {
+            // The rest of an entry that started with predicted words: the copy may be there by
+            // now, with other words.
+            command_headers.resize_destructive(count);
+            std::memcpy(command_headers.data(), predicted_entry_words.data(),
+                        size_t{count} * sizeof(u32));
+            return true;
+        }
+    }
     // Resuming after the copy's tick: the back ran the list's writer before the suspension
     // (this wait ran then), and waiting again would wait for the other channels' work queued
     // meanwhile too.
@@ -1432,6 +1661,9 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count, bool* pendin
             where = rasterizer->ReadGpuWrittenCommandList(*device, part,
                                                           pending != nullptr ? &tick : nullptr);
             if (where == GpuWrittenList::Pending) {
+                if (predict && PredictGpuWrittenCommands(address, count, tick)) {
+                    return true;
+                }
                 // The copy is still on the GPU: the channel waits for it without blocking the
                 // others (Step parses this entry again once IsGpuTickDone).
                 pending_list_tick = tick;
@@ -1479,6 +1711,9 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count, bool* pendin
             }
             std::memcpy(out, flushed.data(), flushed.size());
         }
+    }
+    if (predict && command_resume_offset == 0) {
+        NoteGpuWrittenCommands(address, count);
     }
     return true;
 }

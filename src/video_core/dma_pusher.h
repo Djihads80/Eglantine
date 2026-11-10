@@ -13,6 +13,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <boost/container/small_vector.hpp>
 #include <deque>
@@ -251,6 +252,18 @@ public:
     /// flushes and reads guest memory. With `pending`, a copy the GPU has not finished sets
     /// `*pending` and pending_list_tick instead of waiting (the result is false then).
     bool ReadGpuWrittenCommands(GPUVAddr address, u32 count, bool* pending = nullptr);
+    /// EDEN_NX2_LIST_PREDICT: fills command_headers with the words the list's read before got,
+    /// when the reads before found them unchanged often enough. The words are checked against
+    /// the GPU's copy once `tick` is done (CheckPredictedLists).
+    bool PredictGpuWrittenCommands(GPUVAddr address, u32 count, u64 tick);
+    /// EDEN_NX2_LIST_PREDICT: command_headers hold the words the GPU wrote to a list.
+    void NoteGpuWrittenCommands(GPUVAddr address, u32 count);
+    /// EDEN_NX2_LIST_PREDICT: compares predicted lists with the GPU's copies that are done.
+    void CheckPredictedLists();
+    enum class ListWords { Read, Pending, Unknown };
+    /// A GPU-written list's words as they are now, without waiting: Pending with the tick of a
+    /// copy the GPU has not finished.
+    ListWords ReadListWords(GPUVAddr address, std::span<u8> out, u64& tick);
     /// EDEN_NX2_STRATO_STATS: a split wait for queued writers before reading GPU-written words.
     void NoteWritersWait(u64 start, GPUVAddr address, u64 size);
     /// Brings command list words the GPU wrote (still only in host buffers) to guest memory.
@@ -369,6 +382,22 @@ public:
     std::optional<u64> pending_list_tick;
     /// The entry parsed next was suspended on pending_list_tick, which is done now.
     bool resumed_list_read{};
+
+    /// EDEN_NX2_LIST_PREDICT: a GPU-written command list as it was last read.
+    struct PredictedList {
+        std::vector<u32> words;
+        /// Reads in a row that found the words of the read before.
+        u32 streak{};
+        /// The words were run before the GPU's copy was there: the tick that completes it.
+        std::optional<u64> check_tick;
+    };
+    std::unordered_map<GPUVAddr, PredictedList> predicted_lists;
+    /// The lists of predicted_lists with a check_tick.
+    std::vector<GPUVAddr> predicted_checks;
+    /// The entry being parsed runs predicted words: a resume after an acquire takes them again.
+    GPUVAddr predicted_entry{};
+    std::vector<u32> predicted_entry_words;
+    std::vector<u32> predicted_check_words;
 
     /// Command list pages FlushCommandPages downloaded (oldest replaced when full).
     static constexpr size_t MaxFlushedCommandPages = 128;
