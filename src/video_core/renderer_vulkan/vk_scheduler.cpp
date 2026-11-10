@@ -75,7 +75,12 @@ Scheduler::Scheduler(const Device& device_, StateTracker& state_tracker_)
 
 Scheduler::~Scheduler() = default;
 
+namespace {
+void NotePassBreak(void* frame, int kind);
+} // Anonymous namespace
+
 u64 Scheduler::Flush(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {
+    NotePassBreak(__builtin_frame_address(0), 1);
     if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
         VideoCommon::GpuSplit::CheckOwner("Scheduler::Flush");
     }
@@ -142,6 +147,7 @@ bool Scheduler::WaitSubmitted(u64 tick) {
 }
 
 void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {
+    NotePassBreak(__builtin_frame_address(0), 1);
     if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
         VideoCommon::GpuSplit::CheckOwner("Scheduler::Finish");
     }
@@ -700,7 +706,7 @@ namespace {
 // render passes, as the return addresses above Scheduler::EndRenderPass (offsets in this library:
 // llvm-addr2line names them). A title that draws ~1000 times a frame in ~100 passes of its own
 // began ~820 host passes a frame on a phone, whose GPU pays for every one.
-void NotePassBreak([[maybe_unused]] void* frame) {
+void NotePassBreak([[maybe_unused]] void* frame, [[maybe_unused]] int kind) {
 #if defined(__aarch64__) && defined(__linux__)
     static const bool enabled = [] {
         const char* const value = std::getenv("EDEN_NX2_PASS_BREAKS");
@@ -710,9 +716,14 @@ void NotePassBreak([[maybe_unused]] void* frame) {
         return;
     }
     using Key = std::array<u64, 5>;
-    static std::map<Key, u64> counts; // the recording thread only
-    static u64 total = 0;
-    static auto window_start = std::chrono::steady_clock::now();
+    // The recording thread only. Kind 0: render passes ended, 1: submissions (Flush, Finish).
+    static std::array<std::map<Key, u64>, 2> all_counts;
+    static std::array<u64, 2> totals{};
+    static std::array<std::chrono::steady_clock::time_point, 2> starts{
+        std::chrono::steady_clock::now(), std::chrono::steady_clock::now()};
+    std::map<Key, u64>& counts = all_counts[kind];
+    u64& total = totals[kind];
+    auto& window_start = starts[kind];
     Key key{};
     const u64* fp = static_cast<const u64*>(frame);
     for (size_t i = 0; i < key.size() && fp != nullptr; ++i) {
@@ -743,7 +754,8 @@ void NotePassBreak([[maybe_unused]] void* frame) {
     const u64 base = dladdr(reinterpret_cast<void*>(&NotePassBreak), &info) != 0
                          ? reinterpret_cast<u64>(info.dli_fbase)
                          : 0;
-    LOG_INFO(Render_Vulkan, "Render passes ended in 10 s: {} by {} callers", total, top.size());
+    LOG_INFO(Render_Vulkan, "{} in 10 s: {} by {} callers",
+             kind == 0 ? "Render passes ended" : "Submissions made", total, top.size());
     for (size_t i = 0; i < top.size() && i < 16; ++i) {
         std::string text;
         for (const u64 pc : top[i].second) {
@@ -751,7 +763,8 @@ void NotePassBreak([[maybe_unused]] void* frame) {
                 text += fmt::format(" {:#x}", pc - base);
             }
         }
-        LOG_INFO(Render_Vulkan, "Render pass enders: {} by{}", top[i].first, text);
+        LOG_INFO(Render_Vulkan, "{}: {} by{}", kind == 0 ? "Render pass enders" : "Submitters",
+                 top[i].first, text);
     }
     counts.clear();
     total = 0;
@@ -767,7 +780,7 @@ void Scheduler::EndRenderPass()
         if (!state.renderpass) {
             return;
         }
-        NotePassBreak(__builtin_frame_address(0));
+        NotePassBreak(__builtin_frame_address(0), 0);
         ++recording_epoch;
         fragment_barrier_pending = false;
         render_pass_has_stores = false;
