@@ -4,6 +4,13 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <map>
+#include <string>
+#include <vector>
+#if defined(__aarch64__) && defined(__linux__)
+#include <dlfcn.h>
+#endif
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -688,6 +695,71 @@ void Scheduler::EndPendingOperations() {
     EndRenderPass();
 }
 
+namespace {
+// EDEN_NX2_PASS_BREAKS=1 (ARM64 Linux and Android): every 10 s, the callers that ended the most
+// render passes, as the return addresses above Scheduler::EndRenderPass (offsets in this library:
+// llvm-addr2line names them). A title that draws ~1000 times a frame in ~100 passes of its own
+// began ~820 host passes a frame on a phone, whose GPU pays for every one.
+void NotePassBreak([[maybe_unused]] void* frame) {
+#if defined(__aarch64__) && defined(__linux__)
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_PASS_BREAKS");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (!enabled) {
+        return;
+    }
+    using Key = std::array<u64, 5>;
+    static std::map<Key, u64> counts; // the recording thread only
+    static u64 total = 0;
+    static auto window_start = std::chrono::steady_clock::now();
+    Key key{};
+    const u64* fp = static_cast<const u64*>(frame);
+    for (size_t i = 0; i < key.size() && fp != nullptr; ++i) {
+        const u64 saved = fp[1];
+        u64 pc;
+        // xpaclri: strips a pointer authentication code from x30.
+        asm volatile("mov x30, %1; hint #7; mov %0, x30" : "=&r"(pc) : "r"(saved) : "x30");
+        key[i] = pc;
+        const u64* const next = reinterpret_cast<const u64*>(fp[0]);
+        if (next <= fp || static_cast<u64>(next - fp) > (u64{1} << 17)) {
+            break;
+        }
+        fp = next;
+    }
+    ++counts[key];
+    ++total;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - window_start < std::chrono::seconds{10}) {
+        return;
+    }
+    std::vector<std::pair<u64, Key>> top;
+    top.reserve(counts.size());
+    for (const auto& [pcs, count] : counts) {
+        top.emplace_back(count, pcs);
+    }
+    std::ranges::sort(top, [](const auto& a, const auto& b) { return a.first > b.first; });
+    Dl_info info{};
+    const u64 base = dladdr(reinterpret_cast<void*>(&NotePassBreak), &info) != 0
+                         ? reinterpret_cast<u64>(info.dli_fbase)
+                         : 0;
+    LOG_INFO(Render_Vulkan, "Render passes ended in 10 s: {} by {} callers", total, top.size());
+    for (size_t i = 0; i < top.size() && i < 16; ++i) {
+        std::string text;
+        for (const u64 pc : top[i].second) {
+            if (pc != 0) {
+                text += fmt::format(" {:#x}", pc - base);
+            }
+        }
+        LOG_INFO(Render_Vulkan, "Render pass enders: {} by{}", top[i].first, text);
+    }
+    counts.clear();
+    total = 0;
+    window_start = now;
+#endif
+}
+} // Anonymous namespace
+
 /// Finish the active render pass and invalidate recorded binds that do not survive it.
 void Scheduler::EndRenderPass()
     {
@@ -695,6 +767,7 @@ void Scheduler::EndRenderPass()
         if (!state.renderpass) {
             return;
         }
+        NotePassBreak(__builtin_frame_address(0));
         ++recording_epoch;
         fragment_barrier_pending = false;
         render_pass_has_stores = false;
