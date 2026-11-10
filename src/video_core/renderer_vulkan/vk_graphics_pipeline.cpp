@@ -19,6 +19,7 @@
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
+#include "video_core/renderer_vulkan/vk_driver_build_report.h"
 #include "video_core/renderer_vulkan/vk_frame_dump.h"
 #include "video_core/nx2_draw_stats.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
@@ -1227,6 +1228,7 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
         flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
     }
 
+    const auto build_begin = std::chrono::steady_clock::now();
     pipeline = device.GetLogical().CreateGraphicsPipeline({
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .pNext = nullptr,
@@ -1248,6 +1250,8 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
         .basePipelineHandle = nullptr,
         .basePipelineIndex = 0,
     }, *pipeline_cache);
+    DriverBuildReport::Record(DriverBuildReport::Kind::Graphics,
+                              std::chrono::steady_clock::now() - build_begin);
 
     // Log graphics pipeline creation
     if (GPU::Logging::IsActive()) {

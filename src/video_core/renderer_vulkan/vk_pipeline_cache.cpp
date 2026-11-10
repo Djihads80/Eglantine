@@ -39,6 +39,7 @@
 #include "video_core/renderer_vulkan/vertex_repack.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
+#include "video_core/renderer_vulkan/vk_driver_build_report.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -1067,6 +1068,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     state_lock.unlock();
 
     workers.WaitForRequests(stop_loading);
+    DriverBuildReport::LogSummary("at boot");
 
     // A cache from an older compatible version: its records were translated again above. Write
     // it back under the current version without the ones that failed (deferred ones are kept).
