@@ -1803,6 +1803,48 @@ bool RasterizerVulkan::TryCacheInvalidation(DAddr addr, u64 size) {
     return true;
 }
 
+VideoCore::RasterizerInterface::GuestFlush RasterizerVulkan::GuestFlushInvalidation(
+    DAddr addr, u64 size, u64& tick) {
+    if (addr == 0 || size == 0 || VideoCommon::GpuSplit::Get().Active()) {
+        return GuestFlush::No;
+    }
+    const DAddr page_begin = Common::AlignDown(addr, Core::DEVICE_PAGESIZE);
+    const DAddr page_end = Common::AlignUp(addr + size, Core::DEVICE_PAGESIZE);
+    {
+        std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+        if (buffer_cache.IsRegionGpuModified(page_begin, page_end - page_begin)) {
+            if (!buffer_cache.Nx2GuestFlushTick(page_begin, page_end - page_begin, tick)) {
+                return GuestFlush::No;
+            }
+            if (tick != 0 && !scheduler.IsFree(tick)) {
+                scheduler.GetMasterSemaphore().Refresh();
+                if (!scheduler.IsFree(tick)) {
+                    return scheduler.IsSubmitted(tick) ? GuestFlush::Wait : GuestFlush::Submit;
+                }
+            }
+            // The GPU is past every write to these pages, and the cache lock keeps the GPU
+            // thread from recording another: the buffers' memory holds the bytes.
+            buffer_cache.Nx2GuestFlush(page_begin, page_end - page_begin);
+            if (buffer_cache.IsRegionGpuModified(page_begin, page_end - page_begin)) {
+                return GuestFlush::No;
+            }
+        }
+        texture_cache.WriteMemory(addr, size);
+        buffer_cache.WriteMemory(addr, size);
+    }
+    pipeline_cache.InvalidateRegion(addr, size);
+    return GuestFlush::Done;
+}
+
+void RasterizerVulkan::WaitGpuTick(u64 tick) {
+    scheduler.GetMasterSemaphore().Wait(tick);
+}
+
+void RasterizerVulkan::SubmitNow() {
+    scheduler.Flush();
+    draw_counter = 0;
+}
+
 void RasterizerVulkan::InvalidateGPUCache() {
     gpu.InvalidateGPUCache();
 }

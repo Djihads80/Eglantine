@@ -185,6 +185,24 @@ public:
     /// there than any copy of those bytes a cache holds.
     virtual void OnGpuDirectWrite([[maybe_unused]] DAddr addr, [[maybe_unused]] u64 size) {}
 
+    /// Tegra::Nx2GuestFlush, on the guest thread whose store faulted (TryCacheInvalidation
+    /// refused: GPU-written buffer data on the pages).
+    enum class GuestFlush {
+        No,     ///< Not possible here: the GPU thread flushes
+        Done,   ///< The GPU's bytes are in guest memory and the caches invalidated
+        Wait,   ///< Wait for `tick` (WaitGpuTick), then ask again
+        Submit, ///< `tick` is not submitted: have the GPU thread submit (SubmitNow), then Wait
+    };
+    virtual GuestFlush GuestFlushInvalidation([[maybe_unused]] DAddr addr,
+                                              [[maybe_unused]] u64 size,
+                                              [[maybe_unused]] u64& tick) {
+        return GuestFlush::No;
+    }
+    /// Any thread: waits for a submitted host GPU tick.
+    virtual void WaitGpuTick([[maybe_unused]] u64 tick) {}
+    /// The GPU thread: submits what is recorded.
+    virtual void SubmitNow() {}
+
     virtual bool TryCacheInvalidation(DAddr addr, u64 size) {
         if (MustFlushRegion(addr, size, VideoCommon::CacheType::BufferCache)) return false;
         OnCacheInvalidation(addr, size);

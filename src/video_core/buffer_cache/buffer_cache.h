@@ -3222,6 +3222,47 @@ void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_
 }
 
 template <class P>
+bool BufferCache<P>::Nx2GuestFlushTick(DAddr device_addr, u64 size, u64& tick) {
+    tick = 0;
+    if constexpr (requires { runtime.CanReadBuffersDirectly(); std::declval<Buffer&>().HostView(); }) {
+        if (!runtime.CanReadBuffersDirectly()) {
+            return false;
+        }
+        bool readable = true;
+        bool any = false;
+        ForEachBufferInRange(device_addr, size, [&](BufferId, Buffer& buffer) {
+            const DAddr begin = (std::max)(device_addr, buffer.CpuAddr());
+            const DAddr end = (std::min)(device_addr + size, buffer.CpuAddr() + buffer.SizeBytes());
+            if (begin >= end || !memory_tracker.IsRegionGpuModified(begin, end - begin)) {
+                return;
+            }
+            any = true;
+            const u64 buffer_tick = buffer.GpuWriteTick();
+            if (buffer_tick == 0 || buffer.HostView().empty()) {
+                readable = false;
+                return;
+            }
+            // As DownloadBufferRanges waits: the pages' last write when one is recorded.
+            const u64 pages_tick = Tegra::Nx2LastGpuWriteTick(begin, end - begin);
+            tick = (std::max)(tick, pages_tick != 0 && pages_tick < buffer_tick ? pages_tick
+                                                                              : buffer_tick);
+        });
+        return readable && any;
+    } else {
+        return false;
+    }
+}
+
+template <class P>
+void BufferCache<P>::Nx2GuestFlush(DAddr device_addr, u64 size) {
+    nx2_guest_flush_download = true;
+    ForEachBufferInRange(device_addr, size, [&](BufferId, Buffer& buffer) {
+        DownloadBufferMemory(buffer, device_addr, size);
+    });
+    nx2_guest_flush_download = false;
+}
+
+template <class P>
 void BufferCache<P>::Nx2UpdateBankShadows(DAddr device_addr, const u8* bytes, u64 size) {
     const auto now = std::chrono::steady_clock::now();
     const DAddr end = device_addr + size;
@@ -3545,7 +3586,7 @@ void BufferCache<P>::DownloadBufferRanges(Buffer& buffer,
                 // EDEN_NX2_GPU_DIRTY_GEN: only for the last write to the pages read (every write
                 // to the buffer notes its pages), not for later ones elsewhere in the buffer.
                 u64 wait_tick = tick;
-                if (Tegra::Nx2GpuDirtyGen()) {
+                if (Tegra::Nx2GpuDirtyGen() || nx2_guest_flush_download) {
                     u64 pages_tick = 0;
                     for (const BufferCopy& copy : copies) {
                         pages_tick = (std::max)(pages_tick,
@@ -3571,6 +3612,13 @@ void BufferCache<P>::DownloadBufferRanges(Buffer& buffer,
         }
     }
 
+    if (nx2_guest_flush_download) [[unlikely]] {
+        // Nx2GuestFlushTick checked that the host reads these buffers: a guest thread must not
+        // record a copy.
+        LOG_ERROR(HW_GPU, "Guest-side flush of buffer {:#x} could not read it directly",
+                  buffer.CpuAddr());
+        return;
+    }
     if constexpr (USE_MEMORY_MAPS) {
         const bool batched = !IS_OPENGL && InDownloadBatch();
         auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes, batched);

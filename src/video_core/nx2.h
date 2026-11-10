@@ -287,9 +287,25 @@ inline void Nx2MarkCommandListPage(u64 device_address) {
     return enabled;
 }
 
+/// EDEN_NX2_GUEST_FLUSH=1: when the guest CPU stores to a page that holds GPU-written buffer data,
+/// the GPU's bytes must reach guest memory first. The GPU thread did that: it stopped recording
+/// and waited for the host GPU (Ocarina of Time: ~6 ms of each 43 ms frame, the GPU running dry
+/// afterwards). On a device whose buffers the host can read, the faulting guest thread now waits
+/// for the tick of the last GPU write to those pages itself and copies the bytes from the
+/// buffer's memory under the cache locks; the GPU thread only submits when that write is not
+/// submitted yet. Anything else (data the host can't read, a page written again and again) falls
+/// back to the GPU thread. Off by default.
+[[nodiscard]] inline bool Nx2GuestFlush() {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_GUEST_FLUSH");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
 /// Whether the per-page write ticks below are kept.
 [[nodiscard]] inline bool Nx2GpuWriteTicks() {
-    return Nx2GpuDirtyGen() || Nx2StratoStats();
+    return Nx2GpuDirtyGen() || Nx2StratoStats() || Nx2GuestFlush();
 }
 
 // The scheduler tick of the last GPU write recorded to each 4 KiB device page (every

@@ -445,6 +445,18 @@ public:
     };
     std::unordered_map<u64, std::unique_ptr<BankShadow>> bank_shadows;
     void Nx2VerifyBank(Buffer& buffer, DAddr device_addr, u32 size);
+
+public:
+    /// Tegra::Nx2GuestFlush (the cache lock held, any thread): whether every buffer with
+    /// GPU-written data in the range can be read by the host directly, and the newest tick of
+    /// a GPU write to those pages (0: none recorded).
+    [[nodiscard]] bool Nx2GuestFlushTick(DAddr device_addr, u64 size, u64& tick);
+    /// Copies the range's GPU-written bytes from the buffers' memory to guest memory. Only once
+    /// the GPU is past the tick Nx2GuestFlushTick gave: nothing is recorded or waited for.
+    void Nx2GuestFlush(DAddr device_addr, u64 size);
+
+private:
+    bool nx2_guest_flush_download{};
     void Nx2UpdateBankShadows(DAddr device_addr, const u8* bytes, u64 size);
 
 private:

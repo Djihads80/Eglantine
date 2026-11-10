@@ -121,6 +121,9 @@ public:
     void OnCachedWrite(DAddr addr, u64 size) override;
     void OnGpuDirectWrite(DAddr addr, u64 size) override;
     bool TryCacheInvalidation(DAddr addr, u64 size) override;
+    GuestFlush GuestFlushInvalidation(DAddr addr, u64 size, u64& tick) override;
+    void WaitGpuTick(u64 tick) override;
+    void SubmitNow() override;
     bool OnCPUWrite(DAddr addr, u64 size) override;
     void InvalidateGPUCache() override;
     void UnmapMemory(DAddr addr, u64 size) override;

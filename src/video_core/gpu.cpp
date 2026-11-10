@@ -327,6 +327,61 @@ struct GPU::Impl {
         if (preserve_gpu_writes) {
             VideoCore::RasterizerInterface* rasterizer = renderer->ReadRasterizer();
             const bool stats = Core::NceStats::Enabled();
+            bool guest_flushed = false;
+            if (Tegra::Nx2GuestFlush() && !rasterizer->TryCacheInvalidation(addr, size)) {
+                // On this (the guest's) thread: the GPU thread goes on recording.
+                using GuestFlush = VideoCore::RasterizerInterface::GuestFlush;
+                static std::atomic<u64> done{};
+                static std::atomic<u64> waits{};
+                static std::atomic<u64> submits{};
+                static std::atomic<u64> refused{};
+                static std::atomic<u64> gave_up{};
+                static std::atomic<u64> logged_at{};
+                bool refusal = false;
+                for (int attempt = 0; attempt < 6 && !guest_flushed && !refusal; ++attempt) {
+                    u64 tick = 0;
+                    switch (rasterizer->GuestFlushInvalidation(addr, size, tick)) {
+                    case GuestFlush::Done:
+                        guest_flushed = true;
+                        break;
+                    case GuestFlush::Submit: {
+                        submits.fetch_add(1, std::memory_order_relaxed);
+                        const u64 fence =
+                            RequestSyncOperation([rasterizer] { rasterizer->SubmitNow(); });
+                        gpu_thread.TickGPU(is_async);
+                        WaitForSyncOperation(fence);
+                        [[fallthrough]];
+                    }
+                    case GuestFlush::Wait:
+                        waits.fetch_add(1, std::memory_order_relaxed);
+                        rasterizer->WaitGpuTick(tick);
+                        break;
+                    case GuestFlush::No:
+                        refusal = true;
+                        break;
+                    }
+                }
+                (guest_flushed ? done : refusal ? refused : gave_up)
+                    .fetch_add(1, std::memory_order_relaxed);
+                const u64 total = done.load(std::memory_order_relaxed) +
+                                  refused.load(std::memory_order_relaxed) +
+                                  gave_up.load(std::memory_order_relaxed);
+                if (u64 last = logged_at.load(std::memory_order_relaxed);
+                    total >= last + 20000 &&
+                    logged_at.compare_exchange_strong(last, total, std::memory_order_relaxed)) {
+                    LOG_INFO(HW_GPU,
+                             "Guest-side flushes so far: {} done ({} waits for the GPU, {} "
+                             "submissions asked for), {} left to the GPU thread, {} given up",
+                             done.load(std::memory_order_relaxed),
+                             waits.load(std::memory_order_relaxed),
+                             submits.load(std::memory_order_relaxed),
+                             refused.load(std::memory_order_relaxed),
+                             gave_up.load(std::memory_order_relaxed));
+                }
+            }
+            if (guest_flushed) {
+                return;
+            }
             if (!rasterizer->TryCacheInvalidation(addr, size)) {
                 const u64 start = stats ? Core::NceStats::Ticks() : 0;
                 const u64 fence = RequestSyncOperation([rasterizer, addr, size] {
