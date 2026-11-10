@@ -209,6 +209,11 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                                 std::chrono::duration_cast<std::chrono::microseconds>(waited)
                                     .count()));
                     }
+                    // Fence submissions deferred on this thread (Scheduler::DeferFlush): the
+                    // fencing thread waits for them.
+                    if (!split.Active()) {
+                        split.RunIdleHook();
+                    }
                     if (waited < std::chrono::microseconds{500}) {
                         std::this_thread::yield();
                     } else if (waited < std::chrono::seconds{2}) {
@@ -221,6 +226,9 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
             } else {
                 Profile::Scope scope{Profile::Zone::Idle};
                 Sampler::Scope mark{Sampler::FrontIdle};
+                if (!split.Active()) {
+                    split.RunIdleHook();
+                }
                 state.queue.PopWait(next, stop_token);
             }
             if (stop_token.stop_requested()) {

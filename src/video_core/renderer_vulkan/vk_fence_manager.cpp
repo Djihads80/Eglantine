@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
+#include <thread>
 #include <memory>
 
 #include "common/logging.h"
@@ -25,7 +27,7 @@ void InnerFence::Queue() {
     }
     // Get the current tick so we can wait for it
     wait_tick = scheduler.CurrentTick();
-    if (!scheduler.DeferFlush()) {
+    if (!scheduler.DeferFlush(true)) {
         scheduler.Flush();
     }
 }
@@ -48,6 +50,20 @@ void InnerFence::Wait() {
         !VideoCommon::GpuSplit::OnBackThread() && scheduler.WaitSubmitted(wait_tick)) {
         scheduler.GetMasterSemaphore().Wait(wait_tick);
         return;
+    }
+    // Deferred on the GPU thread without the split (DeferFlush with `fence`): it submits at its
+    // next fence, draw batch or idle point. This thread (the fencing thread) must not: after
+    // 2 s the GPU thread has stopped, and Wait below submits.
+    if (!scheduler.IsSubmitted(wait_tick) && !VideoCommon::GpuSplit::Get().Active() &&
+        !VideoCommon::GpuSplit::OwnsScheduler()) {
+        const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        while (!scheduler.IsSubmitted(wait_tick) && std::chrono::steady_clock::now() < give_up) {
+            std::this_thread::sleep_for(std::chrono::microseconds{100});
+        }
+        if (scheduler.IsSubmitted(wait_tick)) {
+            scheduler.GetMasterSemaphore().Wait(wait_tick);
+            return;
+        }
     }
     scheduler.Wait(wait_tick);
 }

@@ -75,6 +75,13 @@ public:
         idle_hook = hook;
         idle_argument = argument;
     }
+    /// The GPU thread without the split, before it waits for commands or polls suspended
+    /// channels: the idle hook the back otherwise calls (deferred work is submitted).
+    void RunIdleHook() {
+        if (idle_hook != nullptr) {
+            idle_hook(idle_argument);
+        }
+    }
     /// Any thread: whether the back thread runs (false before it starts and once it stopped).
     [[nodiscard]] bool BackRunning() const {
         return back_running.load(std::memory_order_acquire);

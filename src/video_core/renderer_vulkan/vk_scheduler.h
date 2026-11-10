@@ -61,7 +61,12 @@ public:
     /// submission is older than a window (EDEN_NX2_FENCE_FLUSH_US, default 500 us, 0 submits at
     /// once); otherwise it goes with the next one. The back submits deferred work before it
     /// sleeps and when another thread asks (WaitSubmitted). True when the flush was deferred.
-    bool DeferFlush();
+    /// With `fence`, also on the GPU thread when it owns the scheduler (no split): it submits
+    /// deferred work before it waits for commands (GpuSplit::RunIdleHook), and the fencing
+    /// thread waits for that (InnerFence::Wait). Ocarina of Time made ~90 of its ~120
+    /// submissions a frame for the fences of its compute dispatches.
+    /// EDEN_NX2_FENCE_FLUSH_FRONT=0: only on the split's back, as before.
+    bool DeferFlush(bool fence = false);
     /// Submits deferred work (the split's back, from its idle hook).
     void FlushDeferred();
     /// Threads other than the split's back: waits until tick is submitted, asking the back to

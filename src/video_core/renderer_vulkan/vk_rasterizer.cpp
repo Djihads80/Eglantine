@@ -1538,10 +1538,9 @@ bool RasterizerVulkan::IsGpuTickDone(u64 tick, bool submit) {
         scheduler.GetMasterSemaphore().Refresh();
         return scheduler.IsFree(tick);
     }
-    // Copies left unsubmitted (SubmitNx2ListCopies): on the GPU thread, which owns the scheduler
-    // without the split.
-    if (!scheduler.IsSubmitted(tick) && Tegra::Nx2ListLazySubmit() &&
-        !VideoCommon::GpuSplit::Get().Active()) {
+    // Left unsubmitted (SubmitNx2ListCopies with lazy list copies, a deferred fence): on the GPU
+    // thread, which owns the scheduler without the split.
+    if (!scheduler.IsSubmitted(tick) && !VideoCommon::GpuSplit::Get().Active()) {
         scheduler.Flush();
     }
     // A deferred submission (Scheduler::DeferFlush) is only made by the split's back: ask it to
@@ -1928,9 +1927,14 @@ void RasterizerVulkan::FlushCommands() {
         return;
     }
     draw_counter = 0;
+    // Submitted since the last draw (the fence that brings us here just did, InnerFence::Queue):
+    // another submission would be an empty one.
+    if (scheduler.CurrentTick() != draw_tick) {
+        return;
+    }
     // Fences with downloads or queries come here right after queueing: ~9,400 a second in
     // Hyrule Warriors: Age of Imprisonment fights. Batched like the fences themselves.
-    if (!scheduler.DeferFlush()) {
+    if (!scheduler.DeferFlush(true)) {
         scheduler.Flush();
     }
 }
@@ -2186,6 +2190,7 @@ void RasterizerVulkan::FlushWork() {
         return static_cast<u32>(parsed - 1);
     }();
     ++draw_counter;
+    draw_tick = scheduler.CurrentTick();
     const bool dispatch_now = (draw_counter & check_mask) == 0;
     // Keep the host GPU working while native commands are still being recorded.
     static const u32 native_flush_draws = [] {

@@ -92,7 +92,7 @@ u64 Scheduler::Flush(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {
     return signal_value;
 }
 
-bool Scheduler::DeferFlush() {
+bool Scheduler::DeferFlush(bool fence) {
     // Fences come one per compute release: ~11,500 a second in Hyrule Warriors: Age of
     // Imprisonment fights, each a queue submission (~22,000 a second with the others), which
     // kept the Vulkan worker busy submitting. Batched within 500 us: ~10-15% more fps there.
@@ -102,7 +102,14 @@ bool Scheduler::DeferFlush() {
         const char* value = std::getenv("EDEN_NX2_FENCE_FLUSH_US");
         return value == nullptr ? s64{500} : static_cast<s64>(std::atoll(value));
     }();
-    if (interval_us <= 0 || !defer_flush_allowed || !VideoCommon::GpuSplit::OnBackThread() ||
+    static const bool on_front = [] {
+        const char* value = std::getenv("EDEN_NX2_FENCE_FLUSH_FRONT");
+        return value == nullptr || value[0] != '0';
+    }();
+    const bool owner = VideoCommon::GpuSplit::OnBackThread() ||
+                       (fence && on_front && VideoCommon::GpuSplit::OnGpuThread() &&
+                        !VideoCommon::GpuSplit::Get().BackRunning());
+    if (interval_us <= 0 || !defer_flush_allowed || !owner ||
         std::chrono::steady_clock::now() - last_flush >= std::chrono::microseconds{interval_us}) {
         return false;
     }
