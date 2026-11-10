@@ -19,15 +19,19 @@ constexpr u64 PageSize = u64{1} << Tegra::Nx2WrittenPageBits;
 constexpr u64 AddressLimit = u64{1} << 36;
 
 struct WrittenPages {
-    WrittenPages() { Tegra::Nx2ClearGpuWrittenPages(); }
-    ~WrittenPages() { Tegra::Nx2ClearGpuWrittenPages(); }
+    WrittenPages() {
+        Tegra::Nx2ClearGpuWrittenPages();
+    }
+    ~WrittenPages() {
+        Tegra::Nx2ClearGpuWrittenPages();
+    }
 
     void MarkReference(u64 address, u64 size) {
         if (size == 0) {
             return;
         }
         const u64 last = std::min<u64>((address + size - 1) >> Tegra::Nx2WrittenPageBits,
-                                      expected.size() * 64 - 1);
+                                       expected.size() * 64 - 1);
         for (u64 page = address >> Tegra::Nx2WrittenPageBits; page <= last; ++page) {
             expected[page / 64] |= u64{1} << (page % 64);
         }
@@ -51,15 +55,30 @@ TEST_CASE("GPU-written page marking preserves boundaries and wrapping arithmetic
           "[video_core][nx2_written_pages]") {
     constexpr u64 Max = std::numeric_limits<u64>::max();
     const std::pair<u64, u64> ranges[]{
-        {0, 0}, {0, 1}, {1, 1}, {PageSize - 1, 2},
-        {0, PageSize}, {0, 63 * PageSize}, {0, 64 * PageSize}, {0, 65 * PageSize},
-        {63 * PageSize + 1, PageSize}, {64 * PageSize - 1, 2},
-        {61 * PageSize + 7, 130 * PageSize}, {AddressLimit - 1, 1},
-        {AddressLimit - PageSize, PageSize * 3}, {AddressLimit, 1},
-        {AddressLimit + PageSize, PageSize}, {Max, 0}, {Max, 1}, {Max, 2},
-        {PageSize, Max}, {0, Max}, {1, Max}, {2, Max},
+        {0, 0},
+        {0, 1},
+        {1, 1},
+        {PageSize - 1, 2},
+        {0, PageSize},
+        {0, 63 * PageSize},
+        {0, 64 * PageSize},
+        {0, 65 * PageSize},
+        {63 * PageSize + 1, PageSize},
+        {64 * PageSize - 1, 2},
+        {61 * PageSize + 7, 130 * PageSize},
+        {AddressLimit - 1, 1},
+        {AddressLimit - PageSize, PageSize * 3},
+        {AddressLimit, 1},
+        {AddressLimit + PageSize, PageSize},
+        {Max, 0},
+        {Max, 1},
+        {Max, 2},
+        {PageSize, Max},
+        {0, Max},
+        {1, Max},
+        {2, Max},
     };
-    for (const auto [address, size] : ranges) {
+    for (const auto& [address, size] : ranges) {
         CAPTURE(address, size);
         WrittenPages pages;
         pages.MarkReference(address, size);
