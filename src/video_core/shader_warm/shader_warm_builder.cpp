@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
@@ -246,7 +245,7 @@ private:
         try {
             LoweredCode lowered;
             if (const auto error = LowerProgram(job.program, lowered)) {
-                LOG_WARNING(Render_Vulkan, "Shader precache: program not converted: {}", *error);
+                LOG_DEBUG(Render_Vulkan, "Shader precache: program not converted: {}", *error);
                 return result;
             }
             result.bytes = ComputeEntry(lowered, job.control, result.compute_key);
@@ -452,47 +451,11 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
     std::vector<ArchiveFile> effects;
     ZstdDictionaries dictionaries;
     FileSys::VirtualFile dictionary_pack;
-    LOG_INFO(Render_Vulkan, "Shader precache build: {} RomFS tree(s)", game.romfs.size());
     for (const auto& romfs : game.romfs) {
         std::vector<ArchiveFile> files;
         ListFiles(romfs, "", files);
         std::sort(files.begin(), files.end(),
                   [](const ArchiveFile& a, const ArchiveFile& b) { return a.path < b.path; });
-        LOG_INFO(Render_Vulkan, "Shader precache build: RomFS tree with {} files", files.size());
-        std::map<std::string, size_t> extensions;
-        for (const auto& file : files) {
-            const auto dot = file.path.rfind('.');
-            ++extensions[dot == std::string::npos || dot < file.path.rfind('/')
-                             ? std::string("(none)")
-                             : file.path.substr(dot)];
-        }
-        std::string summary;
-        for (const auto& [extension, count] : extensions) {
-            summary += fmt::format(" {}={}", extension, count);
-        }
-        LOG_INFO(Render_Vulkan, "Shader precache build: files by extension:{}", summary);
-        std::map<std::string, size_t> sampled;
-        size_t shader_like = 0;
-        for (const auto& file : files) {
-            const auto dot = file.path.rfind('.');
-            const std::string extension = dot == std::string::npos || dot < file.path.rfind('/')
-                                              ? std::string("(none)")
-                                              : file.path.substr(dot);
-            std::string lower = file.path;
-            std::transform(lower.begin(), lower.end(), lower.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            const bool looks_like_shader = lower.find("shader") != std::string::npos ||
-                                           lower.find("bnsh") != std::string::npos ||
-                                           lower.find("bfsha") != std::string::npos ||
-                                           lower.find("pipeline") != std::string::npos;
-            if (looks_like_shader && shader_like < 60) {
-                ++shader_like;
-            } else if (!looks_like_shader && ++sampled[extension] > 3) {
-                continue;
-            }
-            LOG_INFO(Render_Vulkan, "Shader precache build: RomFS file {} ({} bytes)", file.path,
-                     file.file->GetSize());
-        }
         std::vector<ArchiveFile> package_effects;
         for (auto& file : files) {
             switch (ClassifyGameFile(file.path)) {
@@ -579,26 +542,17 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
         bytes_done += archive_bytes / 2;
         report(StageExtracting, archive_index, archives.size());
         const auto name = archive.path.substr(archive.path.rfind('/') + 1);
-        size_t archive_records = 0;
-        size_t archive_compute = 0;
-        size_t archive_duplicates = 0;
-        size_t archive_bad_control = 0;
-        const size_t errors_before = member_errors;
         const auto on_record = [&](const ShaderRecord& record) {
-            ++archive_records;
             if (record.stage != ProgramStage::Compute) {
                 return;
             }
-            ++archive_compute;
             if (!compute_identities.insert(PairHash{Hash128(record.code), Hash128(record.control)})
                      .second) {
-                ++archive_duplicates;
                 return;
             }
             const auto values = ReadComputeControl(record.control);
             if (!values || !values->workgroup[0] || !values->workgroup[1] ||
                 !values->workgroup[2]) {
-                ++archive_bad_control;
                 ++result.skipped;
                 return;
             }
@@ -615,7 +569,7 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
         };
         const auto on_member_error = [&](const std::string& error) {
             ++member_errors;
-            LOG_WARNING(Render_Vulkan, "Shader precache: {}: {}", archive.path, error);
+            LOG_DEBUG(Render_Vulkan, "Shader precache: {}: {}", archive.path, error);
         };
         try {
             WalkArchive(data, name, &dictionaries, on_record, on_member_error);
@@ -623,11 +577,6 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
             ++archive_errors;
             LOG_WARNING(Render_Vulkan, "Shader precache: {}: {}", archive.path, e.what());
         }
-        LOG_INFO(Render_Vulkan,
-                 "Shader precache: {} ({} bytes): {} records, {} compute ({} duplicate, {} bad "
-                 "control), {} member errors",
-                 archive.path, archive_bytes, archive_records, archive_compute, archive_duplicates,
-                 archive_bad_control, member_errors - errors_before);
         bytes_done += archive_bytes - archive_bytes / 2;
         drain();
     }
