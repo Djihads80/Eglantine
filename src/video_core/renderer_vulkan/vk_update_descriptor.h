@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <memory>
 #include <variant>
 #include <vector>
@@ -17,23 +18,31 @@ class Device;
 class Scheduler;
 
 struct DescriptorAddress {
-    VkDeviceAddress address;
-    VkDeviceSize range;
-    VkFormat format;
+    VkDeviceAddress address{};
+    VkDeviceSize range{};
+    VkFormat format{};
+    u32 pad{};
 };
 
 union DescriptorUpdateEntry {
-    DescriptorUpdateEntry() = default;
-    DescriptorUpdateEntry(VkDescriptorImageInfo image_) : image{image_} {}
+    DescriptorUpdateEntry() : raw{} {}
+    DescriptorUpdateEntry(VkDescriptorImageInfo image_) : raw{} {
+        image.sampler = image_.sampler;
+        image.imageView = image_.imageView;
+        image.imageLayout = image_.imageLayout;
+    }
     DescriptorUpdateEntry(VkDescriptorBufferInfo buffer_) : buffer{buffer_} {}
-    DescriptorUpdateEntry(VkBufferView texel_buffer_) : texel_buffer{texel_buffer_} {}
+    DescriptorUpdateEntry(VkBufferView texel_buffer_) : raw{} {
+        texel_buffer = texel_buffer_;
+    }
     DescriptorUpdateEntry(DescriptorAddress address_) : address{address_} {}
-    std::monostate empty{};
+    std::array<u64, 3> raw{};
     VkDescriptorImageInfo image;
     VkDescriptorBufferInfo buffer;
     VkBufferView texel_buffer;
     DescriptorAddress address;
 };
+static_assert(sizeof(DescriptorUpdateEntry) == 24);
 
 class UpdateDescriptorQueue final {
     // This should be plenty for the vast majority of cases. Most desktop platforms only
@@ -54,7 +63,17 @@ public:
 
     void TickFrame();
     void Acquire(Scheduler& scheduler, size_t required_entries = 0,
-                 bool use_descriptor_buffer_ = false);
+                 bool use_descriptor_buffer_ = false) {
+        use_descriptor_buffer = supports_descriptor_buffer && use_descriptor_buffer_;
+        static constexpr size_t DEFAULT_REQUIRED_ENTRIES = 0x400;
+        const size_t reserve = required_entries > 0 ? required_entries : DEFAULT_REQUIRED_ENTRIES;
+        const size_t used = static_cast<size_t>(payload_cursor - payload_start);
+        if (used + reserve >= frame_payload_size) [[unlikely]] {
+            AcquireOverflow(scheduler, reserve);
+            return;
+        }
+        upload_start = payload_cursor;
+    }
 
     const DescriptorUpdateEntry* UpdateData() const noexcept {
         return upload_start;
@@ -115,6 +134,8 @@ public:
     }
 
 private:
+    void AcquireOverflow(Scheduler& scheduler, size_t reserve);
+
     const Device& device;
     const size_t frame_payload_size;
     const bool supports_descriptor_buffer;

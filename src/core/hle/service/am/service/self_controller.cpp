@@ -42,9 +42,9 @@ ISelfController::ISelfController(Core::System& system_, std::shared_ptr<Applet> 
         {19, D<&ISelfController::SetAlbumImageOrientation>, "SetAlbumImageOrientation"},
         {20, &ISelfController::StubReplyZeroed, "SetDesirableKeyboardLayout"},
         {21, &ISelfController::StubReplyZeroed, "GetScreenShotProgramId"},
-        {22, &ISelfController::StubReplyZeroed, "Unknown22"},
-        {23, &ISelfController::StubReplyZeroed, "Unknown23"},
-        {24, &ISelfController::StubReplyZeroed, "Unknown24"},
+        {22, &ISelfController::StubReplyZeroed, "GetScreenShotAcdIndex"},
+        {23, &ISelfController::StubReplyZeroed, "GetScreenShotApparentPlatform"},
+        {24, &ISelfController::StubReplyZeroed, "GetScreenShotApplicationProperty"},
         {40, D<&ISelfController::CreateManagedDisplayLayer>, "CreateManagedDisplayLayer"},
         {41, D<&ISelfController::IsSystemBufferSharingEnabled>, "IsSystemBufferSharingEnabled"},
         {42, D<&ISelfController::GetSystemSharedLayerHandle>, "GetSystemSharedLayerHandle"},
@@ -83,12 +83,12 @@ ISelfController::ISelfController(Core::System& system_, std::shared_ptr<Applet> 
         {230, D<&ISelfController::Unknown230>, "Unknown230"},
         {240, D<&ISelfController::Unknown240>, "Unknown240"},
         {1000, &ISelfController::StubReplyInterface, "GetDebugStorageChannel"},
-        {2000, &ISelfController::GetNx2GraphicsSystemSession, "GetGraphicsSystemSession (Switch 2, guessed)"},
-        {2100, &ISelfController::StubReplyZeroed, "Unknown2100"},
-        {2200, &ISelfController::StubReplyZeroed, "Unknown2200"},
-        {2300, &ISelfController::StubReplyZeroed, "Unknown2300"},
-        {2400, &ISelfController::StubReplyZeroed, "Unknown2400"},
-        {2401, &ISelfController::StubReplyZeroed, "Unknown2401"},
+        {2000, &ISelfController::GetGraphicsSupervisor, "GetGraphicsSupervisor"},
+        {2100, &ISelfController::StubReplyZeroed, "SetRecordingLayerEnabled"},
+        {2200, &ISelfController::StubReplyZeroed, "SetSharingLayerEnabled"},
+        {2300, &ISelfController::StubReplyZeroed, "SetCopyrightLayerEnabled"},
+        {2400, &ISelfController::StubReplyZeroed, "SetRtcScreenSharingAudioEnabled"},
+        {2401, &ISelfController::StubReplyZeroed, "SetStreamPlayMirroringAudioEnabled"},
         {2402, &ISelfController::StubReplyZeroed, "Unknown2402"},
     };
     // clang-format on
@@ -100,9 +100,9 @@ ISelfController::ISelfController(Core::System& system_, std::shared_ptr<Applet> 
                                                m_applet->library_applet_mode);
 }
 
-void ISelfController::GetNx2GraphicsSystemSession(HLERequestContext& ctx) {
+void ISelfController::GetGraphicsSupervisor(HLERequestContext& ctx) {
     // nn::gsv::BootWithRemoteMemory sends TIPC on the handle this returns.
-    LOG_WARNING(Service_AM, "(STUBBED) Switch 2 ISelfController::2000, returning a nx2:gsv session");
+    LOG_WARNING(Service_AM, "(STUBBED) GetGraphicsSupervisor, returning a nx2:gsv session");
     ReturnRawSession(system, ctx, std::make_shared<INx2GraphicsSystemSession>(system));
 }
 

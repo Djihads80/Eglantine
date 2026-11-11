@@ -188,11 +188,16 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
     // Other titles fade with the test on, moving the reference by less than one step of 8-bit
     // alpha per frame. Rounding it to 1/255 keeps those fades to one pipeline per step that
     // the textures can tell apart, instead of one per frame and a new set every run.
-    const u32 packed_alpha_test = alpha_test_func.Value();
-    alpha_test_ref = packed_alpha_test != PackComparisonOp(Maxwell::ComparisonOp::Never_GL) &&
-                             packed_alpha_test != PackComparisonOp(Maxwell::ComparisonOp::Always_GL)
-                         ? std::bit_cast<u32>(std::round(regs.alpha_test_ref * 255.0f) / 255.0f)
-                         : 0;
+    if (regs.alpha_test_enabled == 0) {
+        alpha_test_ref = 0;
+    } else {
+        const u32 packed_alpha_test = alpha_test_func.Value();
+        alpha_test_ref =
+            packed_alpha_test != PackComparisonOp(Maxwell::ComparisonOp::Never_GL) &&
+                    packed_alpha_test != PackComparisonOp(Maxwell::ComparisonOp::Always_GL)
+                ? std::bit_cast<u32>(std::round(regs.alpha_test_ref * 255.0f) / 255.0f)
+                : 0;
+    }
     point_size = std::bit_cast<u32>(regs.point_size);
 
     if (maxwell3d.dirty.flags[Dirty::VertexInput]) {

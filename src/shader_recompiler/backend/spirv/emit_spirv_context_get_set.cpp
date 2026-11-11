@@ -422,13 +422,6 @@ void EmitSetAttribute(EmitContext& ctx, IR::Attribute attr, Id value, [[maybe_un
         value = ctx.OpBitcast(output->type, value);
     }
 
-    static constexpr IR::Attribute cd0 = IR::Attribute::ClipDistance0;
-    static constexpr IR::Attribute cd7 = IR::Attribute::ClipDistance7;
-
-    if (attr >= cd0 && attr <= cd7) {
-        const u32 idx = (u32) attr - (u32) cd0;
-        clip_distance_written.set(idx);
-    }
     ctx.OpStore(output->pointer, value);
 }
 
@@ -554,6 +547,13 @@ void EmitSetOFlag(EmitContext&) {
 }
 
 Id EmitWorkgroupId(EmitContext& ctx) {
+    if (Sirit::ValidId(ctx.mesh_group_index)) {
+        // Mesh emulation with a task: a mesh workgroup's index is within its task's, as in a
+        // mesh shader launched by a task shader.
+        const Id zero{ctx.u32_zero_value};
+        return ctx.OpCompositeConstruct(ctx.U32[3], ctx.OpLoad(ctx.U32[1], ctx.mesh_group_index),
+                                        zero, zero);
+    }
     return ctx.OpLoad(ctx.U32[3], ctx.workgroup_id);
 }
 

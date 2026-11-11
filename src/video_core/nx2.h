@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -13,6 +14,8 @@
 #include <vector>
 
 #include "common/common_types.h"
+#include "common/thread.h"
+#include "video_core/nx2_perf.h"
 
 namespace Tegra {
 
@@ -28,9 +31,29 @@ inline std::atomic<bool> g_nx2_ampere{false};
 inline constexpr u64 Nx2WrittenPageBits = 12;
 inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenPageBits)) / 64> g_nx2_gpu_written_pages{};
 
+// The same, one bit per 1 MiB: the split front's early MME DMA reads fall back to the drain for
+// any read in a region the GPU has written. A queued dispatch can write a page of such a region
+// for the first time before its bit is set (Ocarina's indirect draw arguments did).
+inline constexpr u64 Nx2WrittenRegionBits = 20;
+inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenRegionBits)) / 64>
+    g_nx2_gpu_written_regions{};
+
 inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
     if (size == 0) {
         return;
+    }
+    {
+        const u64 last_region =
+            std::min<u64>((device_address + size - 1) >> Nx2WrittenRegionBits,
+                          g_nx2_gpu_written_regions.size() * 64 - 1);
+        for (u64 region = device_address >> Nx2WrittenRegionBits; region <= last_region;
+             ++region) {
+            auto& word = g_nx2_gpu_written_regions[region / 64];
+            const u64 bit = u64{1} << (region % 64);
+            if ((word.load(std::memory_order_relaxed) & bit) == 0) {
+                word.fetch_or(bit, std::memory_order_relaxed);
+            }
+        }
     }
     const u64 last = std::min<u64>((device_address + size - 1) >> Nx2WrittenPageBits,
                                    g_nx2_gpu_written_pages.size() * 64 - 1);
@@ -53,6 +76,38 @@ inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
 inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenPageBits)) / 64> g_nx2_command_list_pages{};
 inline std::atomic<bool> g_nx2_has_command_list_pages{false};
 
+// Shaders in graphics pipeline stages that write storage buffers or command list pages.
+// Checked on the split GPU thread's front to identify writer draws and note them with split.NoteWriter().
+// Sized to 65,536 bits (1,024 64-bit words, 8 KiB), indexed via a fast multiplicative hash of the
+// 32-bit low shader address (which is aligned to 128/256 bytes in native Switch 2 drivers).
+inline constexpr size_t Nx2WriterShaderBits = 65536;
+inline std::array<std::atomic<u64>, Nx2WriterShaderBits / 64> g_nx2_graphics_writer_shaders{};
+inline std::atomic<bool> g_nx2_has_graphics_writer_shaders{false};
+
+inline void Nx2MarkGraphicsWriterShader(u32 addr_low) {
+    if (addr_low == 0) {
+        return;
+    }
+    const u32 hash = (addr_low >> 6) * 0x9e3779b9u;
+    const u32 bit_index = hash & (Nx2WriterShaderBits - 1);
+    auto& word = g_nx2_graphics_writer_shaders[bit_index / 64];
+    const u64 bit = u64{1} << (bit_index % 64);
+    if ((word.load(std::memory_order_relaxed) & bit) == 0) {
+        word.fetch_or(bit, std::memory_order_release);
+        g_nx2_has_graphics_writer_shaders.store(true, std::memory_order_release);
+    }
+}
+
+[[nodiscard]] inline bool Nx2IsGraphicsWriterShader(u32 addr_low) {
+    if (addr_low == 0 || !g_nx2_has_graphics_writer_shaders.load(std::memory_order_acquire)) {
+        return false;
+    }
+    const u32 hash = (addr_low >> 6) * 0x9e3779b9u;
+    const u32 bit_index = hash & (Nx2WriterShaderBits - 1);
+    const u64 word = g_nx2_graphics_writer_shaders[bit_index / 64].load(std::memory_order_relaxed);
+    return (word & (u64{1} << (bit_index % 64))) != 0;
+}
+
 inline void Nx2MarkCommandListPage(u64 device_address) {
     const u64 page = device_address >> Nx2WrittenPageBits;
     if (page >= g_nx2_command_list_pages.size() * 64) {
@@ -74,6 +129,131 @@ inline void Nx2MarkCommandListPage(u64 device_address) {
     return (g_nx2_command_list_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1;
 }
 
+// Nx2Perf MacroReadWriterSet: graphics draws the back proved write no guest memory, so the
+// split front's early MME DMA reads need not wait for them. A proof holds for the exact program
+// addresses a draw binds (Nx2DrawPrograms, built from the registers on both threads) and for one
+// program epoch: the epoch moves whenever the shader cache drops a program, and whenever a write
+// that the shader cache only applies later (CPU writes into GPU-modified buffers, accumulated
+// invalidations) reaches a page holding proven code. A proof from an older epoch proves nothing,
+// so an address that later holds other code is never trusted. Epoch 0 is never valid.
+inline std::atomic<u64> g_nx2_code_epoch{1};
+
+inline void Nx2BumpCodeEpoch() {
+    g_nx2_code_epoch.fetch_add(1, std::memory_order_acq_rel);
+}
+
+// Device pages (4 KiB) holding code of a proven program (same layout as g_nx2_gpu_written_pages).
+inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenPageBits)) / 64> g_nx2_proven_code_pages{};
+inline std::atomic<bool> g_nx2_has_proven_code{false};
+
+inline void Nx2MarkProvenCode(u64 device_address, u64 size) {
+    if (size == 0) {
+        return;
+    }
+    const u64 last = std::min<u64>((device_address + size - 1) >> Nx2WrittenPageBits,
+                                   g_nx2_proven_code_pages.size() * 64 - 1);
+    for (u64 page = device_address >> Nx2WrittenPageBits; page <= last; ++page) {
+        auto& word = g_nx2_proven_code_pages[page / 64];
+        const u64 bit = u64{1} << (page % 64);
+        if ((word.load(std::memory_order_relaxed) & bit) == 0) {
+            word.fetch_or(bit, std::memory_order_release);
+        }
+    }
+    g_nx2_has_proven_code.store(true, std::memory_order_release);
+}
+
+[[nodiscard]] inline bool Nx2IsProvenCode(u64 device_address, u64 size) {
+    if (size == 0 || !g_nx2_has_proven_code.load(std::memory_order_acquire)) {
+        return false;
+    }
+    const u64 last = std::min<u64>((device_address + size - 1) >> Nx2WrittenPageBits,
+                                   g_nx2_proven_code_pages.size() * 64 - 1);
+    for (u64 page = device_address >> Nx2WrittenPageBits; page <= last; ++page) {
+        if ((g_nx2_proven_code_pages[page / 64].load(std::memory_order_acquire) >> (page % 64)) & 1) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// A write whose invalidation the shader cache applies later reached [device_address, +size).
+inline void Nx2NoteDeferredCodeWrite(u64 device_address, u64 size) {
+    if (Nx2IsProvenCode(device_address, size)) {
+        Nx2BumpCodeEpoch();
+    }
+}
+
+/// The programs a graphics draw binds, as Maxwell3D::Nx2DrawPrograms computes them from the
+/// registers: per program slot, its GPU address (0 when disabled).
+struct Nx2DrawPrograms {
+    std::array<u64, 6> addresses{};
+    u64 memory_id{};
+    u64 map_serial{};
+    bool native{};
+
+    bool operator==(const Nx2DrawPrograms&) const = default;
+};
+
+struct Nx2NonWriterSet {
+    struct Hash {
+        size_t operator()(const Nx2DrawPrograms& key) const noexcept {
+            u64 hash = key.memory_id * 0x9e3779b97f4a7c15ULL ^ key.map_serial ^ (key.native ? 1 : 0);
+            for (const u64 address : key.addresses) {
+                hash = (hash ^ address) * 0xff51afd7ed558ccdULL;
+                hash ^= hash >> 32;
+            }
+            return static_cast<size_t>(hash);
+        }
+    };
+    std::mutex mutex;
+    std::map<u64, std::vector<std::pair<Nx2DrawPrograms, u64>>> buckets; ///< hash -> (key, epoch)
+    std::atomic<u64> version{1}; ///< Moves on every insert (the front caches its lookups)
+};
+
+inline Nx2NonWriterSet& Nx2NonWriters() {
+    static Nx2NonWriterSet set;
+    return set;
+}
+
+/// Whether the back proved, in program epoch `epoch`, that a draw binding `programs` writes no
+/// guest memory.
+[[nodiscard]] inline bool Nx2IsNonWriterDraw(const Nx2DrawPrograms& programs, u64 epoch) {
+    auto& set = Nx2NonWriters();
+    const u64 hash = Nx2NonWriterSet::Hash{}(programs);
+    std::scoped_lock lock{set.mutex};
+    const auto it = set.buckets.find(hash);
+    if (it == set.buckets.end()) {
+        return false;
+    }
+    for (const auto& [key, proven_epoch] : it->second) {
+        if (key == programs) {
+            return proven_epoch == epoch;
+        }
+    }
+    return false;
+}
+
+inline void Nx2InsertNonWriterDraw(const Nx2DrawPrograms& programs, u64 epoch) {
+    auto& set = Nx2NonWriters();
+    const u64 hash = Nx2NonWriterSet::Hash{}(programs);
+    {
+        std::scoped_lock lock{set.mutex};
+        auto& bucket = set.buckets[hash];
+        bool found = false;
+        for (auto& [key, proven_epoch] : bucket) {
+            if (key == programs) {
+                proven_epoch = epoch;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            bucket.emplace_back(programs, epoch);
+        }
+    }
+    set.version.fetch_add(1, std::memory_order_release);
+}
+
 /// A new emulation session starts: no page has been written by its GPU yet.
 inline void Nx2ClearGpuWrittenPages() {
     for (auto& word : g_nx2_gpu_written_pages) {
@@ -83,6 +263,59 @@ inline void Nx2ClearGpuWrittenPages() {
         word.store(0, std::memory_order_relaxed);
     }
     g_nx2_has_command_list_pages.store(false, std::memory_order_relaxed);
+    for (auto& word : g_nx2_graphics_writer_shaders) {
+        word.store(0, std::memory_order_relaxed);
+    }
+    g_nx2_has_graphics_writer_shaders.store(false, std::memory_order_relaxed);
+    Nx2BumpCodeEpoch(); // No proof of the last session holds
+    {
+        auto& set = Nx2NonWriters();
+        std::scoped_lock lock{set.mutex};
+        set.buckets.clear();
+    }
+}
+
+// Query results written when their host work completes (counter reports, delayed fence
+// releases): per 16-byte slot hash, how many result writes the back queued and how many ran.
+// Equal counts mean the words in memory are final, so the split's front can read them without
+// draining the back (lichii #179, 166c21d96c). A hash collision only makes a read wait longer.
+inline constexpr u64 Nx2AsyncReportSlots = u64{1} << 16;
+inline std::array<std::atomic<u32>, Nx2AsyncReportSlots> g_nx2_async_reports_issued{};
+inline std::array<std::atomic<u32>, Nx2AsyncReportSlots> g_nx2_async_reports_completed{};
+
+/// A new emulation session starts: counter reports the previous one abandoned are not pending.
+inline void Nx2ClearAsyncReports() {
+    for (auto& count : g_nx2_async_reports_issued) {
+        count.store(0, std::memory_order_relaxed);
+    }
+    for (auto& count : g_nx2_async_reports_completed) {
+        count.store(0, std::memory_order_relaxed);
+    }
+}
+
+[[nodiscard]] inline u64 Nx2AsyncReportSlot(u64 device_address) {
+    return (device_address >> 4) % Nx2AsyncReportSlots;
+}
+
+[[nodiscard]] inline bool Nx2AsyncReportsSettled(u64 device_address, u64 size) {
+    for (u64 slot = device_address >> 4; slot <= (device_address + size - 1) >> 4; ++slot) {
+        const u64 index = slot % Nx2AsyncReportSlots;
+        if (g_nx2_async_reports_completed[index].load(std::memory_order_acquire) !=
+            g_nx2_async_reports_issued[index].load(std::memory_order_acquire)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] inline bool Nx2IsGpuWrittenRegion(u64 device_address) {
+    const u64 region = device_address >> Nx2WrittenRegionBits;
+    if (region >= g_nx2_gpu_written_regions.size() * 64) {
+        return false;
+    }
+    return (g_nx2_gpu_written_regions[region / 64].load(std::memory_order_relaxed) >>
+            (region % 64)) &
+           1;
 }
 
 [[nodiscard]] inline bool Nx2IsGpuWritten(u64 device_address) {
@@ -190,6 +423,17 @@ inline void Nx2SparseRegionCreated(u64 gpu_address, u64 size, u64 block_size) {
     std::scoped_lock lk{g_nx2_sparse_state_mutex};
     g_nx2_sparse_state[gpu_address] = {size, block_size,
                                        std::vector<bool>((size + block_size - 1) / block_size)};
+}
+
+/// An initially GPU-only pool now has explicit tiles. Let the renderer bind only resident tiles,
+/// while preserving the written/mapped state of pools that were sparse from creation.
+inline void Nx2SparseRegionTiled(u64 gpu_address, u64 size, u64 block_size) {
+    Nx2AddSparseSpan(gpu_address, size);
+    std::scoped_lock lk{g_nx2_sparse_state_mutex};
+    if (!g_nx2_sparse_state.contains(gpu_address)) {
+        g_nx2_sparse_state[gpu_address] = {
+            size, block_size, std::vector<bool>((size + block_size - 1) / block_size)};
+    }
 }
 
 inline void Nx2SparseRegionDestroyed(u64 gpu_address) {
@@ -347,6 +591,44 @@ inline u64 Nx2SemaphoreMirror(u64 address) {
     return 0;
 }
 
+/// pending_wake: the GPU thread's 1 ms sleep while a channel waits on an acquire ends at once
+/// when a command is queued or a release latches a waiter. The timeout bounds a missed wake.
+namespace Nx2PendingWake {
+enum Reason : u32 { ByPush = 1, ByLatch = 2 };
+
+inline bool On() {
+    static const bool on = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::PendingWake);
+    return on;
+}
+
+inline Common::Event wake_event;
+inline std::atomic<bool> front_sleeping{};
+inline std::atomic<u32> wake_reasons{};
+inline std::atomic<u64> push_seq{};
+inline std::atomic<u64> latch_seq{};
+inline std::atomic<s64> last_latch_ns{}; ///< Steady clock of the last latch (0: consumed)
+/// EDEN_NX2_PERF_VERIFY: resumes after a wake with the word unmet and nothing latched.
+inline std::atomic<u64> verify_unmet{};
+/// GPU thread only: the next pending poll follows a wake (Verify checks its resumes).
+inline bool verify_resume{};
+
+inline s64 NowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+/// Bumps `seq`, then wakes the front if it sleeps. The front sets front_sleeping before it
+/// re-reads the counters (both seq_cst): it sees the bump or this sees the flag.
+inline void Wake(std::atomic<u64>& seq, u32 reason) {
+    seq.fetch_add(1, std::memory_order_seq_cst);
+    if (front_sleeping.load(std::memory_order_seq_cst)) {
+        wake_reasons.fetch_or(reason, std::memory_order_relaxed);
+        wake_event.Set();
+    }
+}
+} // namespace Nx2PendingWake
+
 /// Channels suspended on a semaphore acquire. A console channel polls and sees every release;
 /// Eden writes releases in bursts when fences signal and resumes waiters only between command
 /// lists, so an acquire-equal could miss its value. Writes latch the waiters they satisfy.
@@ -392,11 +674,19 @@ public:
         if (count.load(std::memory_order_acquire) == 0) {
             return;
         }
-        std::scoped_lock lk{mutex};
-        for (auto& w : waiters) {
-            if (w.address == device_address && !w.latched && Matches(w, value)) {
-                w.latched = true;
+        bool latched = false;
+        {
+            std::scoped_lock lk{mutex};
+            for (auto& w : waiters) {
+                if (w.address == device_address && !w.latched && Matches(w, value)) {
+                    w.latched = true;
+                    latched = true;
+                }
             }
+        }
+        if (latched && Nx2PendingWake::On()) {
+            Nx2PendingWake::last_latch_ns.store(Nx2PendingWake::NowNs(), std::memory_order_relaxed);
+            Nx2PendingWake::Wake(Nx2PendingWake::latch_seq, Nx2PendingWake::ByLatch);
         }
     }
 

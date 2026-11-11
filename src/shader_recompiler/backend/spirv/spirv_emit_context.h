@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 
 #include <sirit/sirit.h>
 #include "common/container/unordered_set.h"
@@ -18,8 +19,6 @@
 #include "shader_recompiler/shader_info.h"
 
 namespace Shader::Backend::SPIRV {
-
-static std::bitset<8> clip_distance_written;
 
 using Sirit::Id;
 
@@ -162,6 +161,14 @@ struct GenericElementInfo {
     u32 num_components{};
 };
 
+struct CooperativeHmmaTypes {
+    Id float16{};
+    Id float16x2{};
+    Id matrix_a{};
+    Id matrix_b{};
+    Id matrix_c{};
+};
+
 class EmitContext final : public Sirit::Module {
 public:
     explicit EmitContext(const Profile& profile, const RuntimeInfo& runtime_info,
@@ -172,6 +179,13 @@ public:
 
     [[nodiscard]] Id BitOffset8(const IR::Value& offset);
     [[nodiscard]] Id BitOffset16(const IR::Value& offset);
+
+    /// Whether this stage has subgroup operations. Mesh emulation runs task and mesh programs
+    /// as compute shaders, so they have what compute shaders have.
+    [[nodiscard]] bool SupportsSubgroups() const {
+        return profile.SupportsSubgroupStage(runtime_info.mesh_as_compute ? Stage::Compute
+                                                                          : stage);
+    }
 
     Id Const(u32 value) {
         return Constant(U32[1], value);
@@ -368,6 +382,7 @@ public:
     Id frag_depth{};
 
     std::array<Id, 2> software_matrix_functions{};
+    std::optional<CooperativeHmmaTypes> cooperative_hmma; ///< Set when a program lowers HMMA to it
     std::vector<Id> interfaces;
     std::vector<std::pair<u32, spv::Op>> opcode_rewrites;
 
@@ -397,6 +412,16 @@ public:
     std::vector<MeshLineTarget> mesh_primitive_targets;
     std::array<Id, 2> mesh_outputs_marker{};
     std::array<Id, 4> mesh_tasks_marker{};
+    /// Mesh emulation (RuntimeInfo::mesh_as_compute): the output storage buffer and the
+    /// pointer type to one of its words.
+    Id mesh_output_buffer{};
+    Id mesh_output_u32{};
+    // With a task program: its payload, offset and argument buffers (RuntimeInfo), and the mesh
+    // workgroup's index within its task (what the mesh program reads at input address 0).
+    Id mesh_task_payload_buffer{};
+    Id mesh_task_offsets_buffer{};
+    Id mesh_task_args_buffer{};
+    Id mesh_group_index{};
 
     Id load_const_func_u8{};
     Id load_const_func_u16{};
@@ -438,6 +463,7 @@ private:
     void DefineInputs(const IR::Program& program);
     void DefineOutputs(const IR::Program& program);
     void DefineMesh(const IR::Program& program);
+    void DefineMeshEmulationOutput();
 };
 
 } // namespace Shader::Backend::SPIRV

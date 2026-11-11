@@ -20,6 +20,7 @@ struct HostTranslateInfo {
     u64 min_ssbo_alignment{};            ///< Minimum alignment supported by the device for SSBOs
     u32 max_per_stage_descriptor_sampled_images{}; ///< maximum sampled descriptors per stage
     u32 max_per_stage_resources{};                 ///< maximum resources per stage
+    u32 max_per_stage_descriptor_storage_buffers{}; ///< maximum storage buffers per stage
     u32 max_descriptor_set_samplers{};
     u32 max_descriptor_set_uniform_buffers{};
     u32 max_descriptor_set_uniform_buffers_dynamic{};
@@ -47,6 +48,7 @@ struct HostTranslateInfo {
         }
         ApplyDescriptorLimitFallback(max_per_stage_descriptor_sampled_images);
         ApplyDescriptorLimitFallback(max_per_stage_resources);
+        ApplyDescriptorLimitFallback(max_per_stage_descriptor_storage_buffers);
         ApplyDescriptorLimitFallback(max_descriptor_set_samplers);
         ApplyDescriptorLimitFallback(max_descriptor_set_uniform_buffers);
         ApplyDescriptorLimitFallback(max_descriptor_set_uniform_buffers_dynamic);

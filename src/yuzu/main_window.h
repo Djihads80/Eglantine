@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <optional>
+#include <set>
 
 #include <filesystem>
 #include <QElapsedTimer>
@@ -276,7 +277,8 @@ private:
 
     bool LoadROM(const QString& filename, Service::AM::FrontendAppletParameters params);
     void BootGame(const QString& filename, Service::AM::FrontendAppletParameters params,
-                  StartGameType with_config = StartGameType::Normal);
+                  StartGameType with_config = StartGameType::Normal,
+                  bool allow_recommended_settings_prompt = true);
     void BootGameFromList(const QString& filename, StartGameType with_config);
     void ShutdownGame();
     void TerminateEmulationThread();
@@ -505,10 +507,7 @@ private:
 #endif
 
     MultiplayerState* multiplayer_state = nullptr;
-    bool use_recommended_mkw_settings = false;
-    bool asked_recommended_mkw_settings = false;
-    bool use_recommended_oot_settings = false;
-    bool asked_recommended_oot_settings = false;
+    std::set<u64> asked_recommended_settings;
 
     GRenderWindow* render_window = nullptr;
     GameList* game_list = nullptr;

@@ -25,6 +25,7 @@ CDmaPusher::CDmaPusher(Host1x::Host1x& host1x_, s32 id)
 {
     thread = std::jthread([this](std::stop_token stop_token) {
         Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
+        Common::SetCurrentThreadToPerformanceCores();
         ChCommandHeaderList command_list{host1x.System().ApplicationMemory(), 0, 0};
         u32 count{};
         u32 method_offset{};

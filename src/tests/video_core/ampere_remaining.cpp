@@ -144,11 +144,15 @@ TEST_CASE("Ampere SEL, constant IMAD and SUST shadow reserved native registers",
     CHECK(((sust >> 20) & 15) == 15);
     REQUIRE(static_cast<bool>(LowerToMaxwell(std::array{
         Instruction{{0xf9f97a24, 0x00c00000, 0x078e02ff, 0x000fe200}}, Exit})));
-    // Four channels from R246 would straddle two reserved quartets.
+    // Four channels from R246 borrow two adjacent quartets.
     const auto straddling = LowerToMaxwell(std::array{
         Instruction{{0xfc007b9b, 0x20c002f6, 0x00100f00, 0x0001e200}}, Exit});
-    REQUIRE_FALSE(static_cast<bool>(straddling));
-    CHECK(straddling.error == "native program uses lowering scratch registers");
+    REQUIRE(static_cast<bool>(straddling));
+    const auto store = std::ranges::find_if(straddling.instructions, [](u64 word) {
+        return (word & 0xfff0000000000000ULL) == 0xeb20000000000000ULL;
+    });
+    REQUIRE(store != straddling.instructions.end());
+    CHECK((*store & 255) + 4 <= 244);
 }
 
 TEST_CASE("Ampere LDL with a uniform base reads [URn + offset]", "[video_core][ampere]") {

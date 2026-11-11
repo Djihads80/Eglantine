@@ -1,6 +1,8 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <array>
+#include <span>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
 
@@ -69,6 +71,54 @@ TEST_CASE("Owned native macro FIFOs preserve loads across DMA appends and repeat
         CHECK(actual[1] == std::pair<u32, u32>{0x200, invocation * 256});
         CHECK(actual[2] == std::pair<u32, u32>{0x201, invocation * 256 + 1});
         parameters.clear();
+    }
+}
+
+TEST_CASE("Batched native macro emits and borrowed parameters match the plain path",
+          "[video_core][native_macro]") {
+    std::vector<u32> code;
+    for (const auto instruction : {FifoInstruction(0x158, false), FifoInstruction(0x200, true),
+                                   FifoInstruction(0x201, false)}) {
+        code.insert(code.end(), instruction.begin(), instruction.end());
+    }
+    Tegra::TuringMacroJit plain;
+    Tegra::TuringMacroJit batched;
+    plain.Prepare(code, 1);
+    batched.Prepare(code, 1, true);
+    std::array<u32, 0xc00> ram{};
+    for (u32 invocation = 0; invocation < 200; ++invocation) {
+        const std::array<u32, 1> words{2 + invocation % 127};
+        const auto run = [&](Tegra::TuringMacroJit& jit, bool batch, bool borrow) {
+            std::vector<u32> fifo;
+            if (!borrow) {
+                fifo.assign(words.begin(), words.end());
+            }
+            std::vector<std::pair<u32, u32>> writes;
+            const auto result = jit.Execute(
+                0, fifo, borrow ? std::span<const u32>{words} : std::span<const u32>{}, ram,
+                [](u32) { return 0U; },
+                [&](u32 method, u32 value) {
+                    writes.emplace_back(method, value);
+                    if (method == 0x158) {
+                        if (fifo.empty()) {
+                            fifo.assign(words.begin(), words.end());
+                        }
+                        for (u32 word = 0; word < value; ++word) {
+                            fifo.push_back(invocation * 256 + word);
+                        }
+                    }
+                    return true;
+                },
+                {.batch_emits = batch, .keep_state = batch});
+            CHECK(result.success);
+            CHECK(result.consumed == 3);
+            return writes;
+        };
+        const auto expected = run(plain, false, false);
+        REQUIRE(expected.size() == 3);
+        CHECK(run(batched, true, false) == expected);
+        CHECK(run(batched, true, true) == expected);
+        CHECK(run(plain, false, true) == expected);
     }
 }
 #endif

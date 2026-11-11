@@ -122,7 +122,7 @@ IApplicationFunctions::IApplicationFunctions(Core::System& system_, std::shared_
         {200, &IApplicationFunctions::StubReplyZeroed, "GetLastApplicationExitReason"},
         {210, D<&IApplicationFunctions::GetOperationModeRefreshEvent>, "GetOperationModeRefreshEvent (guessed)"},
         {220, &IApplicationFunctions::StubReplyZeroed, "Unknown220"}, // [20.0.0+]
-        {230, &IApplicationFunctions::StubReplyZeroed, "Unknown230"},
+        {230, D<&IApplicationFunctions::IsTensorRtSupported>, "IsTensorRtSupported"},
         {300, &IApplicationFunctions::StubReplyInterface, "CreateMovieWriter"}, // [19.0.0+]
         {310, &IApplicationFunctions::StubReplyZeroed, "Unknown310"}, // [20.0.0+]
         {320, D<&IApplicationFunctions::Unknown320>, "Unknown320"}, // [20.0.0+]
@@ -573,6 +573,13 @@ Result IApplicationFunctions::GetOperationModeRefreshEvent(
     } else {
         *out_event = m_applet->unknown_event.GetHandle();
     }
+    R_SUCCEED();
+}
+
+Result IApplicationFunctions::IsTensorRtSupported(Out<bool> out_is_supported) {
+    // Switch 2 hardware runs TensorRT networks (DLSS); the zeroed stub told titles it can't.
+    LOG_DEBUG(Service_AM, "called");
+    *out_is_supported = true;
     R_SUCCEED();
 }
 

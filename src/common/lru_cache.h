@@ -6,9 +6,9 @@
 
 #pragma once
 
-#include <deque>
-#include <memory>
+#include <cstddef>
 #include <type_traits>
+#include <vector>
 
 #include "common/common_types.h"
 
@@ -19,15 +19,17 @@ class LeastRecentlyUsedCache {
     using ObjectType = typename Traits::ObjectType;
     using TickType = typename Traits::TickType;
 
+    static constexpr size_t NO_ITEM = SIZE_MAX;
+
     struct Item {
         ObjectType obj;
         TickType tick;
-        Item* next{};
-        Item* prev{};
+        size_t next{NO_ITEM};
+        size_t prev{NO_ITEM};
     };
 
 public:
-    LeastRecentlyUsedCache() : first_item{}, last_item{} {}
+    LeastRecentlyUsedCache() = default;
     ~LeastRecentlyUsedCache() = default;
 
     size_t Insert(ObjectType obj, TickType tick) {
@@ -35,7 +37,7 @@ public:
         auto& item = item_pool[new_id];
         item.obj = obj;
         item.tick = tick;
-        Attach(item);
+        Attach(new_id);
         return new_id;
     }
 
@@ -45,18 +47,18 @@ public:
             return;
         }
         item.tick = tick;
-        if (&item == last_item) {
+        if (id == last_item) {
             return;
         }
-        Detach(item);
-        Attach(item);
+        Detach(id);
+        Attach(id);
     }
 
     void Free(size_t id) {
+        Detach(id);
         auto& item = item_pool[id];
-        Detach(item);
-        item.prev = nullptr;
-        item.next = nullptr;
+        item.prev = NO_ITEM;
+        item.next = NO_ITEM;
         free_items.push_back(id);
     }
 
@@ -64,18 +66,19 @@ public:
     void ForEachItemBelow(TickType tick, Func&& func) {
         static constexpr bool RETURNS_BOOL =
             std::is_same_v<std::invoke_result_t<Func, ObjectType>, bool>;
-        Item* iterator = first_item;
-        while (iterator) {
-            if (static_cast<s64>(tick) - static_cast<s64>(iterator->tick) < 0) {
+        size_t iterator = first_item;
+        while (iterator != NO_ITEM) {
+            if (static_cast<s64>(tick) - static_cast<s64>(item_pool[iterator].tick) < 0) {
                 return;
             }
-            Item* next = iterator->next;
+            const size_t next = item_pool[iterator].next;
+            const ObjectType obj = item_pool[iterator].obj;
             if constexpr (RETURNS_BOOL) {
-                if (func(iterator->obj)) {
+                if (func(obj)) {
                     return;
                 }
             } else {
-                func(iterator->obj);
+                func(obj);
             }
             iterator = next;
         }
@@ -86,57 +89,61 @@ private:
         if (free_items.empty()) {
             const size_t item_id = item_pool.size();
             auto& item = item_pool.emplace_back();
-            item.next = nullptr;
-            item.prev = nullptr;
+            item.next = NO_ITEM;
+            item.prev = NO_ITEM;
             return item_id;
         }
-        const size_t item_id = free_items.front();
-        free_items.pop_front();
+        const size_t item_id = free_items.back();
+        free_items.pop_back();
         auto& item = item_pool[item_id];
-        item.next = nullptr;
-        item.prev = nullptr;
+        item.next = NO_ITEM;
+        item.prev = NO_ITEM;
         return item_id;
     }
 
-    void Attach(Item& item) {
-        if (!first_item) {
-            first_item = &item;
+    void Attach(size_t id) {
+        auto& item = item_pool[id];
+        if (first_item == NO_ITEM) {
+            first_item = id;
         }
-        if (!last_item) {
-            last_item = &item;
+        if (last_item == NO_ITEM) {
+            item.prev = NO_ITEM;
+            item.next = NO_ITEM;
+            last_item = id;
         } else {
             item.prev = last_item;
-            last_item->next = &item;
-            item.next = nullptr;
-            last_item = &item;
+            item_pool[last_item].next = id;
+            item.next = NO_ITEM;
+            last_item = id;
         }
     }
 
-    void Detach(Item& item) {
-        if (item.prev) {
-            item.prev->next = item.next;
+    void Detach(size_t id) {
+        auto& item = item_pool[id];
+        if (item.prev != NO_ITEM) {
+            item_pool[item.prev].next = item.next;
         }
-        if (item.next) {
-            item.next->prev = item.prev;
+        if (item.next != NO_ITEM) {
+            item_pool[item.next].prev = item.prev;
         }
-        if (&item == first_item) {
+        if (id == first_item) {
             first_item = item.next;
-            if (first_item) {
-                first_item->prev = nullptr;
+            if (first_item != NO_ITEM) {
+                item_pool[first_item].prev = NO_ITEM;
             }
         }
-        if (&item == last_item) {
+        if (id == last_item) {
             last_item = item.prev;
-            if (last_item) {
-                last_item->next = nullptr;
+            if (last_item != NO_ITEM) {
+                item_pool[last_item].next = NO_ITEM;
             }
         }
     }
 
-    std::deque<Item> item_pool;
-    std::deque<size_t> free_items;
-    Item* first_item{};
-    Item* last_item{};
+    std::vector<Item> item_pool;
+    std::vector<size_t> free_items;
+    size_t first_item{NO_ITEM};
+    size_t last_item{NO_ITEM};
 };
 
 } // namespace Common

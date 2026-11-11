@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <type_traits>
 #include "common/container/unordered_map.h"
 #include <vector>
@@ -72,6 +73,14 @@ public:
     [[nodiscard]] bool IsCbufIndirectStorageBufferPointer(u32 index, u32 offset,
                                                           u32 indirect) override;
 
+    [[nodiscard]] std::vector<std::pair<u32, u32>> NullStoragePointerSlots() const override;
+
+    [[nodiscard]] std::vector<u64> MappedStoragePointerKeys() const override;
+
+    /// Answers the classification of these keys (see MappedStoragePointerKeys) as storage buffer
+    /// pointers, whatever the slots hold now; called before the program is translated
+    void KeepStoragePointers(std::span<const u64> keys);
+
     [[nodiscard]] std::optional<u64> Analyze();
 
     void SetCachedSize(size_t size_bytes);
@@ -99,13 +108,6 @@ public:
     /// with_mesh_state: also the mesh registers and pass-through header of task and mesh
     /// programs (only the mesh pipeline file carries them).
     void Serialize(std::ofstream& file, bool with_mesh_state = false) const;
-
-    /// Native programs: the constant buffer slots (index << 32 | offset) storage tracking took as
-    /// pointers, and the ones it left out because they held null when the program was translated.
-    void StoragePointerSlots(std::vector<u64>& pointers, std::vector<u64>& null_slots) const;
-
-    /// Takes these slots as pointers without reading them: a rebuild keeps its earlier buffers.
-    void SeedStoragePointers(std::span<const u64> slots);
 
     bool HasHLEMacroState() const override {
         return has_hle_engine_state;
@@ -227,9 +229,6 @@ public:
 
     void Deserialize(std::ifstream& file, bool with_mesh_state = false);
 
-    /// See GenericEnvironment::StoragePointerSlots.
-    void StoragePointerSlots(std::vector<u64>& pointers, std::vector<u64>& null_slots) const;
-
     [[nodiscard]] u64 ReadInstruction(u32 address) override;
 
     [[nodiscard]] u32 TranslateProgramAddress(u32 address) const override;
@@ -240,6 +239,10 @@ public:
 
     [[nodiscard]] bool IsCbufIndirectStorageBufferPointer(u32 index, u32 offset,
                                                           u32 indirect) override;
+
+    [[nodiscard]] std::vector<std::pair<u32, u32>> NullStoragePointerSlots() const override;
+
+    [[nodiscard]] std::vector<u64> MappedStoragePointerKeys() const override;
 
     [[nodiscard]] u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) override;
 
@@ -298,9 +301,26 @@ void SerializePipeline(const Key& key, const Envs& envs, const std::filesystem::
                       with_mesh_state);
 }
 
-void LoadPipelines(std::stop_token stop_loading, const std::filesystem::path& filename, u32 expected_cache_version,
+/// A cache file written by an older version whose records the current reader still parses: its
+/// records, raw, to write the file again under the current version once they are translated.
+struct CacheUpgrade {
+    u32 from_version{};
+    std::vector<std::string> records;
+    std::vector<bool> is_compute;
+};
+
+/// Loads the records of a pipeline cache file. A file from min_compatible_version up to the
+/// expected version is loaded too when `upgrade` is given (its records are kept there); older or
+/// broken files are deleted.
+void LoadPipelines(
+    std::stop_token stop_loading, const std::filesystem::path& filename, u32 expected_cache_version,
     Common::UniqueFunction<void, std::ifstream&, FileEnvironment> load_compute,
     Common::UniqueFunction<void, std::ifstream&, std::vector<FileEnvironment>> load_graphics,
-    bool with_mesh_state = false);
+    bool with_mesh_state = false, u32 min_compatible_version = 0, CacheUpgrade* upgrade = nullptr);
+
+/// Writes a cache file again from upgraded records under `cache_version`, through a temporary file
+/// (the old one is kept as <name>.v<old>.bak until the new one is in place).
+void RewritePipelines(const std::filesystem::path& filename, u32 cache_version, u32 old_version,
+                      std::span<const std::string* const> records);
 
 } // namespace VideoCommon

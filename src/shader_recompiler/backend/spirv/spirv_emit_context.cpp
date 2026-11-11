@@ -8,6 +8,7 @@
 #include <array>
 #include <bit>
 #include <climits>
+#include <cstdlib>
 #include <optional>
 #include <span>
 
@@ -466,6 +467,16 @@ Id DescType(EmitContext& ctx, Id sampled_type, Id pointer_type, u32 count) {
         return pointer_type;
     }
 }
+// EDEN_NX2_LEAN_SSBO=0 turns it off: the global memory helpers are kept as calls and route
+// with one switch. Inlined at each of their calls, a program with ~30 candidate buffers took
+// NVIDIA's compiler 2.4 s (Ocarina's foliage compute programs; 0.6 s this way, same accesses).
+bool LeanGlobalMemory() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_LEAN_SSBO");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
 } // Anonymous namespace
 
 void VectorTypes::Define(Sirit::Module& sirit_ctx, Id base_type, std::string_view name) {
@@ -509,6 +520,7 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     DefineAttributeMemAccess(program.info);
     DefineWriteStorageCasLoopFunction(program.info);
     DefineGlobalMemoryFunctions(program);
+    DefineMeshEmulationOutput();
     DefineRescalingInput(program.info);
     DefineRenderArea(program.info);
 }
@@ -983,6 +995,9 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
     }
     using DefPtr = Id StorageDefinitions::*;
     const Id zero{u32_zero_value};
+    const spv::FunctionControlMask helper_control{LeanGlobalMemory()
+                                                      ? spv::FunctionControlMask::DontInline
+                                                      : spv::FunctionControlMask::MaskNone};
     const auto define_body{[&](DefPtr ssbo_member, Id addr, Id element_pointer, u32 shift,
                                auto&& callback) {
         AddLabel();
@@ -1047,6 +1062,27 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
                 best_distance = OpSelect(U64, better, distance, best_distance);
                 best_index = OpSelect(U32[1], better, Const(static_cast<u32>(index)), best_index);
             }
+            if (LeanGlobalMemory()) {
+                std::vector<Sirit::Literal> literals;
+                std::vector<Id> labels;
+                for (size_t index = 0; index < num_buffers; ++index) {
+                    literals.push_back(static_cast<u32>(index));
+                    labels.push_back(OpLabel());
+                }
+                const Id default_label{OpLabel()};
+                OpSelectionMerge(default_label, spv::SelectionControlMask::MaskNone);
+                OpSwitch(best_index, default_label, literals, labels);
+                for (size_t index = 0; index < num_buffers; ++index) {
+                    AddLabel(labels[index]);
+                    const Id ssbo_id{ssbos[index].*ssbo_member};
+                    const Id ssbo_offset{OpUConvert(U32[1], OpISub(U64, addr, bases[index]))};
+                    const Id ssbo_index{OpShiftRightLogical(U32[1], ssbo_offset, Const(shift))};
+                    callback(OpAccessChain(element_pointer, ssbo_id, zero, ssbo_index), ssbo_id,
+                             ssbo_index);
+                }
+                AddLabel(default_label);
+                return;
+            }
             for (size_t index = 0; index < num_buffers; ++index) {
                 access(index, bases[index],
                        OpIEqual(U1, best_index, Const(static_cast<u32>(index))));
@@ -1071,7 +1107,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
     }};
     const auto define_load{[&](DefPtr ssbo_member, Id element_pointer, Id type, u32 shift) {
         const Id function_type{TypeFunction(type, U64)};
-        const Id func_id{OpFunction(type, spv::FunctionControlMask::MaskNone, function_type)};
+        const Id func_id{OpFunction(type, helper_control, function_type)};
         const Id addr{OpFunctionParameter(U64)};
         if (shift > 2 && SsboAlignFixEnabled() && profile.min_ssbo_alignment < (1U << shift)) {
             // Bindings are only aligned to min_ssbo_alignment, so read the words of the buffer
@@ -1101,7 +1137,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
     }};
     const auto define_write{[&](DefPtr ssbo_member, Id element_pointer, Id type, u32 shift) {
         const Id function_type{TypeFunction(void_id, U64, type)};
-        const Id func_id{OpFunction(void_id, spv::FunctionControlMask::MaskNone, function_type)};
+        const Id func_id{OpFunction(void_id, helper_control, function_type)};
         const Id addr{OpFunctionParameter(U64)};
         const Id data{OpFunctionParameter(type)};
         if (shift > 2 && SsboAlignFixEnabled() && profile.min_ssbo_alignment < (1U << shift)) {
@@ -1180,7 +1216,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
         }
         const auto kind = static_cast<GlobalAtomic>(index);
         const Id type{kind == AddF32 ? F32[1] : U32[1]};
-        const Id func_id{OpFunction(type, spv::FunctionControlMask::MaskNone,
+        const Id func_id{OpFunction(type, helper_control,
                                     TypeFunction(type, U64, kind == CompareExchange ? U32[2] : type))};
         const Id addr{OpFunctionParameter(U64)};
         const Id value{OpFunctionParameter(kind == CompareExchange ? U32[2] : type)};
@@ -1215,7 +1251,8 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
                         case Count: break;
                         }
                     });
-        OpReturnValue(ConstantNull(type));
+        OpReturnValue(kind == CompareExchange ? OpCompositeExtract(U32[1], value, 0)
+                                              : ConstantNull(type));
         OpFunctionEnd();
         global_atomic_funcs[index] = func_id;
     }
@@ -1664,7 +1701,7 @@ void EmitContext::DefineInputs(const IR::Program& program) {
     if (info.uses_is_helper_invocation) {
         is_helper_invocation = DefineInput(*this, U1, false, spv::BuiltIn::HelperInvocation);
     }
-    if (info.uses_subgroup_mask && profile.SupportsSubgroupStage(stage)) {
+    if (info.uses_subgroup_mask && SupportsSubgroups()) {
         subgroup_mask_eq = DefineInput(*this, U32[4], false, spv::BuiltIn::SubgroupEqMaskKHR);
         subgroup_mask_lt = DefineInput(*this, U32[4], false, spv::BuiltIn::SubgroupLtMaskKHR);
         subgroup_mask_le = DefineInput(*this, U32[4], false, spv::BuiltIn::SubgroupLeMaskKHR);
@@ -1681,7 +1718,7 @@ void EmitContext::DefineInputs(const IR::Program& program) {
     if ((info.uses_fswzadd || info.uses_subgroup_invocation_id || info.uses_subgroup_shuffles ||
          (profile.warp_size_potentially_larger_than_guest &&
           (info.uses_subgroup_vote || info.uses_subgroup_mask))) &&
-        profile.SupportsSubgroupStage(stage)) {
+        SupportsSubgroups()) {
         AddCapability(spv::Capability::GroupNonUniform);
         subgroup_local_invocation_id =
             DefineInput(*this, U32[1], false, spv::BuiltIn::SubgroupLocalInvocationId);
@@ -1837,16 +1874,22 @@ void EmitContext::DefineMesh(const IR::Program& program) {
     if (stage != Stage::Task && stage != Stage::Mesh) {
         return;
     }
-    AddExtension("SPV_EXT_mesh_shader");
-    AddCapability(spv::Capability::MeshShadingEXT);
+    // Mesh emulation: a compute shader with the same workgroup memory, writing a storage buffer.
+    const bool as_compute{runtime_info.mesh_as_compute};
+    if (!as_compute) {
+        AddExtension("SPV_EXT_mesh_shader");
+        AddCapability(spv::Capability::MeshShadingEXT);
+    }
     mesh_info = program.mesh;
     mesh_threads = program.workgroup_size[0];
-    // The task's output region, which its mesh workgroups read as their input region.
-    const Id payload_type{TypeArray(U32[1], Const(mesh_info.payload_words))};
-    mesh_payload = DefineVariable(*this, payload_type, std::nullopt,
-                                  spv::StorageClass::TaskPayloadWorkgroupEXT);
+    // The task's output region, which its mesh workgroups read as their input region. In the
+    // emulation it is plain workgroup memory, copied through the task payload buffer.
+    const spv::StorageClass payload_class{as_compute ? spv::StorageClass::Workgroup
+                                                     : spv::StorageClass::TaskPayloadWorkgroupEXT};
+    const Id payload_type{TypeArray(U32[1], Const((std::max)(mesh_info.payload_words, 1U)))};
+    mesh_payload = DefineVariable(*this, payload_type, std::nullopt, payload_class);
     Name(mesh_payload, "task_payload");
-    mesh_payload_u32 = TypePointer(spv::StorageClass::TaskPayloadWorkgroupEXT, U32[1]);
+    mesh_payload_u32 = TypePointer(payload_class, U32[1]);
     if (stage == Stage::Task) {
         return;
     }
@@ -1869,6 +1912,10 @@ void EmitContext::DefineMesh(const IR::Program& program) {
     mesh_primitive_count =
         DefineVariable(*this, U32[1], std::nullopt, spv::StorageClass::Workgroup);
     Name(mesh_primitive_count, "isbe_primitive_count");
+
+    if (as_compute) {
+        return; // the output buffer: DefineMeshEmulationOutput, after the storage buffers
+    }
 
     const Id vertex_count{Const(mesh_info.max_vertices)};
     const Id primitive_count{Const(mesh_info.max_primitives)};
@@ -1948,6 +1995,58 @@ void EmitContext::DefineMesh(const IR::Program& program) {
     }
     for (const u32 line : mesh_info.primitive_lines) {
         mesh_primitive_targets.push_back(target(line, true));
+    }
+}
+
+void EmitContext::DefineMeshEmulationOutput() {
+    if ((stage != Stage::Mesh && stage != Stage::Task) || !runtime_info.mesh_as_compute) {
+        return;
+    }
+    // u32 arrays: the output MeshEpilogue writes each workgroup's block to
+    // (EmitMeshEmulationVertex) and the task payload, offset and argument buffers (RuntimeInfo).
+    // Sirit shares identical types, so reuse the u32 storage buffer type when the program's own
+    // storage buffers declared it: decorating it again would be invalid SPIR-V.
+    AddExtension("SPV_KHR_storage_buffer_storage_class");
+    Id struct_pointer{storage_types.U32.array};
+    if (!Sirit::ValidId(struct_pointer)) {
+        const Id array_type{TypeRuntimeArray(U32[1])};
+        Decorate(array_type, spv::Decoration::ArrayStride, 4U);
+        const Id struct_type{TypeStruct(array_type)};
+        Decorate(struct_type, spv::Decoration::Block);
+        MemberDecorate(struct_type, 0, spv::Decoration::Offset, 0U);
+        struct_pointer = TypePointer(spv::StorageClass::StorageBuffer, struct_type);
+    }
+    const auto define = [&](u32 binding, std::string_view name) {
+        const Id buffer{AddGlobalVariable(struct_pointer, spv::StorageClass::StorageBuffer)};
+        Decorate(buffer, spv::Decoration::Binding, binding);
+        Decorate(buffer, spv::Decoration::DescriptorSet, 0U);
+        Name(buffer, name);
+        if (profile.supported_spirv >= 0x00010400) {
+            interfaces.push_back(buffer);
+        }
+        return buffer;
+    };
+    mesh_output_u32 = TypePointer(spv::StorageClass::StorageBuffer, U32[1]);
+    const bool has_task{runtime_info.mesh_task_payload_binding != ~0U};
+    if (has_task) {
+        mesh_task_payload_buffer =
+            define(runtime_info.mesh_task_payload_binding, "mesh_emulation_task_payload");
+    }
+    if (stage == Stage::Task) {
+        return;
+    }
+    mesh_output_buffer = define(runtime_info.mesh_output_binding, "mesh_emulation_output");
+    if (has_task) {
+        mesh_task_offsets_buffer =
+            define(runtime_info.mesh_task_offsets_binding, "mesh_emulation_task_offsets");
+        mesh_task_args_buffer =
+            define(runtime_info.mesh_task_args_binding, "mesh_emulation_task_args");
+        mesh_group_index = AddGlobalVariable(TypePointer(spv::StorageClass::Private, U32[1]),
+                                             spv::StorageClass::Private);
+        Name(mesh_group_index, "mesh_group_index");
+        if (profile.supported_spirv >= 0x00010400) {
+            interfaces.push_back(mesh_group_index);
+        }
     }
 }
 

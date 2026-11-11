@@ -86,7 +86,7 @@ NvResult nvhost_as_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> i
         }
         case 0xb:
             if (g_nx2_driver) {
-                return WrapFixed(this, &nvhost_as_gpu::Nx2GetSyncpointShimInfo, input, output);
+                return WrapFixed(this, &nvhost_as_gpu::GetSyncRoMap, input, output);
             }
             break;
         case 0x14:
@@ -293,25 +293,36 @@ void nvhost_as_gpu::Nx2SparseTile(u64 gpu_address, u64 cpu_address, u64 size) {
         return;
     }
     // In GPU-thread order: command lists submitted before the request still see the old tile.
-    // Unmapping first keeps the SMMU's reverse map right and invalidates the caches over the tile,
-    // whose contents are now what the game's memory holds there.
+    // Publish cached writes before changing either translation or its device backing.
     const DAddr device = device_address + (gpu_address - start);
+    const auto canonical = cpu_address != 0
+                               ? Nx2GpuMemoryRegistry::Get().DeviceAddressOf(cpu_address, size)
+                               : std::nullopt;
     auto& smmu = system.Host1x().MemoryManager();
     system.GPU().MapInOrder(
-        gpu_address, size, [&smmu, device, cpu_address, size, asid = session->asid] {
+        gpu_address, size, [&smmu, memory = gmmu.get(), device, cpu_address, size, gpu_address,
+                           canonical, asid = session->asid] {
+            if (canonical) {
+                memory->Map(gpu_address, *canonical, size, Tegra::PTEKind::PITCH, false);
+                smmu.Unmap(device, size);
+                return;
+            }
+            memory->PreserveMapping(gpu_address, size);
             smmu.Unmap(device, size);
             if (cpu_address != 0) {
                 smmu.Map(device, cpu_address, size, asid, true);
             }
+            memory->Map(gpu_address, device, size, Tegra::PTEKind::PITCH, false);
         });
 }
 
 void nvhost_as_gpu::OnClose(DeviceFD fd) {}
 
-// Switch 2 NvRm (with characteristics flag 26) asks for the read-only syncpoint shim: a GPU page
-// whose u32 at id * stride reads as that syncpoint's value; NVN waits on syncpoints through it and
-// asserts without one. Same scheme as changes.patch, placed on the last page of the VA range.
-NvResult nvhost_as_gpu::Nx2GetSyncpointShimInfo(IoctlNx2SyncpointShimInfo& params) {
+// NVGPU_AS_IOCTL_GET_SYNC_RO_MAP: Switch 2 NvRm (with characteristics flag 26) asks for the
+// read-only syncpoint shim, a GPU page whose u32 at id * sync_size reads as that syncpoint's
+// value; NVN waits on syncpoints through it and asserts without one. Same scheme as
+// changes.patch, placed on the last page of the VA range.
+NvResult nvhost_as_gpu::GetSyncRoMap(IoctlGetSyncRoMap& params) {
     std::scoped_lock lock(mutex);
     if (!vm.initialised || !gmmu) {
         return NvResult::NotSupported;
@@ -321,11 +332,11 @@ NvResult nvhost_as_gpu::Nx2GetSyncpointShimInfo(IoctlNx2SyncpointShimInfo& param
         nx2_syncpoint_shim = true;
         gmmu->SetNativeSyncpointShim(address);
     }
-    params.address = address;
-    params.stride = sizeof(u32);
-    params.count = Tegra::MemoryManager::NumShimSyncpoints;
+    params.base_gpuva = address;
+    params.sync_size = sizeof(u32);
+    params.num_syncpoints = Tegra::MemoryManager::NumShimSyncpoints;
     LOG_INFO(Service_NVDRV, "Switch 2 syncpoint shim at {:#x} ({} syncpoints)", address,
-             params.count);
+             params.num_syncpoints);
     return NvResult::Success;
 }
 

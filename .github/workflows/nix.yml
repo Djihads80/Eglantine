@@ -1,0 +1,56 @@
+name: nix
+
+# manual dispatch for Nix troubleshooting
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Which systems to build
+        type: choice
+        options: [all, linux, macos]
+        default: all
+      pgo:
+        description: PGO variants (both is what ci.yml builds for a release)
+        type: choice
+        options: [none, both, only]
+        default: both
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-${{ github.ref }}-${{ inputs.os }}-${{ inputs.pgo }}
+  cancel-in-progress: true
+
+jobs:
+  nix:
+    uses: ./.github/workflows/build-nix.yml
+    with:
+      sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      os: ${{ inputs.os || 'all' }}
+      pgo: ${{ inputs.pgo || 'both' || 'only' }}
+    secrets:
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+  # same as ci.yml
+  nix-failure-notice:
+    name: Nix failure notice
+    needs: [nix]
+    if: always() && needs.nix.result == 'failure'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Announce the failure
+        shell: bash
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_DEV_WEBHOOK_URL }}
+        run: |
+          set -uo pipefail
+          URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          SHA="${GITHUB_SHA::7}"
+          echo "::warning::Nix failed on ${GITHUB_REF_NAME} (${SHA}, ${GITHUB_EVENT_NAME}). ${URL}"
+          if [ -z "$WEBHOOK" ]; then echo "No DISCORD_DEV_WEBHOOK_URL secret, skipping."; exit 0; fi
+          MSG=$(printf '## Nix CI failed on `%s` (%s)\n%s' "${GITHUB_REF_NAME}" "${SHA}" "${URL}")
+          jq -n --arg content "$MSG" '{content: $content}' |
+            curl -fsS -H "Content-Type: application/json" -d @- "$WEBHOOK" ||
+            echo "::warning::Could not post the notice to Discord."
+          exit 0

@@ -16,8 +16,10 @@
 #include <unordered_set>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include "common/container/unordered_map.h"
 #include <vector>
 
@@ -107,6 +109,26 @@ struct ShaderPools {
     Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_block{32};
 };
 
+struct ComputePipelineVariant {
+    std::unique_ptr<ComputePipeline> pipeline;
+    std::vector<std::pair<u32, u32>> null_pointer_slots;
+    std::vector<u64> mapped_pointers;
+};
+
+struct ComputePipelineCacheEntry {
+    std::unique_ptr<ComputePipeline> pipeline;
+    /// Replacement pipeline from a stale-slot rebuild, kept here until its worker compile finishes
+    std::unique_ptr<ComputePipeline> pending;
+    /// Extra persisted variants with distinct MappedStoragePointerKeys built at boot
+    std::vector<ComputePipelineVariant> alternates;
+    std::string failure;
+    /// Constant buffer slots that were null pointers at translation (see NullStoragePointerSlots)
+    std::vector<std::pair<u32, u32>> null_pointer_slots;
+    /// Constant buffer slots bound as storage buffer pointers (see MappedStoragePointerKeys)
+    std::vector<u64> mapped_pointers;
+    u32 rebuilds{};
+};
+
 class PipelineCache : public VideoCommon::ShaderCache {
 public:
     explicit PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, const Device& device,
@@ -117,8 +139,19 @@ public:
                            TextureCache& texture_cache, VideoCore::ShaderNotify& shader_notify_);
     ~PipelineCache();
 
-    [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipeline();
+    [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipeline(bool is_indexed = false);
     [[nodiscard]] bool IsIndirectResetShader() const;
+    /// Nx2Perf MacroReadWriterSet: the program epoch the current programs were resolved in
+    /// (0: none) and their device code ranges.
+    [[nodiscard]] u64 Nx2ResolvedEpoch() const noexcept {
+        return nx2_resolved_epoch;
+    }
+    [[nodiscard]] u64 Nx2ResolvedMap() const noexcept {
+        return nx2_resolved_map;
+    }
+    [[nodiscard]] const auto& Nx2CodeRanges() const noexcept {
+        return nx2_code_ranges;
+    }
 
     /// Why the last CurrentGraphicsPipeline() returned null (diagnostics).
     [[nodiscard]] const char* GraphicsMissReason() const noexcept {
@@ -133,29 +166,42 @@ public:
                            const VideoCore::DiskResourceLoadCallback& callback);
 
 private:
-    [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipelineSlowPath();
+    [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipelineSlowPath(bool is_indexed);
 
-    [[nodiscard]] GraphicsPipeline* BuiltPipeline(GraphicsPipeline* pipeline) const noexcept;
+    [[nodiscard]] GraphicsPipeline* BuiltPipeline(GraphicsPipeline* pipeline,
+                                                  bool is_indexed) noexcept;
+
+    void RecordSkippedGeometry(bool is_indexed, const GraphicsPipeline* pipeline) noexcept;
+    [[nodiscard]] bool ShouldSkipDepthOnlyGeometry(bool is_indexed) noexcept;
+    void ClearSkippedGeometryIfDrawn(bool is_indexed) noexcept;
+
+    void DrainReadyDiskPipelines();
+    [[nodiscard]] bool CanSkipForDiskReplay() const noexcept;
+
+    /// Nx2Perf shader_build_budget: whether a new graphics pipeline is left unbuilt this frame.
+    [[nodiscard]] bool DeferRuntimeBuild();
+    void ChargeRuntimeBuild(std::chrono::steady_clock::time_point begin);
 
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline();
 
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(
         ShaderPools& pools, const GraphicsPipelineCacheKey& key,
         std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
-        bool build_in_parallel);
+        bool build_in_parallel, bool native_turing = false);
 
-    std::unique_ptr<ComputePipeline> CreateComputePipeline(const ComputePipelineCacheKey& key,
-                                                           const ShaderInfo* shader,
-                                                           const ComputePipeline* previous = nullptr);
+    [[nodiscard]] bool StaleNullPointerSlot(const ComputePipelineCacheEntry& entry) const;
 
-    /// Whether a pointer slot the pipeline left out because it was null now holds a mapped address.
-    bool NullPointerSlotFilled(const ComputePipeline& pipeline) const;
+    /// Translates the current compute program, binding the pointers in keep_pointers whatever
+    /// their slots hold now (see GenericEnvironment::KeepStoragePointers)
+    ComputePipelineCacheEntry CreateComputePipeline(const ComputePipelineCacheKey& key,
+                                                    const ShaderInfo* shader,
+                                                    std::span<const u64> keep_pointers = {});
 
-    std::unique_ptr<ComputePipeline> CreateComputePipeline(ShaderPools& pools,
-                                                           const ComputePipelineCacheKey& key,
-                                                           Shader::Environment& env,
-                                                           PipelineStatistics* statistics,
-                                                           bool build_in_parallel);
+    ComputePipelineCacheEntry CreateComputePipeline(ShaderPools& pools,
+                                                    const ComputePipelineCacheKey& key,
+                                                    Shader::Environment& env,
+                                                    PipelineStatistics* statistics,
+                                                    bool build_in_parallel);
 
     void SerializeVulkanPipelineCache(const std::filesystem::path& filename,
                                       const vk::PipelineCache& pipeline_cache, u32 cache_version);
@@ -186,11 +232,26 @@ private:
     u64 frame_count{};
     std::deque<std::pair<u64, std::unique_ptr<GraphicsPipeline>>> evicted_pipelines; ///< (tick, pipeline)
     std::unordered_set<u64> used_and_evicted; ///< Key hashes of pipelines used this session, evicted since
+    std::unordered_set<u64> evicted_keys; ///< Key hashes of every evicted pipeline, to count rebuilds
 
-    ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>> compute_cache;
-    /// Pipelines replaced by a rebuild; queued dispatches may still use them.
-    std::vector<std::unique_ptr<ComputePipeline>> retired_compute_pipelines;
+    ::Common::unordered_map<ComputePipelineCacheKey, ComputePipelineCacheEntry> compute_cache;
+    /// Replaced compute pipelines, destroyed once the GPU and their queued build are done with
+    /// them (tick, pipeline)
+    std::deque<std::pair<u64, std::unique_ptr<ComputePipeline>>> retired_compute_pipelines;
     ::Common::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>> graphics_cache;
+
+    static constexpr size_t ComputeFastCacheSize = 64;
+    struct ComputeFastCacheEntry {
+        ComputePipelineCacheKey key{};
+        ComputePipeline* pipeline{};
+    };
+    std::array<ComputeFastCacheEntry, ComputeFastCacheSize> compute_fast_cache{};
+
+    /// Nx2Perf pipeline_fast_cache: filled only by the slow path, validated by the full key and
+    /// cleared whenever pipelines are evicted.
+    static constexpr size_t GraphicsFastCacheSize = 256;
+    std::array<GraphicsPipeline*, GraphicsFastCacheSize> graphics_fast_cache{};
+    u64 graphics_fast_mismatches{};
 
     ShaderPools main_pools;
 
@@ -209,7 +270,34 @@ private:
     std::unordered_set<const GraphicsPipeline*> used_this_session;
     std::filesystem::path used_pipelines_filename;
     std::chrono::steady_clock::time_point used_pipelines_saved{};
+    u64 build_budget_frame{~u64{}};
+    std::chrono::steady_clock::duration build_budget_spent{};
+    std::chrono::steady_clock::duration build_budget{};
+    u64 deferred_builds{};
+    u64 over_budget_small{};
+    u64 over_budget_mesh{};
     void SaveUsedPipelines();
+
+    static constexpr size_t SkippedGeometryTableSize = 256;
+    struct SkippedGeometryEntry {
+        u64 key{};
+        u64 frame{};
+        const GraphicsPipeline* pipeline{};
+    };
+    std::array<SkippedGeometryEntry, SkippedGeometryTableSize> skipped_geometry{};
+    u64 last_skipped_geometry_frame{~u64{}};
+
+    static constexpr size_t DeferredCandidateSlots = 64;
+    struct DeferredCandidate {
+        u64 key_hash{};
+        u32 draws{};
+        bool is_gbuffer{};
+    };
+    std::array<DeferredCandidate, DeferredCandidateSlots> deferred_candidates{};
+    size_t deferred_candidate_count{};
+    static constexpr size_t PriorityBuildKeySlots = 16;
+    std::array<u64, PriorityBuildKeySlots> priority_build_keys{};
+    size_t priority_build_key_count{};
 
     std::filesystem::path vulkan_pipeline_cache_filename;
     vk::PipelineCache vulkan_pipeline_cache;
@@ -218,7 +306,17 @@ private:
     std::atomic<size_t> last_cache_size{};
     std::atomic_bool flush_in_flight{};
 
+    ::Common::unordered_map<GraphicsPipelineCacheKey, std::vector<VideoCommon::FileEnvironment>>
+        skipped_disk_envs;
+    std::unordered_set<u64> in_flight_disk_replays;
+    std::mutex ready_disk_pipelines_mutex;
+    std::vector<std::pair<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>>>
+        ready_disk_pipelines;
+    std::atomic_bool ready_disk_pipelines_pending{};
+    u64 disk_replayed_count{};
+
     Common::ThreadWorker workers;
+    Common::ThreadWorker disk_replay_workers;
     Common::ThreadWorker serialization_thread;
     DynamicFeatures dynamic_features;
 

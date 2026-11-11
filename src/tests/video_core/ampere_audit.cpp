@@ -219,7 +219,10 @@ TEST_CASE("Ampere global address shadowing distinguishes Ra.U32 from Ra.64",
     CHECK(narrow.instruction.Bits(16, 8) == narrow.instruction.Bits(24, 8));
     CHECK(narrow.instruction.Bits(16, 8) < 216);
     load.words[2] |= 1U << 26; // Ra.64 would span R219-R220, two shadow quartets.
-    CHECK_FALSE(Shader::Ampere::PrepareRegisterPressure(load, 216).valid);
+    const auto wide = Shader::Ampere::PrepareRegisterPressure(load, 216);
+    REQUIRE(wide.valid);
+    CHECK(wide.instruction.Bits(16, 8) == wide.instruction.Bits(24, 8));
+    CHECK(wide.instruction.Bits(24, 8) + 2 <= 216);
 }
 
 TEST_CASE("Ampere conditional exits may end at a terminal self-branch", "[video_core][ampere]") {

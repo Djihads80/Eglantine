@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
@@ -14,7 +14,6 @@ namespace Shader::Maxwell {
 [[noreturn]] static void ThrowNotImplemented(Opcode opcode) {
     throw NotImplementedException("Instruction {} is not implemented", opcode);
 }
-
 
 void TranslatorVisitor::ATOMS_cas(u64) {
     ThrowNotImplemented(Opcode::ATOMS_cas);

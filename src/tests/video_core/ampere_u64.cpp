@@ -227,7 +227,13 @@ TEST_CASE("Ampere U64 surface max rejects unsupported operations and malformed p
     auto span = LoggedMax;
     span.words[0] = (span.words[0] & ~0xff000000U) | (242U << 24);
     span.words[1] = (span.words[1] & ~0xe0000000U) | (5U << 29); // Three coordinates cross R244.
-    CHECK_FALSE(static_cast<bool>(LowerToMaxwell(std::array{span, Exit})));
+    const auto shadowed = LowerToMaxwell(std::array{span, Exit});
+    REQUIRE(static_cast<bool>(shadowed));
+    const auto atomic = std::ranges::find_if(shadowed.instructions, [](u64 word) {
+        return (word >> 52) == 0xeb4;
+    });
+    REQUIRE(atomic != shadowed.instructions.end());
+    CHECK(((*atomic >> 8) & 255) + 3 <= 244);
     for (u32 destination : {1U, 253U, 254U, 255U}) {
         auto returning = LoggedMax;
         returning.words[0] = (returning.words[0] & ~0x00ff0fffU) | (destination << 16) | 0x593;

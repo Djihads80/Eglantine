@@ -16,6 +16,7 @@
 #include <type_traits>
 // TODO: find out which don't require stable iters
 #include <unordered_map>
+#include "video_core/page_filter.h"
 #include "common/container/unordered_map.h"
 #include "common/container/unordered_set.h"
 #include <vector>
@@ -148,12 +149,12 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     std::vector<u8> astc_scan_buffer;
     u64 images_deleted{};
     std::map<u64, std::pair<u32, GPUVAddr>> created_shapes;
-    bool debug_stats{true}; ///< Collect what only the debug statistics lines use
+    bool debug_stats{}; ///< Collect what only the debug statistics lines use
 
     static constexpr s64 DEFAULT_EXPECTED_MEMORY = 1_GiB + 125_MiB;
     static constexpr s64 DEFAULT_CRITICAL_MEMORY = 1_GiB + 625_MiB;
-    /// The most device memory the collector lets the cache fill before it collects in earnest,
-    /// on every GPU (ApplyThresholdOverrides).
+    /// The most device memory the collector lets the cache fill before it collects in earnest on
+    /// cards up to 8 GiB; larger ones 5/8 of the driver's budget (ApplyThresholdOverrides).
     static constexpr u64 MaxCriticalMemory = 5_GiB;
     static constexpr size_t GC_EMERGENCY_COUNTS = 2;
 
@@ -176,10 +177,17 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     [[nodiscard]] bool UploadsByLayer(const ImageBase& image) const noexcept;
 
     /// Records the layers a write of [cpu_addr, +size) touches.
-    void MarkLayersWritten(Image& image, DAddr cpu_addr, size_t size);
+    void MarkLayersWritten(Image& image, ImageId image_id, DAddr cpu_addr, size_t size);
+
+    /// Records the layers a GPU remap of [gpu_addr, +size) touches.
+    void MarkLayersRemapped(Image& image, GPUVAddr gpu_addr, size_t size);
 
     /// SparseTiles images: notes a written range, uploaded with the next refresh.
-    void MarkRangeWritten(Image& image, DAddr cpu_addr, size_t size);
+    void MarkRangeWritten(Image& image, ImageId image_id, DAddr cpu_addr, size_t size);
+
+    template <typename Func>
+    void ForEachWrittenRange(Image& image, ImageId image_id, DAddr cpu_addr, size_t size,
+                             Func&& func);
 
     /// SparseTiles images: binds and uploads the parts written since the last upload.
     void RefreshSparseTiles(Image& image);
@@ -221,6 +229,9 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     };
 
 public:
+    /// Device pages this cache ever registered objects on (InnerInvalidation skips the rest).
+    VideoCommon::PageFilter page_filter;
+
     explicit TextureCache(Runtime&, Tegra::MaxwellDeviceMemoryManager&);
 
     /// Notify the cache that a new frame has been queued
@@ -246,6 +257,8 @@ public:
 
     /// Handle feedback loops during draws.
     void CheckFeedbackLoop(std::span<const ImageViewInOut> views);
+
+    [[nodiscard]] bool SamplesRenderTarget(std::span<const ImageViewInOut> views);
 
     /// Get the sampler from the graphics/compute descriptor table in the specified index
     Sampler* GetSampler(u32 index, bool compute);
@@ -273,6 +286,10 @@ public:
     /// Find a framebuffer with the currently bound render targets
     /// UpdateRenderTargets should be called before this
     Framebuffer* GetFramebuffer();
+
+    /// True when the current draw's color target 0 already holds an earlier frame's output and
+    /// was not fully cleared this frame (P2.1 stale_target_skip).
+    [[nodiscard]] bool ColorTargetHasPriorFrameOutput() noexcept;
 
     [[nodiscard]] const RenderTargets& GetRenderTargets() const noexcept {
         return render_targets;
@@ -304,6 +321,17 @@ public:
                          const Tegra::Engines::Fermi2D::Surface& motion_vectors,
                          const Tegra::Texture::TICEntry* depth, std::array<f32, 2> jitter,
                          std::array<f32, 2> motion_scale);
+
+    /// NVIDIA DLSS (DLAA or Super Resolution) on src into dst with the scene depth at
+    /// depth_address and motion from the camera (see the runtime's UpscaleWithCameraMotion).
+    /// render_size is the scene's size in host pixels. False when it can't run; the caller keeps
+    /// its native dispatch.
+    bool CameraMotionUpscale(const Tegra::Engines::Fermi2D::Surface& dst,
+                             const Tegra::Engines::Fermi2D::Surface& src,
+                             const ImageInfo& depth_info, GPUVAddr depth_address,
+                             std::array<u32, 2> render_size,
+                             const std::array<f32, 16>& reprojection, std::array<f32, 2> jitter,
+                             bool reset);
 
     /// Health check of a game's DLSS network output (dst) against its input (src); see the
     /// runtime's ProbeGameDlssOutput. Returns an earlier check's result when one is ready.

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
@@ -205,7 +205,7 @@ void TranslatorVisitor::ATOM_cas(u64 insn) {
     // Maxwell CAS packs the comparator and replacement in two consecutive GPRs.
     const IR::Reg dest = static_cast<IR::Reg>(insn & 255);
     const IR::Reg operand = static_cast<IR::Reg>((insn >> 20) & 255);
-    if (((insn >> 49) & 3) != 0 || operand >= IR::Reg::R254)
+    if (((insn >> 49) & 7) != 0 || operand >= IR::Reg::R254)
         throw NotImplementedException("ATOM CAS size or operand span");
     const IR::U32 compare{X(operand)};
     const IR::U32 value{X(static_cast<IR::Reg>(static_cast<u32>(operand) + 1))};

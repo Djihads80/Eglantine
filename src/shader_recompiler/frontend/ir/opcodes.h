@@ -22,6 +22,12 @@ enum class Opcode {
 #undef OPCODE
 };
 
+inline constexpr size_t NUM_OPCODES = 0
+#define OPCODE(...) +1
+#include "opcodes.inc"
+#undef OPCODE
+    ;
+
 namespace Detail {
 struct OpcodeMeta {
     std::string_view name;
@@ -56,12 +62,6 @@ static constexpr Type F32x4{Type::F32x4};
 static constexpr Type F64x2{Type::F64x2};
 static constexpr Type F64x3{Type::F64x3};
 static constexpr Type F64x4{Type::F64x4};
-
-inline constexpr size_t NUM_OPCODES = 0
-#define OPCODE(...) + 1
-#include "opcodes.inc"
-#undef OPCODE
-;
 
 extern OpcodeMeta META_TABLE[NUM_OPCODES];
 constexpr size_t CalculateNumArgsOf(Opcode op) noexcept {

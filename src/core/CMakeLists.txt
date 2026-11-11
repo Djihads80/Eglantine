@@ -465,7 +465,8 @@ add_library(core STATIC
     hle/service/am/service/application_functions.cpp
     hle/service/am/service/application_functions.h
     hle/service/am/service/application_proxy.cpp
-    hle/service/am/service/graphics_scale_controller.h
+    hle/service/am/service/graphics_scaling_parameters_functions.h
+    hle/service/am/service/performance_functions.h
     hle/service/am/service/application_proxy.h
     hle/service/am/service/application_proxy_service.cpp
     hle/service/am/service/application_proxy_service.h
@@ -1049,6 +1050,7 @@ add_library(core STATIC
     hle/service/nx2_streamplay.h
     hle/service/nx2_stub_interface.h
     hle/service/nx2_gsv.h
+    hle/service/nx2_oot_time.h
     hle/service/services.cpp
     hle/service/services.h
     hle/service/set/factory_settings_server.cpp

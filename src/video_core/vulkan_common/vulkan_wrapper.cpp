@@ -314,6 +314,7 @@ bool Load(VkInstance instance, InstanceDispatch& dld) noexcept {
     X(vkDestroyDebugUtilsMessengerEXT);
     X(vkDestroyDebugReportCallbackEXT);
     X(vkDestroySurfaceKHR);
+    X(vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR);
     X(vkGetPhysicalDeviceFeatures2);
     X(vkGetPhysicalDeviceFormatProperties2);
     X(vkGetPhysicalDeviceProperties2);
@@ -1002,6 +1003,29 @@ std::vector<VkPhysicalDeviceToolProperties> PhysicalDevice::GetPhysicalDeviceToo
     dld->vkGetPhysicalDeviceToolProperties(physical_device, &num, nullptr);
     std::vector<VkPhysicalDeviceToolProperties> properties(num);
     dld->vkGetPhysicalDeviceToolProperties(physical_device, &num, properties.data());
+    return properties;
+}
+
+std::vector<VkCooperativeMatrixPropertiesKHR> PhysicalDevice::GetCooperativeMatrixPropertiesKHR()
+    const {
+    if (!dld->vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR) {
+        return {};
+    }
+    u32 num = 0;
+    if (dld->vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(physical_device, &num, nullptr) !=
+        VK_SUCCESS) {
+        return {};
+    }
+    std::vector<VkCooperativeMatrixPropertiesKHR> properties(
+        num, VkCooperativeMatrixPropertiesKHR{
+                 .sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR,
+                 .pNext = nullptr,
+             });
+    if (dld->vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(physical_device, &num,
+                                                               properties.data()) != VK_SUCCESS) {
+        return {};
+    }
+    properties.resize(num);
     return properties;
 }
 

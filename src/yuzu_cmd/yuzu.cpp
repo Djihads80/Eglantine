@@ -18,6 +18,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <regex>
 #include <string>
 #include "common/settings_enums.h"
@@ -30,6 +31,8 @@
 
 #include <fmt/ostream.h>
 
+#include "common/fs/fs_util.h"
+#include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/nx2_sampler.h"
 #include "common/scm_rev.h"
@@ -39,6 +42,7 @@
 #include "core/core_timing.h"
 #include "core/cpu_manager.h"
 #include "core/crypto/key_manager.h"
+#include "core/file_sys/common_funcs.h"
 #include "core/file_sys/nup_writer.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/vfs/vfs_real.h"
@@ -251,6 +255,88 @@ struct SdlState {
     std::unique_ptr<EmuWindow_SDL3> emu_window;
     bool network_initialized{};
 };
+
+constexpr int kRestartExitCode = 75;
+static std::atomic_bool restart_requested{false};
+
+// ExecuteProgram state for the restarted process: what the Qt frontend keeps in-process when it
+// reboots a game. Only read when the launcher sets EDEN_CLI_RESTART_HANDOFF, so a leftover file
+// never changes a normal launch.
+struct RestartHandoff {
+    u64 program_id{};
+    s32 program_index{};
+    s32 previous_program_index{-1};
+    std::vector<std::vector<u8>> user_channel;
+};
+
+static std::filesystem::path RestartHandoffPath() {
+    return Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) / "restart-handoff.bin";
+}
+
+template <typename T>
+static void PutRaw(std::ostream& out, const T& value) {
+    out.write(reinterpret_cast<const char*>(&value), sizeof(value));
+}
+
+template <typename T>
+static void GetRaw(std::istream& in, T& value) {
+    in.read(reinterpret_cast<char*>(&value), sizeof(value));
+}
+
+// Bounds keep a damaged handoff from requesting huge allocations; the writer refuses anything the
+// reader would reject.
+constexpr u32 kHandoffMaxEntries = 256;
+constexpr u64 kHandoffMaxTotalSize = 64u << 20;
+
+static bool WriteRestartHandoff(const RestartHandoff& handoff) {
+    u64 total = 0;
+    for (const auto& entry : handoff.user_channel) {
+        total += entry.size();
+    }
+    if (handoff.user_channel.size() > kHandoffMaxEntries || total > kHandoffMaxTotalSize) {
+        return false;
+    }
+    std::ofstream out{RestartHandoffPath(), std::ios::binary | std::ios::trunc};
+    PutRaw(out, handoff.program_id);
+    PutRaw(out, handoff.program_index);
+    PutRaw(out, handoff.previous_program_index);
+    PutRaw(out, static_cast<u32>(handoff.user_channel.size()));
+    for (const auto& entry : handoff.user_channel) {
+        PutRaw(out, static_cast<u32>(entry.size()));
+        out.write(reinterpret_cast<const char*>(entry.data()), std::streamsize(entry.size()));
+    }
+    out.close();
+    return !out.fail();
+}
+
+// Leaves the file in place; the caller removes it once the game has loaded.
+static std::optional<RestartHandoff> ReadRestartHandoff() {
+    std::ifstream in{RestartHandoffPath(), std::ios::binary};
+    RestartHandoff handoff;
+    u32 count{};
+    GetRaw(in, handoff.program_id);
+    GetRaw(in, handoff.program_index);
+    GetRaw(in, handoff.previous_program_index);
+    GetRaw(in, count);
+    if (in.fail() || count > kHandoffMaxEntries) {
+        return std::nullopt;
+    }
+    u64 total = 0;
+    for (u32 i = 0; i < count; ++i) {
+        u32 size{};
+        GetRaw(in, size);
+        total += size;
+        if (in.fail() || total > kHandoffMaxTotalSize) {
+            return std::nullopt;
+        }
+        auto& entry = handoff.user_channel.emplace_back(size);
+        in.read(reinterpret_cast<char*>(entry.data()), std::streamsize(size));
+        if (in.fail()) {
+            return std::nullopt;
+        }
+    }
+    return handoff;
+}
 
 static std::atomic_bool pack_nup_cancel{false};
 static std::atomic_bool unpack_nup_cancel{false};
@@ -510,9 +596,31 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     Service::AM::FrontendAppletParameters load_parameters{
         .applet_id = Service::AM::AppletId::Application,
     };
+    const char* const handoff_env = std::getenv("EDEN_CLI_RESTART_HANDOFF");
+    const bool restarted = handoff_env != nullptr && handoff_env[0] != '\0';
+    if (restarted) {
+        auto handoff = ReadRestartHandoff();
+        if (!handoff) {
+            // Booting as a frontend launch would clear the game's temp storage.
+            LOG_CRITICAL(Frontend, "Restart handoff {} is missing or damaged, not booting",
+                         Common::FS::PathToUTF8String(RestartHandoffPath()));
+            return SDL_APP_FAILURE;
+        }
+        state->system.GetUserChannel() = std::move(handoff->user_channel);
+        load_parameters.program_id = handoff->program_id;
+        load_parameters.launch_type = Service::AM::LaunchType::ApplicationInitiated;
+        load_parameters.program_index = handoff->program_index;
+        load_parameters.previous_program_index = handoff->previous_program_index;
+        LOG_INFO(Frontend, "Restarted by the game: program index {}, {} user channel entries",
+                 handoff->program_index, state->system.GetUserChannel().size());
+    }
     const Core::SystemResultStatus load_result = state->system.Load(*state->emu_window, lp.filepath, load_parameters);
     switch (load_result) {
     case Core::SystemResultStatus::Success:
+        if (restarted) {
+            std::error_code ec;
+            std::filesystem::remove(RestartHandoffPath(), ec);
+        }
         break; // Expected case
     case Core::SystemResultStatus::ErrorGetLoader:
         LOG_CRITICAL(Frontend, "Failed to obtain loader for {}!", lp.filepath);
@@ -563,6 +671,31 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 
     // don't do anything, SDL3 already exists for us :D
     state->system.RegisterExitCallback([] {});
+
+    // A game executing a program (e.g. restarting after a settings change) writes its launch state
+    // to the restart handoff and quits with kRestartExitCode; the launcher boots the same file again
+    // with EDEN_CLI_RESTART_HANDOFF set. Mirrors MainWindow::OnExecuteProgram.
+    state->system.RegisterExecuteProgramCallback([system = &state->system](std::size_t program_index) {
+        RestartHandoff handoff{
+            .program_index = static_cast<s32>(program_index),
+            .user_channel = system->GetUserChannel(),
+        };
+        const u64 previous_program_id = system->GetApplicationProcessProgramID();
+        if (previous_program_id > static_cast<u64>(Service::AM::AppletProgramId::MaxProgramId)) {
+            handoff.previous_program_index =
+                static_cast<s32>(previous_program_id - FileSys::GetBaseTitleID(previous_program_id));
+            handoff.program_id = previous_program_id;
+        }
+        // Without the handoff, a relaunch would boot as a frontend launch and clear temp storage.
+        if (!WriteRestartHandoff(handoff)) {
+            LOG_CRITICAL(Frontend, "ExecuteProgram: could not write {}, not restarting",
+                         Common::FS::PathToUTF8String(RestartHandoffPath()));
+            return;
+        }
+        LOG_INFO(Frontend, "ExecuteProgram: program index {}, exiting with code {} to restart",
+                 program_index, kRestartExitCode);
+        restart_requested = true;
+    });
 
     // QLaunch launched applications (should) now reload shader cache.
     static std::mutex shader_cache_reload_mutex;
@@ -717,6 +850,9 @@ extern "C" SDL_AppResult SDL_AppIterate(void *appstate) {
     if (state->emu_window) {
         state->emu_window->ApplyPendingTitle();
     }
+    if (restart_requested) {
+        return SDL_APP_SUCCESS;
+    }
     return state->emu_window && state->emu_window->IsOpen() ? SDL_APP_CONTINUE : SDL_APP_SUCCESS;
 }
 extern "C" SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
@@ -742,6 +878,11 @@ extern "C" void SDL_AppQuit(void *appstate, SDL_AppResult result) {
     delete state;
     if (network_initialized) {
         Network::Shutdown();
+    }
+    if (restart_requested) {
+        // SDL3 maps SDL_APP_SUCCESS to exit code 0; quit SDL ourselves to return the restart code.
+        SDL_Quit();
+        std::exit(kRestartExitCode);
     }
 }
 
