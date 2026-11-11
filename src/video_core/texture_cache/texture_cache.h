@@ -355,14 +355,20 @@ void TextureCache<P>::TickFrame() {
                     critical_memory =
                         budget - (std::min)(margin + pressure_margin + slack_margin, budget / 2);
                     expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
+                    ApplyThresholdOverrides(false);
                     // Log the first values and real changes (the budget moves by a few MiB all
-                    // the time).
+                    // the time). Compared after the clamp: with a budget past MaxCriticalMemory
+                    // (RX 6600: 6.3 GiB) the unclamped value counted as a change at every check.
                     const u64 change = critical_memory > old_critical
                                            ? critical_memory - old_critical
                                            : old_critical - critical_memory;
                     const bool log = budget_check_frames == 1 || change >= 256_MiB;
-                    ApplyThresholdOverrides(log);
                     if (log) {
+                        LOG_INFO(HW_GPU,
+                                 "Texture cache thresholds: expected {} MiB, critical {} MiB, "
+                                 "minimum {} MiB",
+                                 expected_memory >> 20, critical_memory >> 20,
+                                 minimum_memory >> 20);
                         LOG_INFO(HW_GPU,
                                  "Memory margins: base {} MiB, out of memory {} MiB, block slack {} MiB",
                                  margin >> 20, pressure_margin >> 20, slack_margin >> 20);
@@ -377,6 +383,26 @@ void TextureCache<P>::TickFrame() {
             gpu_sentenced_bytes -= gpu_sentenced_images.front().bytes;
             gpu_sentenced_images.pop_front();
         }
+    }
+    const auto idle_shadow = [&](const FeedbackShadow& entry) {
+        return frame_tick - entry.last_frame > 120;
+    };
+    if (std::ranges::any_of(feedback_shadows, idle_shadow)) {
+        // Views and images may still be referenced by submitted draws.
+        runtime.Finish();
+        std::erase_if(feedback_shadows, [&](const FeedbackShadow& entry) {
+            if (!idle_shadow(entry)) {
+                return false;
+            }
+            const auto& image = slot_images[entry.id];
+            RemoveImageViewReferences(image.image_view_ids);
+            for (const ImageViewId id : image.image_view_ids) {
+                slot_image_views.erase(id);
+            }
+            total_used_memory -= (std::min)(total_used_memory, ImageMemoryBytes(image));
+            slot_images.erase(entry.id);
+            return true;
+        });
     }
     // If we can obtain the memory info, use it instead of the estimate.
     if (runtime.CanReportMemoryUsage()) {
@@ -550,6 +576,71 @@ void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compu
             }
         }
     } while (has_deleted_images || (blacklist && has_blacklisted));
+    if (!compute) {
+        ReplaceColorFeedbackViews(views);
+    }
+}
+
+template <class P>
+void TextureCache<P>::ReplaceColorFeedbackViews(std::span<ImageViewInOut> views) {
+    // A draw that samples its own colour target reads it while the host writes it, a feedback
+    // loop: RADV reads compressed tiles back as garbage (DK Bananza's video panel came out in
+    // tiles). Maxwell reads the texel before the draw's write lands, so sample a copy instead.
+    std::vector<ImageId> used_shadows;
+    const auto& regs = maxwell3d->regs;
+    for (ImageViewInOut& view : views) {
+        if (view.id == NULL_IMAGE_VIEW_ID || view.blacklist) {
+            continue;
+        }
+        const ImageViewBase& image_view = slot_image_views[view.id];
+        if (image_view.IsBuffer()) {
+            continue;
+        }
+        const ImageId image_id = image_view.image_id;
+        const GPUVAddr gpu_addr = slot_images[image_id].gpu_addr;
+        bool is_target = false;
+        for (u32 index = 0; index < regs.rt_control.count; ++index) {
+            const auto& rt = regs.rt[regs.rt_control.Map(index)];
+            is_target |= rt.format != Tegra::RenderTargetFormat::NONE && rt.Address() == gpu_addr;
+        }
+        // ponytail: rescaled and multisampled targets keep the loop; copy them when a game needs it.
+        if (!is_target || True(slot_images[image_id].flags & ImageFlagBits::Rescaled) ||
+            slot_images[image_id].info.num_samples != 1) {
+            continue;
+        }
+        const auto same_shape = [&](const FeedbackShadow& entry) {
+            if (std::ranges::find(used_shadows, entry.id) != used_shadows.end()) {
+                return false;
+            }
+            const ImageInfo& a = slot_images[entry.id].info;
+            const ImageInfo& b = slot_images[image_id].info;
+            return a.type == b.type && a.format == b.format && a.size == b.size &&
+                   a.resources.levels == b.resources.levels &&
+                   a.resources.layers == b.resources.layers;
+        };
+        auto it = std::ranges::find_if(feedback_shadows, same_shape);
+        if (it == feedback_shadows.end()) {
+            const ImageInfo info = slot_images[image_id].info;
+            const DAddr cpu_addr = slot_images[image_id].cpu_addr;
+            const ImageId id = slot_images.insert(runtime, info, gpu_addr, cpu_addr);
+            total_used_memory += ImageMemoryBytes(slot_images[id]);
+            feedback_shadows.push_back({id, frame_tick});
+            LOG_INFO(HW_GPU, "Colour target {}x{} format {} sampled by its own draw: copying it",
+                     info.size.width, info.size.height, static_cast<u32>(info.format));
+            it = std::prev(feedback_shadows.end());
+        }
+        const ImageId shadow_id = it->id;
+        it->last_frame = frame_tick;
+        used_shadows.push_back(shadow_id);
+        Image& image = slot_images[image_id];
+        Image& shadow = slot_images[shadow_id];
+        const auto copies = MakeShrinkImageCopies(shadow.info, image.info, SubresourceBase{});
+        runtime.CopyImage(shadow, image, copies);
+        const auto view_it = std::ranges::find(image.image_view_ids, view.id);
+        const ImageViewInfo view_info =
+            image.image_view_infos[std::distance(image.image_view_ids.begin(), view_it)];
+        view.id = FindOrEmplaceImageView(shadow_id, view_info);
+    }
 }
 
 template <class P>
