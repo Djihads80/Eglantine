@@ -60,11 +60,15 @@ def other_emulators():
     try:
         if lab_ctl.WINDOWS:
             out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True).stdout
-            names = [line.split('","') for line in out.splitlines() if line.startswith('"')]
-            return [int(row[1]) for row in names
-                    if re.match(r'"?(eden-cli|eglantine)\.exe', row[0], re.I) and len(row) > 1]
-        out = subprocess.run(["pgrep", "-f", r"(eden-cli|eglantine)"], capture_output=True, text=True).stdout
-        return [int(pid) for pid in out.split() if int(pid) != os.getpid()]
+            rows = [line.strip('"').split('","') for line in out.splitlines() if line.startswith('"')]
+            return [int(row[1]) for row in rows
+                    if len(row) > 1 and re.match(r"(eden-cli|eglantine)\.exe$", row[0], re.I)]
+        # Exact process names: `pgrep -f` also matches editors, tails and paths containing "eglantine".
+        found = []
+        for name in ("eden-cli", "eglantine"):
+            out = subprocess.run(["pgrep", "-x", name], capture_output=True, text=True).stdout
+            found += [int(pid) for pid in out.split()]
+        return found
     except (OSError, ValueError):
         return []
 

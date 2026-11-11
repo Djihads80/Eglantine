@@ -2,7 +2,7 @@
 #
 # The NX2 lab and debugging tools (lab_ctl.py, shader_lab.py, debug_mcp.py, ...) need nothing
 # beyond the standard library. Image work (burst flash scans, contact sheets, non-TGA stats) uses
-# the "images" extra:
+# the "images" extra (on Linux the system python3-numpy and python3-pillow work too):
 #
 #   uv run --project tools/nx2 --extra images python -I tools/nx2/lab_ctl.py ...
 #

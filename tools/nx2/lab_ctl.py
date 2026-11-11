@@ -78,7 +78,8 @@ def stop_process(pid, grace=2 if WINDOWS else 10):
     deadline = time.time() + grace
     while pid_alive(pid) and time.time() < deadline:
         time.sleep(0.2)
-    if pid_alive(pid):
+    # Linux: children can outlive the group leader, so the group gets the kill either way.
+    if pid_alive(pid) or not WINDOWS:
         kill_tree(pid, True)
         deadline = time.time() + 5
         while pid_alive(pid) and time.time() < deadline:
@@ -113,7 +114,7 @@ def collect_log(diag):
 def detached_kwargs():
     """Popen arguments that leave a child in its own process group, outliving this command."""
     if WINDOWS:
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008}  # DETACHED_PROCESS
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS}
     return {"start_new_session": True}
 
 
@@ -304,11 +305,10 @@ def command_launch(args):
     binary = args.binary or os.path.join(REPO, "build", "bin", "eden-cli" + (".exe" if WINDOWS else ""))
     log = open(os.path.join(args.diag_dir, "emulator.log"), "w")
     own_log = own_log_path(binary)
-    for name in ("emulator.logpath",):
-        try:
-            os.unlink(os.path.join(args.diag_dir, name))
-        except OSError:
-            pass
+    try:
+        os.unlink(os.path.join(args.diag_dir, "emulator.logpath"))
+    except OSError:
+        pass
     if own_log:
         # The emulator rotates this file on launch; keep the previous run's (the Qt app's, say).
         if os.path.isfile(own_log):
@@ -329,12 +329,18 @@ def command_launch(args):
 
 
 def command_watchdog(args):
+    path = os.path.join(args.diag_dir, "emulator.pid")
+
+    def mine():  # `stop` removes the file and a later launch rewrites it: this run is over then
+        return (read(path) or "").strip() == str(args.pid)
+
     deadline = time.time() + args.seconds
-    while time.time() < deadline and pid_alive(args.pid):
+    while time.time() < deadline and mine() and pid_alive(args.pid):
         time.sleep(1)
-    if pid_alive(args.pid):
-        stop_process(args.pid)
-    collect_log(args.diag_dir)
+    if mine():
+        if pid_alive(args.pid) or not WINDOWS:  # a dead pid may be reused on Windows
+            stop_process(args.pid)
+        collect_log(args.diag_dir)
 
 
 def command_stop(args):

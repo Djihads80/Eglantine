@@ -54,8 +54,10 @@ all without the user. Built on `eden-cli` (SDL frontend) and the shader lab's di
 
 Works on Linux, macOS and Windows (`python` for `python3` on Windows; `launch` runs `eden-cli.exe`
 there and `stop` ends the whole process tree). The tools need only the standard library. Image
-work (`flash_scan.py`, contact sheets, non-TGA stats) uses the `images` extra, which `uv` keeps in
-`tools/nx2/.venv` instead of a global install: `uv run --project tools/nx2 --extra images python -I <script>`.
+work (`flash_scan.py`, contact sheets, non-TGA stats) needs numpy and pillow: on Linux install the
+system packages (`python3-numpy`, `python3-pillow`) and run `python3 -I <script>`; on Windows use
+the `images` extra, which `uv` keeps in `tools/nx2/.venv` instead of a global install:
+`uv run --project tools/nx2 --extra images python -I <script>`.
 
 ```bash
 L="python3 -I tools/nx2/lab_ctl.py -d $D"       # $D: a scratch diag dir, run from the repo root
