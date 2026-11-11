@@ -68,6 +68,7 @@ add_executable(tests
     video_core/h264_packet.cpp
     video_core/vertex_repack.cpp
     video_core/virtual_range_cache.cpp
+    video_core/query_copy.cpp
     video_core/ampere_lowering.cpp
     video_core/spirv_software_matrix.cpp
     video_core/ampere_geometry.cpp
@@ -100,7 +101,7 @@ target_link_libraries(tests PRIVATE ${PLATFORM_LIBRARIES} Catch2::Catch2WithMain
 add_test(NAME tests COMMAND tests)
 
 # needed for vma
-if (NOT MSVC)
+if(NOT MSVC)
     target_compile_options(tests PRIVATE
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-conversion>
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-unused-variable>
