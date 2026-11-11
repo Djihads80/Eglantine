@@ -1138,6 +1138,17 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     finish_upgrade(main_upgrade, pipeline_cache_filename);
     finish_upgrade(mesh_upgrade, mesh_pipeline_cache_filename);
 
+    // Before the background builds start: Intel's Windows driver crashes reading the cache while
+    // a build runs (CanReadPipelineCacheDuringBuilds).
+    if (use_vulkan_pipeline_cache) {
+        SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
+                                     CACHE_VERSION);
+        size_t size = 0;
+        vulkan_pipeline_cache.Read(&size, nullptr);
+        last_cache_size.store(size, std::memory_order_relaxed);
+        last_flush = std::chrono::steady_clock::now();
+    }
+
     if (!deferred_graphics.empty() && !stop_loading.stop_requested()) {
         const size_t threads = BackgroundPipelineThreads();
         LOG_INFO(Render_Vulkan, "Building {} cached graphics pipelines in the background ({} threads)",
@@ -1184,15 +1195,6 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                 pipeline.reset();
             });
         }
-    }
-
-    if (use_vulkan_pipeline_cache) {
-        SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
-                                     CACHE_VERSION);
-        size_t size = 0;
-        vulkan_pipeline_cache.Read(&size, nullptr);
-        last_cache_size.store(size, std::memory_order_relaxed);
-        last_flush = std::chrono::steady_clock::now();
     }
 
     if (state.statistics) {
