@@ -368,13 +368,24 @@ file reads mean the game is loading.
 
 ### Cold hints
 
-Every 600 frames the texture and buffer caches page out the guest memory of what they uploaded,
-and every 30 s the `nx2:ColdHint` thread pages out sparse and GPU-only regions
-(`HostMemory::HintCold`, `MADV_PAGEOUT`). Each pass stalls the GPU threads while it runs: in a
-Mario Kart World cup it was 58% of the time lost to spikes, and turning it off cut that from
-2.1 s to 0.5 s a minute and the frames over 100 ms from 192 to 40. It is off by default
-(Performance > RAM, `cold_hints`); `EDEN_NX2_COLD_HINT=0/1` or the `cold_hints` MCP tool
-(`{"enable": bool}`) override the setting until the emulator exits.
+The texture and buffer caches hand back the guest memory of what they uploaded every 600 frames,
+and the `nx2:ColdHint` thread that of sparse and GPU-only regions every 30 s
+(`HostMemory::HintCold`). Performance > RAM sets what that does (`cold_hint_mode`):
+
+| Mode | What a pass does |
+|---|---|
+| Off (default) | Nothing |
+| When RAM is low | Marks the memory cold (`MADV_COLD`): the kernel reclaims it first when it needs RAM, and nothing is compressed or written now. GPU-only regions are marked once. While memory is low (PSI of this process's cgroup or the system over 5% in the last 10 s, or less than a tenth of RAM available), pages it out instead. Windows only acts while memory is low. |
+| Always | Pages the memory out (`MADV_PAGEOUT`) at each pass |
+
+Paging out works through 8 MiB pieces and pauses between them. `MADV_PAGEOUT` at each pass is
+what made Mario Kart World stall: it was 58% of the time lost to frame spikes in a cup, and with
+it off that time fell from 2.1 s to 0.5 s a minute and the frames over 100 ms from 192 to 40.
+Marking cold costs about 40 ms of background CPU per 2 GB (OoT).
+
+`EDEN_NX2_COLD_HINT=off|low|always` or the `cold_hints` MCP tool (`{"mode": "off" |
+"when_ram_is_low" | "always"}`, which also reports `memory_low`) override the setting until the
+emulator exits. Each pass logs how much it marked cold or paged out.
 
 ## Rejecting programs from startup
 
