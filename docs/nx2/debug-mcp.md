@@ -366,6 +366,16 @@ Reading one: most of the frame in `game` with the GPU threads idle means the gam
 zones say where); long run-queue waits mean the host CPU is oversubscribed; many page faults and
 file reads mean the game is loading.
 
+### Cold hints
+
+Every 600 frames the texture and buffer caches page out the guest memory of what they uploaded,
+and every 30 s the `nx2:ColdHint` thread pages out sparse and GPU-only regions
+(`HostMemory::HintCold`, `MADV_PAGEOUT`). Each pass stalls the GPU threads while it runs: in a
+Mario Kart World cup it was 58% of the time lost to spikes, and turning it off cut that from
+2.1 s to 0.5 s a minute and the frames over 100 ms from 192 to 40. It is off by default
+(Performance > RAM, `cold_hints`); `EDEN_NX2_COLD_HINT=0/1` or the `cold_hints` MCP tool
+(`{"enable": bool}`) override the setting until the emulator exits.
+
 ## Rejecting programs from startup
 
 `EDEN_NX2_REJECT_HASH=<hash>,...` rejects native programs by native program key (shader dump file
