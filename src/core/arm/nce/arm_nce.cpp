@@ -178,7 +178,8 @@ bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, voi
 
 bool ArmNce::HandleGuestIllegalInstruction(GuestContext* guest_ctx, void* raw_info,
                                            void* raw_context) {
-    // knob2: skip undefined instructions in guest code, as Dynarmic does
+    // knob2 (debug_knobs bit 2, value 4): skip undefined instructions in guest code instead of
+    // halting the thread, like Dynarmic, which logs them and carries on.
     if (Settings::GetDebugKnobAt(2)) {
         static_cast<ucontext_t*>(raw_context)->uc_mcontext.pc += 4;
         return true;
@@ -197,13 +198,34 @@ void ArmNce::HandleHostAccessFault(int sig, void* raw_info, void* raw_context) {
     return g_orig_segv_action.sa_sigaction(sig, static_cast<siginfo_t*>(raw_info), raw_context);
 }
 
+// Only SA_SIGINFO is looked at in the previous action's flags; SA_RESETHAND and SA_NODEFER are not
+// emulated. A library that installs its own SIGILL handler after NCE does replaces this one, and
+// guest SIGILLs then reach that handler instead.
 void ArmNce::HandleHostIllegalInstruction(int sig, void* raw_info, void* raw_context) {
+    auto* const info = static_cast<siginfo_t*>(raw_info);
     if (g_orig_ill_action.sa_flags & SA_SIGINFO) {
-        return g_orig_ill_action.sa_sigaction(sig, static_cast<siginfo_t*>(raw_info), raw_context);
+        return g_orig_ill_action.sa_sigaction(sig, info, raw_context);
     }
-    if (g_orig_ill_action.sa_handler == SIG_DFL || g_orig_ill_action.sa_handler == SIG_IGN) {
-        // Restore the original disposition; the instruction faults again on return.
+
+    // si_code <= 0 means the signal was sent (kill, tgkill, raise) rather than raised by a faulting
+    // instruction, so returning does not deliver it again.
+    const bool sent = info->si_code <= 0;
+    if (g_orig_ill_action.sa_handler == SIG_IGN) {
+        if (sent) {
+            // Drop it, but keep this handler installed for guest SIGILLs.
+            return;
+        }
+        // The kernel kills on a faulting instruction whose SIGILL is ignored.
         Common::SigAction(sig, &g_orig_ill_action, nullptr);
+        return;
+    }
+    if (g_orig_ill_action.sa_handler == SIG_DFL) {
+        Common::SigAction(sig, &g_orig_ill_action, nullptr);
+        if (sent) {
+            // Pending until this handler returns, then the default action runs.
+            raise(sig);
+        }
+        // Otherwise the instruction faults again on return.
         return;
     }
     g_orig_ill_action.sa_handler(sig);
