@@ -28,7 +28,7 @@ all without the user. Built on `eden-cli` (SDL frontend) and the shader lab's di
   command chain ends with `lab_ctl stop`. A forgotten hidden emulator holds the user's GPU and
   they'll have to force-kill it.
 - **Keep runs short.** The user's own checks take 1-2 minutes; boot-to-save (~130 s with
-  `scripts/to_gameplay.sh`) plus about 1 minute of gameplay is enough for a fix check. Don't run
+  `scripts/lab_scenarios.py gameplay`) plus about 1 minute of gameplay is enough for a fix check. Don't run
   4-5 minute walks or sleep through long fixed waits. Ask before a long series of runs if the user
   may be at the PC.
 - **Use the user's graphics settings, your key bindings.** `eden-cli` reads `sdl2-config.ini`, whose
@@ -51,6 +51,11 @@ all without the user. Built on `eden-cli` (SDL frontend) and the shader lab's di
   `frame - fence - pacing` rather than by frame time.
 
 ## Tooling (repo `tools/nx2/lab_ctl.py`, branch `scratch/oot-shader-lab`)
+
+Works on Linux, macOS and Windows (`python` for `python3` on Windows; `launch` runs `eden-cli.exe`
+there and `stop` ends the whole process tree). The tools need only the standard library. Image
+work (`flash_scan.py`, contact sheets, non-TGA stats) uses the `images` extra, which `uv` keeps in
+`tools/nx2/.venv` instead of a global install: `uv run --project tools/nx2 --extra images python -I <script>`.
 
 ```bash
 L="python3 -I tools/nx2/lab_ctl.py -d $D"       # $D: a scratch diag dir, run from the repo root
@@ -98,8 +103,8 @@ $L stop
    only in one frame. Single captures while walking miss them.
 8b. **Flashes with a still camera: burst-capture every present.** Launch with
    `--env EDEN_NX2_FRAME_CAPTURE=<dir>` and write N to `<dir>/burst`: the next N presents are saved
-   as `nx2-frame-<present>.tga` (every 2nd in practice, the readback is async). `scripts/oot_burst.sh
-   <tag> <N> [launch args]` boots, bursts and stops; `scripts/flash_scan.py <dir> <sheet.png>` finds
+   as `nx2-frame-<present>.tga` (every 2nd in practice, the readback is async). `scripts/lab_scenarios.py
+   burst <tag> <N>` boots, bursts and stops; `scripts/flash_scan.py <dir> <sheet.png>` (needs the `images` extra) finds
    pixels >0.3 brighter than the median of the 8 frames around them and makes a sheet of the worst
    event. 400-600 frames (20-30 s in the lab) caught ~1 flash per run in OoT.
 9. **A/B a fix against the build without it** when the symptom is intermittent: save the fix
@@ -159,8 +164,16 @@ tr -d '\000' < $LOG | grep -a -E "LogSettings: M- Renderer.gpu_accuracy|GPU thre
 
 - `references/ocarina-of-time.md`: OOT paths, timings, key sequence and findings (network
   programs, stand-in behaviour, colour-cast status).
-- `scripts/to_gameplay.sh`: boot OOT hidden and load the newest save (template for other titles).
-  Extra args go to `launch`; a later `--config`/`--binary` overrides the script's.
+- `scripts/lab_scenarios.py`: `gameplay` boots OOT hidden and loads the newest save; `burst <tag> <N>`,
+  `watch <tag> <seconds>` (flash watcher) and `survey <tag> [steps]` build on it. The game comes from
+  `--game` or `EDEN_NX2_GAME`, the scratch folder from `-d`; options go before the scenario
+  (`--tensor`, `--env NAME=VALUE`, `--binary`, `--config`, `--max-seconds`). It waits by polling
+  (title up, load screen dark then bright) instead of fixed sleeps, copies the configuration into
+  the scratch folder with the keyboard bindings from `sdl2-config.ini` merged in and the audio
+  muted, and refuses to start while another eden-cli/eglantine runs. `PRE="<scancode> <ms>;..."`
+  turns the camera or walks before a burst or watch. A template for other titles: change the key
+  steps in `to_gameplay`.
 - `references/gpu-split-hangs.md`: freeze signatures, GPU split invariants, fence-behaviour modes,
   lab configs per fence mode, live stacks under gdb.
-- `scripts/eden-gdb.sh`: `eden-cli` under gdb for `launch --binary` (stacks on SIGINT).
+- `scripts/eden-gdb.sh`: `eden-cli` under gdb for `launch --binary` (stacks on SIGINT). Linux only;
+  on Windows attach `cdb` to the pid instead.

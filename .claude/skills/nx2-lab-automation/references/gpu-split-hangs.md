@@ -42,7 +42,7 @@ the first-boot shader rebuild or the log before theorising.
 
 Lab config for a fence mode: copy `$D/qt-copy.ini` and set `gpu_fence_behavior\default=false`,
 `gpu_fence_behavior=<0 Default|1 Immediate|2 Balanced|3 Accurate>`. Pass it as an extra
-`--config` after `to_gameplay.sh` (argparse keeps the last). `eden-cli` doesn't log the settings
+`--config` to `lab_scenarios.py` (it copies the file, merges the keyboard bindings and mutes it). `eden-cli` doesn't log the settings
 dump, so confirm the mode by its effect.
 
 ## Getting live stacks of a hang
