@@ -398,19 +398,24 @@ capture rules change.
 
 ## Unattended debug sessions
 
-`tools/nx2/debug-session.sh [eglantine args]` starts the emulator with the MCP server and this
-debug server on, and `tools/nx2/session_watch.py` records evidence next to it in
-`<data>/eglantine/debug-sessions/<timestamp>/`:
+`python3 -I tools/nx2/debug_session.py [--binary EXE] [--] [eglantine args]` (Linux and Windows)
+starts the emulator with the MCP server and this debug server on, and `tools/nx2/session_watch.py`
+records evidence next to it in `<data>/debug-sessions/<timestamp>/` (`<data>` is the emulator's data
+folder: `%APPDATA%\eglantine`, or `user\` next to a portable build's exe, or `~/.local/share/eglantine`):
 
 - `timeline.jsonl`: the MCP timeline with repeats collapsed and IPC calls counted per command.
   `ipc-tail.jsonl` keeps the last 4000 IPC calls in full.
 - `snap-*`: status, screenshot, threads and backtraces, taken on a crash event, a burst of unmapped
   guest accesses, a host fault or device loss. The burst also pauses the emulator.
-- `stderr.txt` and `crashtrace.txt`: the emulator's stderr and a backtrace of the faulting thread,
-  written by `crashtrace.so` (built from `tools/nx2/crashtrace.c` and preloaded by the script).
-  Kernel core dumps are off for the run. A `-g1` build gives file and line in the trace.
+- `stderr.txt`, and on Linux `crashtrace.txt`: the emulator's stderr and a backtrace of the faulting
+  thread, written by `crashtrace.so` (built from `tools/nx2/crashtrace.c` and preloaded by the
+  script). Kernel core dumps are off for the run. A `-g1` build gives file and line in the trace.
+  On Windows the script sets `EDEN_NX2_CRASH_DUMP`, so `eden-cli` writes a minidump (the Qt build
+  writes its own) and prints the faulting stack to stderr; the watcher reads the dump with `cdb`
+  (WinDbg from the Store or the SDK debuggers) and takes symbols from the pdbs next to the exe.
 - `POSTMORTEM.md`: written when the server goes away: triggers, symbolized trace, stderr tail,
-  systemd's crash line, and the last log and IPC events.
+  the system's crash line (systemd on Linux, the Application event log on Windows), and the last
+  log and IPC events.
 
 `WATCH_ARGS` replaces the watcher options. The default traces IPC of the `nx2:` services
 (`--ipc-prefix nx2:`); set it empty to trace nothing, or add `--no-pause`.
