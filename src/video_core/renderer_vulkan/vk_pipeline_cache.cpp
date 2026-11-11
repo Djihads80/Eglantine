@@ -1538,14 +1538,14 @@ bool PipelineCache::CanSkipDraw() const noexcept {
 bool PipelineCache::BuildNewGraphicsPipeline() {
     if (const auto pending{translating_graphics.find(graphics_key)};
         pending != translating_graphics.end()) {
-        // An earlier draw queued it. A draw that can't be skipped waits for it whole.
-        const std::shared_future<void> done{pending->second};
+        // An earlier draw queued it. A draw that can't be skipped needs it now.
+        const QueuedGraphicsTranslation queued{pending->second};
         if (CanSkipDraw()) {
-            if (!WaitForGraphicsTranslation(done)) {
+            if (!WaitForGraphicsTranslation(queued.done)) {
                 return false;
             }
         } else {
-            done.wait();
+            FinishGraphicsTranslation(queued);
         }
         AdoptTranslatedGraphicsPipelines();
         return graphics_cache.contains(graphics_key);
@@ -2046,11 +2046,13 @@ struct TranslationReport {
     u32 ready_in_time{};
     u32 skipped{};
     u32 adopted{};
+    u32 claimed{}; ///< Translated on the GPU thread for a draw that can't be skipped
     u64 parallel{};
     size_t peak_queued{};
     size_t copied_bytes{};
     Duration preparation{};
     Duration waited{};
+    Duration unskippable{}; ///< GPU thread time on draws that can't be skipped
     Duration worker{};
     Duration latency{}; ///< Queued to finished, summed over adopted pipelines
     Duration max_latency{};
@@ -2062,16 +2064,17 @@ struct TranslationReport {
             return;
         }
         const auto ms = [](Duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
-        if (queued != 0 || not_detached != 0 || adopted != 0) {
+        if (queued != 0 || not_detached != 0 || adopted != 0 || claimed != 0) {
             LOG_INFO(Render_Vulkan,
                      "Async translation in the last 10 s: {} queued ({} KiB copied, {:.1f} ms "
                      "preparing), {} ready in time, {} draws skipped, {} not detached; {:.1f} ms "
                      "waited; {} adopted, {:.1f} ms on workers, latency {:.1f} ms mean {:.1f} ms "
-                     "max, peak {} queued, {} with stages in parallel",
+                     "max, peak {} queued, {} with stages in parallel; {} taken from the queue "
+                     "for draws that can't be skipped, {:.1f} ms on those draws",
                      queued, copied_bytes / 1024, ms(preparation), ready_in_time, skipped,
                      not_detached, ms(waited), adopted, ms(worker),
                      adopted != 0 ? ms(latency) / adopted : 0.0, ms(max_latency), peak_queued,
-                     parallel);
+                     parallel, claimed, ms(unskippable));
         }
         *this = TranslationReport{};
     }
@@ -2100,13 +2103,17 @@ std::optional<std::shared_future<void>> PipelineCache::QueueGraphicsTranslation(
         }
         copied += environments.envs[index].SnapshotSizeBytes();
     }
-    std::promise<void> promise;
-    std::shared_future<void> done{promise.get_future().share()};
-    translating_graphics.emplace(graphics_key, done);
+    auto task{std::make_shared<PendingGraphicsTranslation>()};
+    task->envs = std::move(environments.envs);
+    task->queued_at = begin;
+    std::shared_future<void> done{task->done.get_future().share()};
+    translating_graphics.emplace(graphics_key, QueuedGraphicsTranslation{done, task});
     report.peak_queued = std::max(report.peak_queued, translating_graphics.size());
-    translation_workers->QueueWork([this, key = graphics_key, envs = std::move(environments.envs),
-                                    promise = std::move(promise), queued_at = begin]() mutable {
-        TranslateGraphicsPipeline(key, std::move(envs), std::move(promise), queued_at);
+    translation_workers->QueueWork([this, key = graphics_key, task] {
+        if (!task->claimed.exchange(true)) {
+            TranslateGraphicsPipeline(key, std::move(task->envs), std::move(task->done),
+                                      task->queued_at);
+        }
     });
     ++report.queued;
     report.copied_bytes += copied;
@@ -2138,6 +2145,21 @@ bool PipelineCache::WaitForGraphicsTranslation(const std::shared_future<void>& d
     report.skipped += ready ? 0 : 1;
     report.Log();
     return ready;
+}
+
+void PipelineCache::FinishGraphicsTranslation(const QueuedGraphicsTranslation& queued) {
+    auto& report{GetTranslationReport()};
+    const auto begin = std::chrono::steady_clock::now();
+    if (!queued.task->claimed.exchange(true)) {
+        // Still in the queue, possibly behind hundreds of others: translate it here.
+        ++report.claimed;
+        TranslateGraphicsPipeline(graphics_key, std::move(queued.task->envs),
+                                  std::move(queued.task->done), queued.task->queued_at);
+    }
+    // A worker that started it first finishes one translation.
+    queued.done.wait();
+    report.unskippable += std::chrono::steady_clock::now() - begin;
+    report.Log();
 }
 
 void PipelineCache::TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& key,

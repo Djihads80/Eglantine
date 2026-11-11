@@ -164,6 +164,19 @@ private:
         std::chrono::steady_clock::duration latency{}; ///< Queued to finished
     };
 
+    /// A queued translation. Whoever claims it first runs it: a worker, or the GPU thread for a
+    /// draw that can't be skipped, which then doesn't wait for the queue to reach it.
+    struct PendingGraphicsTranslation {
+        std::atomic_bool claimed{};
+        GraphicsEnvironmentArray envs;
+        std::promise<void> done;
+        std::chrono::steady_clock::time_point queued_at;
+    };
+    struct QueuedGraphicsTranslation {
+        std::shared_future<void> done;
+        std::shared_ptr<PendingGraphicsTranslation> task;
+    };
+
     [[nodiscard]] bool CanTranslateAsynchronously() const;
 
     /// Queues graphics_key's translation on a worker. Nothing when an environment can't be
@@ -173,7 +186,11 @@ private:
     /// Waits within the per-pipeline and per-frame budgets. True when the translation is done.
     bool WaitForGraphicsTranslation(const std::shared_future<void>& done);
 
-    /// Runs on a translation worker.
+    /// Runs a queued translation on the GPU thread unless a worker already started it, then
+    /// waits for it.
+    void FinishGraphicsTranslation(const QueuedGraphicsTranslation& queued);
+
+    /// Runs on a translation worker, or on the GPU thread for a claimed translation.
     void TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& key,
                                    GraphicsEnvironmentArray envs, std::promise<void> done,
                                    std::chrono::steady_clock::time_point queued_at);
@@ -315,7 +332,7 @@ private:
     u64 translation_frame{}; ///< frame_count when translation_frame_left was last reset
     size_t num_translation_threads{};
     /// Keys being translated on a worker (GPU thread only).
-    ::Common::unordered_map<GraphicsPipelineCacheKey, std::shared_future<void>> translating_graphics;
+    ::Common::unordered_map<GraphicsPipelineCacheKey, QueuedGraphicsTranslation> translating_graphics;
     std::mutex translated_mutex;
     std::vector<TranslatedGraphicsPipeline> translated_graphics;
     std::atomic<size_t> num_translated{};
