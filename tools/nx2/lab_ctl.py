@@ -79,6 +79,9 @@ def stop_process(pid, grace=2 if WINDOWS else 10):
         time.sleep(0.2)
     if pid_alive(pid):
         kill_tree(pid, True)
+        deadline = time.time() + 5
+        while pid_alive(pid) and time.time() < deadline:
+            time.sleep(0.1)
 
 
 def detached_kwargs():
