@@ -61,6 +61,7 @@ add_executable(tests
     video_core/memory_manager_runs.cpp
     video_core/nx2_sparse_residency.cpp
     video_core/spirv_storage_alignment.cpp
+    video_core/pipeline_cache_dir.cpp
     video_core/pipeline_optimization.cpp
     video_core/spirv_atomic_retry.cpp
     video_core/spirv_fragment_shuffle.cpp
