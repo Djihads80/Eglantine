@@ -263,6 +263,18 @@ void SetAppDirectory(const std::string& app_directory);
 [[nodiscard]] std::string GetLegacyPathString(EmuPath legacy_path);
 
 /**
+ * Gets the directory that holds a title's Vulkan pipeline cache files.
+ * Mario Kart World keeps them in a subdirectory of its shader cache directory.
+ *
+ * @param shader_dir Shader cache directory
+ * @param title_id Title ID
+ *
+ * @returns The Vulkan pipeline cache directory of the title.
+ */
+[[nodiscard]] std::filesystem::path GetVulkanPipelineCacheDir(
+    const std::filesystem::path& shader_dir, u64 title_id);
+
+/**
  * Sets a new filesystem path associated with the EdenPath enum.
  * If the filesystem object at new_path is not a directory, this function will not do anything.
  *

@@ -251,7 +251,10 @@ void RemoveTransferableShaderCache(u64 program_id, GameListRemoveTarget target) 
         }
     }();
     const auto shader_cache_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir);
-    const auto shader_cache_folder_path = shader_cache_dir / fmt::format("{:016x}", program_id);
+    const auto shader_cache_folder_path =
+        target == GameListRemoveTarget::VkShaderCache
+            ? Common::FS::GetVulkanPipelineCacheDir(shader_cache_dir, program_id)
+            : shader_cache_dir / fmt::format("{:016x}", program_id);
     const auto target_file = shader_cache_folder_path / target_file_name;
 
     if (!Common::FS::Exists(target_file)) {
@@ -272,8 +275,8 @@ void RemoveVulkanDriverPipelineCache(u64 program_id) {
     static constexpr std::string_view target_file_name = "vulkan_pipelines.mythos.bin";
 
     const auto shader_cache_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir);
-    const auto shader_cache_folder_path = shader_cache_dir / fmt::format("{:016x}", program_id);
-    const auto target_file = shader_cache_folder_path / target_file_name;
+    const auto target_file =
+        Common::FS::GetVulkanPipelineCacheDir(shader_cache_dir, program_id) / target_file_name;
 
     if (!Common::FS::Exists(target_file)) {
         return;
