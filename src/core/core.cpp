@@ -267,15 +267,16 @@ struct System::Impl {
 
         timezone_service->SetDeviceLocationName(name);
 
-        u64 time_offset = 0;
+        s64 time_offset = 0;
         if (Settings::values.custom_rtc_enabled) {
             time_offset = Settings::values.custom_rtc_offset.GetValue();
         }
 
         const auto posix_time = std::chrono::system_clock::now().time_since_epoch();
-        const u64 current_time =
-            +std::chrono::duration_cast<std::chrono::seconds>(posix_time).count();
-        const u64 new_time = current_time + time_offset;
+        const s64 current_time =
+            std::chrono::duration_cast<std::chrono::seconds>(posix_time).count();
+        const s64 target_time = current_time + time_offset;
+        const u64 new_time = static_cast<u64>((std::max<s64>)(0, target_time));
 
         Service::PSC::Time::SystemClockContext context{};
         settings_service->SetUserSystemClockContext(context);
