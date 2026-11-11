@@ -26,6 +26,14 @@ DECLARE_ENUM_FLAG_OPERATORS(MemoryPermission)
  * A low level linear memory buffer, which supports multiple mappings
  * Its purpose is to rebuild a given sparse memory layout, including mirrors.
  */
+/// Whether HostMemory::HintCold pages memory out. Its passes stall the GPU threads for as long as
+/// they run (Mario Kart World: 60-700 ms every 600 frames, the longer the session the longer).
+/// The cold_hints setting (off by default), unless EDEN_NX2_COLD_HINT=0/1 or the MCP cold_hints
+/// tool overrides it.
+[[nodiscard]] bool ColdHintsEnabled();
+/// Overrides the setting until the process ends.
+void SetColdHintsEnabled(bool enabled);
+
 class HostMemory {
 public:
     explicit HostMemory(size_t backing_size_, size_t virtual_size_);

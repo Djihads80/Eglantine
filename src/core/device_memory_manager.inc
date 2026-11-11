@@ -190,6 +190,9 @@ void DeviceMemoryManager<Traits>::HintCold(DAddr address, size_t size) {
         VAddr virtual_address; ///< 0: no CPU mapping known
         u64 size;
     };
+    if (!Common::ColdHintsEnabled()) {
+        return;
+    }
     std::vector<Run> runs;
     const size_t page_end = Common::DivCeil(address + size, Memory::YUZU_PAGESIZE);
     for (size_t page = address >> Memory::YUZU_PAGEBITS; page < page_end; ++page) {

@@ -1430,6 +1430,9 @@ private:
     // is read again only when the texture cache builds an image over it, so the OS may compress or
     // page it out before anything else. Last member: stops before the regions are destroyed.
     void HintColdBacking() {
+        if (!Common::ColdHintsEnabled()) {
+            return;
+        }
         struct Range {
             u64 physical_offset;
             u64 virtual_address;

@@ -61,6 +61,7 @@
 #include "common/free_region_manager.h"
 #include "common/host_memory.h"
 #include "common/logging.h"
+#include "common/settings.h"
 
 #if defined(__ANDROID__) && __ANDROID_API__ < 30
 #include <sys/syscall.h>
@@ -802,9 +803,27 @@ void HostMemory::Protect(size_t virtual_offset, size_t length, MemoryPermission 
 #endif
 }
 
+namespace {
+// -1: follow the setting; 0 or 1: overridden.
+std::atomic<int> g_cold_hints_override{[] {
+    const char* const value = std::getenv("EDEN_NX2_COLD_HINT");
+    return value == nullptr || value[0] == '\0' ? -1 : value[0] == '0' ? 0 : 1;
+}()};
+} // Anonymous namespace
+
+bool ColdHintsEnabled() {
+    const int override_value = g_cold_hints_override.load(std::memory_order_relaxed);
+    return override_value < 0 ? Settings::values.cold_hints.GetValue() : override_value != 0;
+}
+
+void SetColdHintsEnabled(bool enabled) {
+    g_cold_hints_override.store(enabled ? 1 : 0, std::memory_order_relaxed);
+    LOG_INFO(Common_Memory, "Cold hints {}", enabled ? "on" : "off");
+}
+
 void HostMemory::HintCold(size_t physical_offset, size_t length,
                           std::optional<size_t> virtual_offset) const {
-    if (length == 0 || backing_base == nullptr) {
+    if (length == 0 || backing_base == nullptr || !ColdHintsEnabled()) {
         return;
     }
     const auto hint = [length](u8* address) {

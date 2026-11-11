@@ -29,6 +29,7 @@
 #include "mcp/host.h"
 #include "mcp/tool_registry.h"
 #include "mcp/tools/tool_helpers.h"
+#include "common/host_memory.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/nx2_spikes.h"
 
@@ -423,6 +424,21 @@ ToolResult FrameSpikes(ToolContext&, const json& args) {
     return ToolResult::Structured(std::move(out));
 }
 
+/// cold_hints tool: reads or sets whether uploaded guest memory is paged out (HostMemory::HintCold).
+ToolResult ColdHints(ToolContext&, const json& args) {
+    if (args.contains("enable")) {
+        Common::SetColdHintsEnabled(args["enable"].get<bool>());
+    }
+    return ToolResult::Structured(json{
+        {"enabled", Common::ColdHintsEnabled()},
+        {"legend", "On: every 600 frames the guest memory of uploaded textures and buffers, and "
+                   "every 30 s that of sparse and GPU-only regions, is paged out "
+                   "(madvise MADV_PAGEOUT), which lowers RAM use but stalls the GPU threads "
+                   "while it runs. Off: nothing is paged out from now on. Without an override it "
+                   "follows the cold_hints setting (Performance > RAM, off by default); "
+                   "EDEN_NX2_COLD_HINT=0/1 or this tool override it until the emulator exits."}});
+}
+
 /// baseline_save tool: wraps BaselineSave, turning its error into a tool error.
 ToolResult BaselineSaveTool(ToolContext& ctx, const json& args) {
     std::string error;
@@ -500,6 +516,18 @@ void RegisterPerfTools(ToolRegistry& registry) {
         .annotations = {.read_only = true},
         .requires_game = true,
         .handler = BaselineCheckTool,
+    });
+    registry.Add(Tool{
+        .name = "cold_hints",
+        .title = "Cold hints",
+        .description = "Read or set (enable) whether the emulator pages out guest memory it "
+                       "considers cold: uploaded textures and buffers every 600 frames, sparse "
+                       "and GPU-only regions every 30 s. Lowers RAM use; each pass stalls the "
+                       "GPU threads while it runs.",
+        .input_schema = {{"type", "object"},
+                         {"properties", {{"enable", {{"type", "boolean"}}}}},
+                         {"additionalProperties", false}},
+        .handler = ColdHints,
     });
     registry.Add(Tool{
         .name = "frame_spikes",
