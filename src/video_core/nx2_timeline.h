@@ -147,12 +147,13 @@ public:
                 ms(wake_after_back), ms(total_wait), ms(front_cpu_total), ms(back_cpu_total));
             const u64 keep_front = previous_front_cpu;
             const u64 keep_back = previous_back_cpu;
+            const u64 keep_return = previous_return;
             *this = FrameStats{};
             previous_front_cpu = keep_front;
             previous_back_cpu = keep_back;
             previous_seq = last;
             previous_enter = enter;
-            previous_return = previous_return;
+            previous_return = keep_return;
         }
     }
 
