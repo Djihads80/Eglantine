@@ -7,6 +7,7 @@
 #include <memory>
 #include <span>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -80,10 +81,12 @@ enum class GameFileKind : u8 {
 /// Walks one archive file (zstd, DCX, SARC, BND4, BFSHA, BNSH, effect bundles, CGSB, SHN, BAHS)
 /// and calls `on_record` for every shader program found. Errors inside a SARC or BND4 member
 /// go to `on_member_error` and the walk goes on; other errors throw ArchiveError (programs
-/// already reported stay valid, like the Python generator).
+/// already reported stay valid, like the Python generator). Once `stop` is requested, the
+/// containers not yet unpacked are skipped.
 void WalkArchive(std::span<const u8> data, const std::string& name,
                  const ZstdDictionaries* dictionaries,
                  const std::function<void(const ShaderRecord&)>& on_record,
-                 const std::function<void(const std::string&)>& on_member_error);
+                 const std::function<void(const std::string&)>& on_member_error,
+                 std::stop_token stop = {});
 
 } // namespace VideoCommon::ShaderWarm

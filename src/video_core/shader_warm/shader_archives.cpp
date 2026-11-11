@@ -756,6 +756,7 @@ struct Walker {
     const ZstdDictionaries* dictionaries;
     const std::function<void(const ShaderRecord&)>& on_record;
     const std::function<void(const std::string&)>& on_member_error;
+    std::stop_token stop;
 
     /// Passes every record to the caller's record callback.
     void Emit(const std::vector<Record>& records) const {
@@ -776,6 +777,9 @@ struct Walker {
     /// Detects the container format by its magic and unpacks or parses it, recursing into members.
     /// Known non-shader files are skipped; other unknown data throws.
     void Walk(Bytes data, const std::string& name, int depth) const {
+        if (stop.stop_requested()) {
+            return;
+        }
         if (depth > 12) {
             throw ArchiveError("excessive container nesting");
         }
@@ -897,8 +901,9 @@ GameFileKind ClassifyGameFile(std::string_view path) {
 void WalkArchive(std::span<const u8> data, const std::string& name,
                  const ZstdDictionaries* dictionaries,
                  const std::function<void(const ShaderRecord&)>& on_record,
-                 const std::function<void(const std::string&)>& on_member_error) {
-    const Walker walker{dictionaries, on_record, on_member_error};
+                 const std::function<void(const std::string&)>& on_member_error,
+                 std::stop_token stop) {
+    const Walker walker{dictionaries, on_record, on_member_error, std::move(stop)};
     walker.Walk(data, name, 0);
 }
 

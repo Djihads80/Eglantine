@@ -81,7 +81,7 @@ struct GameFiles {
 /// Opens the game file and collects its RomFS trees into `game`. Returns the error text when the
 /// file cannot be opened or has no RomFS.
 std::optional<std::string> OpenGame(Core::System& system, const fs::path& game_path,
-                                    GameFiles& game) {
+                                    GameFiles& game, std::stop_token stop) {
     FileSys::VirtualFilesystem filesystem = system.GetFilesystem();
     if (filesystem == nullptr) {
         filesystem = std::make_shared<FileSys::RealVfsFilesystem>();
@@ -106,6 +106,9 @@ std::optional<std::string> OpenGame(Core::System& system, const fs::path& game_p
         }
         std::sort(packages.begin(), packages.end());
         for (const size_t package : packages) {
+            if (stop.stop_requested()) {
+                return "Stopped";
+            }
             if (auto dir = game.nup->GetRomFSDir(package)) {
                 game.romfs.push_back(std::move(dir));
             }
@@ -118,6 +121,9 @@ std::optional<std::string> OpenGame(Core::System& system, const fs::path& game_p
         FileSys::VirtualFile romfs;
         if (game.loader->ReadRomFS(romfs) != Loader::ResultStatus::Success || romfs == nullptr) {
             return "Cannot read the game's RomFS (are the keys installed?)";
+        }
+        if (stop.stop_requested()) {
+            return "Stopped";
         }
         if (auto dir = FileSys::ExtractRomFS(romfs)) {
             game.romfs.push_back(std::move(dir));
@@ -441,8 +447,11 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
     };
 
     GameFiles game;
-    if (const auto error = OpenGame(system, game_path, game)) {
+    if (const auto error = OpenGame(system, game_path, game, stop)) {
         return fail(*error);
+    }
+    if (stop.stop_requested()) {
+        return fail("Stopped");
     }
 
     // Archive list, in the offline pipeline's order: every shader archive of each package, then
@@ -477,6 +486,9 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
     archives.insert(archives.end(), effects.begin(), effects.end());
     for (const auto& archive : archives) {
         total_bytes += archive.file->GetSize();
+    }
+    if (stop.stop_requested()) {
+        return fail("Stopped");
     }
     if (dictionary_pack) {
         try {
@@ -572,7 +584,7 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
             LOG_DEBUG(Render_Vulkan, "Shader precache: {}: {}", archive.path, error);
         };
         try {
-            WalkArchive(data, name, &dictionaries, on_record, on_member_error);
+            WalkArchive(data, name, &dictionaries, on_record, on_member_error, stop);
         } catch (const ArchiveError& e) {
             ++archive_errors;
             LOG_WARNING(Render_Vulkan, "Shader precache: {}: {}", archive.path, e.what());

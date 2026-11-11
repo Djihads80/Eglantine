@@ -5532,6 +5532,15 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     }
     close_pending = true;
     game_list->SetScanEnabled(false);
+    if (shader_warm_dialog && shader_warm_dialog->IsRunning()) {
+        // Joining the build on destruction would freeze the window: stop it, close once it ends.
+        event->ignore();
+        connect(shader_warm_dialog, &ShaderWarmDialog::BuildFinished, this, &MainWindow::close,
+                static_cast<Qt::ConnectionType>(Qt::QueuedConnection | Qt::UniqueConnection |
+                                               Qt::SingleShotConnection));
+        shader_warm_dialog->close(); // Stops the build (ShaderWarmDialog::reject)
+        return;
+    }
     if (boot_in_progress) {
         event->ignore();
         return;
