@@ -4,15 +4,25 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <set>
 #include <string>
 #include <vector>
 #include <QObject>
 #include <QWidget>
 #include "qt_common/util/vk.h"
+#include "yuzu/configuration/configuration_shared.h"
 
 class QCheckBox;
 class QLabel;
+
+namespace Core {
+class System;
+}
+
+namespace ConfigurationShared {
+class Builder;
+}
 
 namespace Performance {
 
@@ -67,4 +77,21 @@ private:
     Performance::State& state;
     std::vector<Row> rows;
     std::vector<std::string> recommended_lines; ///< Recommended and supported
+};
+
+/// The RAM tab: settings that trade memory use for smoothness (Category::RendererMemory).
+class ConfigureRam : public ConfigurationShared::Tab {
+    Q_OBJECT
+
+public:
+    explicit ConfigureRam(const Core::System& system_, const ConfigurationShared::Builder& builder,
+                          QWidget* parent = nullptr);
+    ~ConfigureRam() override;
+
+    void ApplyConfiguration() override;
+    void SetConfiguration() override;
+
+private:
+    const Core::System& system;
+    std::vector<std::function<void(bool)>> apply_funcs;
 };

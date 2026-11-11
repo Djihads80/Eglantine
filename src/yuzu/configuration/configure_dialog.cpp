@@ -69,6 +69,7 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
           Performance::Platform::Intel, *performance_state, vk_device_records, this)},
       performance_macos_tab{std::make_unique<ConfigurePerformance>(
           Performance::Platform::MacOs, *performance_state, vk_device_records, this)},
+      performance_ram_tab{std::make_unique<ConfigureRam>(system_, *builder, this)},
       profile_tab{std::make_unique<ConfigureProfileManager>(system_, this)},
       system_tab{std::make_unique<ConfigureSystem>(system_, nullptr, *builder, this)},
       web_tab{std::make_unique<ConfigureWeb>(this)} {
@@ -144,6 +145,7 @@ void ConfigureDialog::ApplyConfiguration() {
     graphics_advanced_tab->ApplyConfiguration();
     graphics_extensions_tab->ApplyConfiguration();
     performance_state->Apply();
+    performance_ram_tab->ApplyConfiguration();
     audio_tab->ApplyConfiguration();
     debug_tab_tab->ApplyConfiguration();
     web_tab->ApplyConfiguration();
@@ -193,7 +195,7 @@ void ConfigureDialog::PopulateSelectionList() {
           {graphics_tab.get(), graphics_advanced_tab.get(), graphics_extensions_tab.get()}},
          {tr("Performance"),
           {performance_nvidia_tab.get(), performance_amd_tab.get(), performance_intel_tab.get(),
-           performance_macos_tab.get()}},
+           performance_macos_tab.get(), performance_ram_tab.get()}},
          {tr("Audio"), {audio_tab.get()}},
          {tr("Controls"), input_tab->GetSubTabs()}},
     };

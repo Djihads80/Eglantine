@@ -16,6 +16,8 @@
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/settings.h"
+#include "core/core.h"
+#include "yuzu/configuration/shared_widget.h"
 #include "yuzu/configuration/configure_performance.h"
 
 namespace Performance {
@@ -406,3 +408,34 @@ void ConfigurePerformance::Refresh() {
         row.box->setChecked(state.IsEnabled(row.line));
     }
 }
+
+ConfigureRam::ConfigureRam(const Core::System& system_, const ConfigurationShared::Builder& builder,
+                           QWidget* parent)
+    : Tab(nullptr, parent), system{system_} {
+    setAccessibleName(tr("RAM"));
+    auto* const layout = new QVBoxLayout(this);
+    for (auto* const setting :
+         Settings::values.linkage.by_category[Settings::Category::RendererMemory]) {
+        ConfigurationShared::Widget* const widget = builder.BuildWidget(setting, apply_funcs);
+        if (widget == nullptr) {
+            continue;
+        }
+        if (!widget->Valid()) {
+            widget->deleteLater();
+            continue;
+        }
+        layout->addWidget(widget);
+    }
+    layout->addStretch(1);
+}
+
+ConfigureRam::~ConfigureRam() = default;
+
+void ConfigureRam::ApplyConfiguration() {
+    const bool is_powered_on = system.IsPoweredOn();
+    for (const auto& func : apply_funcs) {
+        func(is_powered_on);
+    }
+}
+
+void ConfigureRam::SetConfiguration() {}

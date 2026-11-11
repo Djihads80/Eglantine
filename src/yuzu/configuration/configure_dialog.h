@@ -33,6 +33,7 @@ class ConfigureProfileManager;
 class ConfigureSystem;
 class ConfigureNetwork;
 class ConfigurePerformance;
+class ConfigureRam;
 class ConfigureUi;
 class ConfigureWeb;
 
@@ -104,6 +105,7 @@ private:
     std::unique_ptr<ConfigurePerformance> performance_amd_tab;
     std::unique_ptr<ConfigurePerformance> performance_intel_tab;
     std::unique_ptr<ConfigurePerformance> performance_macos_tab;
+    std::unique_ptr<ConfigureRam> performance_ram_tab;
     std::unique_ptr<ConfigureProfileManager> profile_tab;
     std::unique_ptr<ConfigureSystem> system_tab;
     std::unique_ptr<ConfigureWeb> web_tab;
