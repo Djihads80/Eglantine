@@ -39,7 +39,7 @@ enum class Type {
 
 template <class DeviceTracker, size_t stack_words, size_t size_bytes>
 struct WordManager {
-    using CollectedRanges = std::vector<std::pair<VAddr, u64>>;
+    using CollectedRanges = std::vector<std::pair<VAddr, size_t>>;
 
     static constexpr size_t num_words = Common::DivCeil(size_bytes, BYTES_PER_WORD);
     static_assert(num_words <= 64, "clean_words holds a bit per word");
