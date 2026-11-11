@@ -5320,24 +5320,14 @@ void MainWindow::LoadTranslation() {
     const auto lang = UISettings::values.language.GetValue();
     const QString lang_str = QString::fromStdString(lang);
 
-    const QString exe_lang_dir =
-        QCoreApplication::applicationDirPath() + QStringLiteral("/languages");
-    const QString user_lang_dir =
-        QString::fromStdString(Common::FS::GetEdenPathString(Common::FS::EdenPath::ConfigDir)) +
-        QStringLiteral("/languages");
-
-    const QStringList search_dirs = {
-        QStringLiteral(":/languages/"),
-        exe_lang_dir + QStringLiteral("/"),
-        user_lang_dir + QStringLiteral("/"),
-    };
-
-    for (const auto& dir : search_dirs) {
-        if (dir.startsWith(QLatin1Char{':'}) || QDir(dir).exists()) {
+    for (const auto& dir : GetLanguageSearchDirectories()) {
+        const bool is_resource = dir.startsWith(QLatin1Char{':'});
+        if (is_resource || QDir(dir).exists()) {
+            const QString path = dir.endsWith(QLatin1Char{'/'}) ? dir : dir + QLatin1Char{'/'};
             if (lang.empty()) {
-                loaded = translator.load(QLocale(), {}, {}, dir);
+                loaded = translator.load(QLocale(), {}, {}, path);
             } else {
-                loaded = translator.load(lang_str, dir);
+                loaded = translator.load(lang_str, path);
             }
             if (loaded) {
                 break;

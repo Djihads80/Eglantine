@@ -28,6 +28,7 @@
 #include "core/core.h"
 #include "core/frontend/framebuffer_layout.h"
 #include "ui_configure_ui.h"
+#include "yuzu/util/util.h"
 
 #include "qt_common/config/uisettings.h"
 #include "qt_common/qt_compat.h"
@@ -233,20 +234,8 @@ void ConfigureUi::InitializeLanguageComboBox() {
     QSet<QString> seen_locales;
     seen_locales.insert(QStringLiteral("en"));
 
-    const QString exe_lang_dir =
-        QCoreApplication::applicationDirPath() + QStringLiteral("/languages");
-    const QString user_lang_dir =
-        QString::fromStdString(Common::FS::GetEdenPathString(Common::FS::EdenPath::ConfigDir)) +
-        QStringLiteral("/languages");
-
-    const QStringList search_dirs = {
-        QStringLiteral(":/languages"),
-        exe_lang_dir,
-        user_lang_dir,
-    };
-
-    for (const auto& dir_path : search_dirs) {
-        if (!QDir(dir_path).exists()) {
+    for (const auto& dir_path : GetLanguageSearchDirectories()) {
+        if (!dir_path.startsWith(QLatin1Char{':'}) && !QDir(dir_path).exists()) {
             continue;
         }
         QDirIterator it(dir_path, {QStringLiteral("*.qm")}, QDir::Files);
@@ -256,9 +245,13 @@ void ConfigureUi::InitializeLanguageComboBox() {
             if (seen_locales.contains(locale)) {
                 continue;
             }
+            const QLocale loc(locale);
+            if (loc.language() == QLocale::C) {
+                continue;
+            }
             seen_locales.insert(locale);
-            const QString lang = QLocale::languageToString(QLocale(locale).language());
-            const QString country = QLocale::territoryToString(QLocale(locale).territory());
+            const QString lang = QLocale::languageToString(loc.language());
+            const QString country = QLocale::territoryToString(loc.territory());
             ui->language_combobox->addItem(QStringLiteral("%1 (%2)").arg(lang, country), locale);
         }
     }
