@@ -2417,14 +2417,14 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
     // EDEN_NX2_BIND_STATS=1: how many syncs have nothing to upload.
     static const bool sync_stats = std::getenv("EDEN_NX2_BIND_STATS") != nullptr;
     static std::atomic<u64> sync_total{0}, sync_uploading{0}, sync_idle_cycles{0}, sync_all_cycles{0};
-    static const u64 first_cycles = __builtin_ia32_rdtsc();
+    static const u64 first_cycles = VideoCommon::Nx2DrawStats::Cycles();
     static const auto first_time = std::chrono::steady_clock::now();
-    const u64 sync_start = sync_stats ? __builtin_ia32_rdtsc() : 0;
+    const u64 sync_start = sync_stats ? VideoCommon::Nx2DrawStats::Cycles() : 0;
     const auto note_sync = [&](bool uploaded) {
         if (!sync_stats) {
             return;
         }
-        const u64 cycles = __builtin_ia32_rdtsc() - sync_start;
+        const u64 cycles = VideoCommon::Nx2DrawStats::Cycles() - sync_start;
         sync_all_cycles.fetch_add(cycles, std::memory_order_relaxed);
         if (!uploaded) {
             sync_idle_cycles.fetch_add(cycles, std::memory_order_relaxed);
@@ -2435,7 +2435,7 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
                 std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() -
                                                                      first_time)
                     .count());
-            const double cycles_per_ns = static_cast<double>(__builtin_ia32_rdtsc() - first_cycles) / ns;
+            const double cycles_per_ns = static_cast<double>(VideoCommon::Nx2DrawStats::Cycles() - first_cycles) / ns;
             const u64 idle_syncs = n - sync_uploading.load();
             LOG_INFO(HW_GPU,
                      "nx2 sync stats: {} buffer syncs, {:.1f}% had something to upload; a sync with nothing to upload "
