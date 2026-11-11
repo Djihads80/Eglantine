@@ -2868,11 +2868,11 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             // EDEN_NX2_MESH_EMULATION_DUMP=<dir>: write the emulation's vertex shader for spirv-val.
             if (mesh_emulation && program.stage == Shader::Stage::Mesh) {
                 if (const char* const dump{std::getenv("EDEN_NX2_MESH_EMULATION_DUMP")}) {
-                    const auto& code{mesh_emulation->vertex_spirv};
+                    const auto& vertex_code{mesh_emulation->vertex_spirv};
                     std::ofstream file{fmt::format("{}/{:016x}.vert.spv", dump, hash),
                                        std::ios::binary};
-                    file.write(reinterpret_cast<const char*>(code.data()),
-                               static_cast<std::streamsize>(code.size() * sizeof(u32)));
+                    file.write(reinterpret_cast<const char*>(vertex_code.data()),
+                               static_cast<std::streamsize>(vertex_code.size() * sizeof(u32)));
                 }
             }
             if (index == static_cast<size_t>(Maxwell::ShaderType::Geometry)) {
