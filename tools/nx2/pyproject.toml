@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# The NX2 lab and debugging tools (lab_ctl.py, shader_lab.py, debug_mcp.py, ...) need nothing
+# beyond the standard library. Image work (burst flash scans, contact sheets, non-TGA stats) uses
+# the "images" extra:
+#
+#   uv run --project tools/nx2 --extra images python -I tools/nx2/lab_ctl.py ...
+#
+# `uv run` keeps the packages in tools/nx2/.venv, so nothing is installed globally.
+
+[project]
+name = "eglantine-nx2-tools"
+version = "0.0.0"
+description = "Lab, debug server and shader tooling for NX2 work"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+images = [
+    "numpy",
+    "pillow",
+]
+
+[tool.uv]
+package = false
