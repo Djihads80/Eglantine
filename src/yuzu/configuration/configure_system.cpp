@@ -57,9 +57,8 @@ ConfigureSystem::ConfigureSystem(Core::System& system_,
     ui->setupUi(this);
 
     if (!Settings::IsConfiguringGlobal()) {
-        const bool using_global = Settings::values.custom_rtc_offset.UsingGlobal() &&
-                                  Settings::values.custom_rtc_enabled.UsingGlobal();
-        Settings::values.custom_rtc.SetGlobal(using_global);
+        rtc_using_global = Settings::values.custom_rtc_offset.UsingGlobal() &&
+                           Settings::values.custom_rtc_enabled.UsingGlobal();
     }
 
     rtc_offset = Settings::values.custom_rtc_offset.GetValue();
@@ -94,6 +93,7 @@ ConfigureSystem::ConfigureSystem(Core::System& system_,
         const auto selected_s = date_rtc->dateTime().toSecsSinceEpoch();
         rtc_offset = static_cast<s64>(selected_s - now_s);
         previous_time = static_cast<u64>((std::max<s64>)(0, selected_s));
+        rtc_using_global = false;
 
         if (!Settings::IsConfiguringGlobal() && widget_rtc && widget_rtc->restore_button) {
             widget_rtc->restore_button->setEnabled(true);
@@ -101,6 +101,11 @@ ConfigureSystem::ConfigureSystem(Core::System& system_,
         }
     };
     const auto update_rtc_date = [this](int _) {
+        if (!Settings::IsConfiguringGlobal() && widget_rtc && widget_rtc->restore_button) {
+            rtc_using_global = false;
+            widget_rtc->restore_button->setEnabled(true);
+            widget_rtc->restore_button->setVisible(true);
+        }
         UpdateRtcTime();
     };
 
@@ -116,10 +121,9 @@ ConfigureSystem::ConfigureSystem(Core::System& system_,
 
     if (!Settings::IsConfiguringGlobal() && widget_rtc && widget_rtc->restore_button) {
         connect(widget_rtc->restore_button, &QAbstractButton::clicked, this, [this]() {
-            rtc_offset = static_cast<s64>(std::strtoll(
-                Settings::values.custom_rtc_offset.ToStringGlobal().c_str(), nullptr, 0));
-            const bool global_enabled =
-                Settings::values.custom_rtc_enabled.ToStringGlobal() == "true";
+            rtc_using_global = true;
+            rtc_offset = Settings::values.custom_rtc_offset.GetValue(true);
+            const bool global_enabled = Settings::values.custom_rtc_enabled.GetValue(true);
             if (checkbox_rtc) {
                 const QSignalBlocker blocker(checkbox_rtc);
                 checkbox_rtc->setChecked(global_enabled);
@@ -250,21 +254,12 @@ void ConfigureSystem::ApplyConfiguration() {
         func(powered_on);
     }
 
-    if (checkbox_rtc && checkbox_rtc->isChecked() && date_rtc) {
-        const auto now_s = std::chrono::duration_cast<std::chrono::seconds>(
-                               std::chrono::system_clock::now().time_since_epoch())
-                               .count();
-        rtc_offset = static_cast<s64>(date_rtc->dateTime().toSecsSinceEpoch() - now_s);
-    }
-
     if (Settings::IsConfiguringGlobal()) {
         Settings::values.custom_rtc_offset.SetValue(rtc_offset);
     } else {
-        const bool using_global = widget_rtc && widget_rtc->restore_button
-                                      ? !widget_rtc->restore_button->isEnabled()
-                                      : true;
-        Settings::values.custom_rtc_offset.SetGlobal(using_global);
-        if (!using_global) {
+        Settings::values.custom_rtc.SetGlobal(rtc_using_global);
+        Settings::values.custom_rtc_offset.SetGlobal(rtc_using_global);
+        if (!rtc_using_global) {
             Settings::values.custom_rtc_offset.SetValue(rtc_offset);
         }
     }

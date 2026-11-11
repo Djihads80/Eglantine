@@ -62,5 +62,6 @@ private:
     QCheckBox* checkbox_rtc{nullptr};
     QDateTimeEdit* date_rtc{nullptr};
     s64 rtc_offset{0};
+    bool rtc_using_global{true};
     u64 previous_time;
 };
