@@ -127,6 +127,10 @@ public:
     /// Program metadata without its IR.
     [[nodiscard]] static Shader::IR::Program Summary(const Shader::IR::Program& program);
 
+    /// Whether two programs have the same metadata (what Summary keeps).
+    [[nodiscard]] static bool SameSummary(const Shader::IR::Program& a,
+                                          const Shader::IR::Program& b);
+
     /// Counts for the periodic log line.
     void CountReuse(bool emitted);
     void CountTranslated();

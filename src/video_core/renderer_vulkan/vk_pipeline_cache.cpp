@@ -1885,8 +1885,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             ConvertLegacyToGeneric(program, runtime_info);
             code = EmitSPIRV(profile, runtime_info, program, binding);
             if (emitted) {
+                // The metadata too: it says where descriptors are read from at bind time.
                 if (code != emitted->spirv ||
-                    std::memcmp(&binding, &emitted->bindings_out, sizeof(binding)) != 0) {
+                    std::memcmp(&binding, &emitted->bindings_out, sizeof(binding)) != 0 ||
+                    !StageCache::SameSummary(program, emitted->program)) {
                     stage_cache.CountVerifyMismatch(key.unique_hashes[index]);
                 }
                 stage_cache.CountReuse(true);
@@ -2130,6 +2132,15 @@ struct TranslationReport {
     Duration worker{};
     Duration latency{}; ///< Queued to finished, summed over adopted pipelines
     Duration max_latency{};
+    // Texture pool measurements (late pool read on workers)
+    u32 pool_max{};        ///< Largest pool detached, in entries
+    u64 pool_sum{};
+    u32 pool_small{};      ///< Detached pools of at most 4096 entries (128 KiB)
+    u32 pool_reads{};      ///< Texture reads checked again at adoption
+    u32 pool_changed{};    ///< ... that give another answer now
+    u32 pool_pipelines_changed{};
+    u32 pool_remapped{};
+    u32 pool_dirty{};
     std::chrono::steady_clock::time_point window{std::chrono::steady_clock::now()};
 
     void Log() {
@@ -2149,6 +2160,14 @@ struct TranslationReport {
                      not_detached, ms(waited), adopted, ms(worker),
                      adopted != 0 ? ms(latency) / adopted : 0.0, ms(max_latency), peak_queued,
                      parallel, claimed, ms(unskippable));
+            LOG_INFO(Render_Vulkan,
+                     "Async translation texture pools: {} entries max, {:.0f} mean, {} of {} "
+                     "detached pools with at most 4096 entries; at adoption {} of {} texture "
+                     "reads changed ({} pipelines); pool remapped for {} stages, written by the GPU "
+                     "for {}",
+                     pool_max, queued != 0 ? static_cast<double>(pool_sum) / queued : 0.0,
+                     pool_small, queued, pool_changed, pool_reads, pool_pipelines_changed,
+                     pool_remapped, pool_dirty);
         }
         *this = TranslationReport{};
     }
@@ -2176,6 +2195,16 @@ std::optional<std::shared_future<void>> PipelineCache::QueueGraphicsTranslation(
             return std::nullopt;
         }
         copied += environments.envs[index].SnapshotSizeBytes();
+    }
+    {
+        // Every stage of a pipeline has the same pool: count it once.
+        u32 entries{};
+        for (const auto& env : environments.envs) {
+            entries = std::max(entries, env.TexturePoolEntries());
+        }
+        report.pool_max = std::max(report.pool_max, entries);
+        report.pool_sum += entries;
+        report.pool_small += entries <= 4096 ? 1 : 0;
     }
     auto task{std::make_shared<PendingGraphicsTranslation>()};
     task->envs = std::move(environments.envs);
@@ -2261,6 +2290,9 @@ void PipelineCache::TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& ke
             LOG_ERROR(Render_Vulkan, "Graphics pipeline translation failed: {}", exception.what());
         }
     }
+    for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
+        envs[index].ReleaseSnapshotBuffers();
+    }
     {
         std::scoped_lock lock{translated_mutex};
         translated_graphics.push_back({
@@ -2290,6 +2322,16 @@ void PipelineCache::AdoptTranslatedGraphicsPipelines() {
         report.worker += translated.time;
         report.latency += translated.latency;
         report.max_latency = std::max(report.max_latency, translated.latency);
+        u32 changed{};
+        for (const auto& env : translated.envs) {
+            const auto check{env.CheckTextureReads(*gpu_memory)};
+            report.pool_reads += check.reads;
+            changed += check.changed;
+            report.pool_remapped += check.remapped ? 1 : 0;
+            report.pool_dirty += check.dirty ? 1 : 0;
+        }
+        report.pool_changed += changed;
+        report.pool_pipelines_changed += changed != 0 ? 1 : 0;
         const bool is_mesh{translated.pipeline && translated.pipeline->IsMeshPipeline()};
         const bool built{static_cast<bool>(translated.pipeline)};
         const auto [it, inserted]{graphics_cache.try_emplace(translated.key)};

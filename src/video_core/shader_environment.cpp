@@ -872,6 +872,10 @@ Tegra::Texture::TICEntry GraphicsEnvironment::ReadTextureDescriptor(u32 handle) 
         return ReadTextureInfo(regs.tex_header.Address(), regs.tex_header.limit,
                                via_header_index, handle);
     }
+    return ReadSnapshotDescriptor(handle);
+}
+
+Tegra::Texture::TICEntry GraphicsEnvironment::ReadSnapshotDescriptor(u32 handle) const {
     const auto pair{Tegra::Texture::TexturePair(handle, snapshot->via_header_index)};
     const u32 index{Tegra::Texture::TextureHeaderIndex(pair.first, snapshot->texture_pool_limit,
                                                        snapshot->native_tiling)};
@@ -924,6 +928,7 @@ bool GraphicsEnvironment::Detach(Tegra::MaxwellDeviceMemoryManager& device_memor
         gpu_memory->ReadBlockUnsafe(live.address, copied.bytes.data(), copied.size);
     }
     copy.device_memory = &device_memory;
+    copy.texture_pool_gpu = pool_address;
     copy.texture_pool = *pool_device_address;
     copy.texture_pool_limit = regs.tex_header.limit;
     copy.via_header_index = regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding;
@@ -946,6 +951,50 @@ size_t GraphicsEnvironment::SnapshotSizeBytes() const noexcept {
         total += cbuf.bytes.size();
     }
     return total;
+}
+
+void GraphicsEnvironment::ReleaseSnapshotBuffers() noexcept {
+    if (!snapshot) {
+        return;
+    }
+    for (auto& cbuf : snapshot->const_buffers) {
+        std::vector<u8>{}.swap(cbuf.bytes);
+        cbuf.size = 0;
+    }
+}
+
+u32 GraphicsEnvironment::TexturePoolEntries() const noexcept {
+    return snapshot ? snapshot->texture_pool_limit + 1 : 0;
+}
+
+GraphicsEnvironment::TexturePoolCheck GraphicsEnvironment::CheckTextureReads(
+    const Tegra::MemoryManager& current) const {
+    TexturePoolCheck check;
+    if (!snapshot || (texture_types.empty() && texture_pixel_formats.empty())) {
+        return check;
+    }
+    const size_t pool_size{(size_t{snapshot->texture_pool_limit} + 1) *
+                           sizeof(Tegra::Texture::TICEntry)};
+    const auto device_address{current.GpuToCpuAddress(snapshot->texture_pool_gpu)};
+    if (&current != gpu_memory || !device_address || *device_address != snapshot->texture_pool ||
+        !current.IsContinuousRange(snapshot->texture_pool_gpu, pool_size)) {
+        check.remapped = true;
+        return check;
+    }
+    if (current.IsMemoryDirty(snapshot->texture_pool_gpu, pool_size)) {
+        check.dirty = true;
+        return check;
+    }
+    for (const auto& [handle, type] : texture_types) {
+        ++check.reads;
+        check.changed += ConvertTextureType(ReadSnapshotDescriptor(handle)) != type ? 1 : 0;
+    }
+    for (const auto& [handle, format] : texture_pixel_formats) {
+        ++check.reads;
+        check.changed +=
+            ConvertTexturePixelFormat(ReadSnapshotDescriptor(handle)) != format ? 1 : 0;
+    }
+    return check;
 }
 
 ComputeEnvironment::ComputeEnvironment(Tegra::Engines::KeplerCompute& kepler_compute_,

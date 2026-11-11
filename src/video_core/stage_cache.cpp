@@ -355,6 +355,14 @@ Shader::IR::Program StageCache::Summary(const Shader::IR::Program& program) {
     return summary;
 }
 
+bool StageCache::SameSummary(const Shader::IR::Program& a, const Shader::IR::Program& b) {
+    return a.info == b.info && a.stage == b.stage && a.workgroup_size == b.workgroup_size &&
+           a.output_topology == b.output_topology && a.output_vertices == b.output_vertices &&
+           a.invocations == b.invocations && a.local_memory_size == b.local_memory_size &&
+           a.shared_memory_size == b.shared_memory_size &&
+           a.is_geometry_passthrough == b.is_geometry_passthrough && a.mesh == b.mesh;
+}
+
 void StageCache::CountReuse(bool emitted) {
     (emitted ? reused_emitted : reused_translation).fetch_add(1, std::memory_order_relaxed);
     Log();
