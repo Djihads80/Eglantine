@@ -68,7 +68,7 @@ TEST_CASE("Ampere guarded ULEA with a uniform carry keeps the guard and guest pr
             for (const bool negated_guard : {false, true}) {
                 const u32 guard_field = (negated_guard ? 8U : 0U) | guard_up;
                 const Instruction native{{0x00000291U | (guard_field << 12) | (ur_d << 16) | (ur_a << 24),
-                                          ur_b, 0x0f80203fU & ~(7U << 17) | (carry_up << 17), 0x000fe200}};
+                                          ur_b, (0x0f80203fU & ~(7U << 17)) | (carry_up << 17), 0x000fe200}};
                 const auto lowered = LowerToMaxwell(std::array{native, Exit});
                 REQUIRE(static_cast<bool>(lowered));
                 constexpr std::array<std::array<u32, 2>, 4> samples{{
