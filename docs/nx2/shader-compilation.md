@@ -20,7 +20,9 @@ How a new Switch 2 pipeline gets built, which costs were measured (Ocarina of Ti
 4. The driver builds the pipeline: about 1 ms from its own disk cache, tens of ms when it compiles.
 
 Draws that can't be skipped (no depth, 6 elements or fewer), compute pipelines and Switch 1 programs
-still translate on the GPU thread.
+still translate on the GPU thread. A draw that can't be skipped whose pipeline an earlier draw
+queued takes it out of the queue and translates it itself, unless a worker already started it,
+instead of waiting for the queue to reach it.
 
 ## Measurements
 
@@ -77,10 +79,20 @@ so a dispatch that converts to the same SPIR-V doesn't wait for the driver. A `.
 skips this until the driver, device or file changes. Graphics programs aren't pre-compiled: their
 pipelines need draw state that only exists at runtime.
 
+The precache waits while the game builds pipelines (translations or driver compiles queued, or a
+pipeline built in the last 250 ms), so it uses idle time instead of competing with a loading burst
+for the CPU and the driver. A dispatch that needs a program the precache hasn't started drops it
+from the precache, which leaves it to that dispatch; one in progress is waited for (up to 250 ms),
+so the dispatch's own build finds it in the driver's cache.
+
 OoT: 1,458 archives, 3,978 compute programs in 1.2 s; 136 of the 141 compute pipelines in its
-disk cache are among them (keys match; SPIR-V can still differ where a guess is wrong). The boot
-built the other 3,842 in 36.8 s on 4 background threads. Those builds show up in the "Driver
-pipeline builds" lines while they run.
+disk cache are among them. The boot built the other 3,842 in 36.8 s on 4 background threads.
+
+Of those 136, 127 give the game's SPIR-V byte for byte (local memory, texture bank and the
+other environment fields match in all of them). The other 9 read a game constant (bank 1,
+offset 0, a different value in each) that the precache guesses as 0; no guess can match those.
+`EGLANTINE_WARM_IDENTITY=<shader dir>/<title id> ./tests "[.warm_identity]"` repeats the check
+(`EGLANTINE_WARM_IDENTITY_OUT=<file>` lists the pairs and each one's first wrong guess).
 
 `eden-cli --build-warm <game> <title id hex> <output dir>` runs the builder without the GUI.
 
@@ -99,14 +111,16 @@ pipeline; stored once, ~11 KiB a pipeline remains. A pipeline builds from its bi
 
 ```
 NVIDIA driver shader cache in <path>, limit <bytes>
-Driver pipeline builds at boot: <n> graphics, <n> compute; <n> over 10 ms ...
-Driver pipeline builds in the last 10 s: ...; <n> over 10 ms (compiled, not from the driver's cache); <mean> ms mean, <max> ms max
-Async translation in the last 10 s: ... latency <mean> ms mean <max> ms max, peak <n> queued ...
+Driver pipeline builds at boot: <n> graphics, <n> over 10 ms, ...; <n> compute, ...
+Driver pipeline builds in the last 10 s: <n> graphics, <n> over 10 ms, <mean> ms mean, <max> ms max; <n> compute, ...; shader precache: <n> compute, ...
+Async translation in the last 10 s: ... latency <mean> ms mean <max> ms max, peak <n> queued, ...; <n> taken from the queue for draws that can't be skipped, <ms> ms on those draws
+Shader precache: <n> compute programs built in <s> s (<s> s of it waiting for the game's own builds); <n> left to dispatches that needed them first, <n> in progress when a dispatch needed them
 Stage cache: <n> stages reused whole, <n> translations reused, <n> translated
 ```
 
-Many builds over 10 ms on a second boot of the same scene mean the driver's cache is missing:
-too small, wiped, or shared with other applications.
+Builds over 10 ms were compiled, not taken from the driver's cache. Many of them in the game's
+graphics or compute on a second boot of the same scene mean the driver's cache is missing: too
+small, wiped, or shared with other applications. The precache's builds are counted apart.
 
 ## Switches
 
@@ -133,6 +147,6 @@ way.
 2. Switch 2 titles build every cached pipeline at boot. A 120k cache needs a cap or a recently-used
    selection, whatever the driver cache does (driver memory, boot time).
 3. Windows: leave the driver environment alone; decide from tester logs.
-4. Pre-compiling from the game's files: compute is done (see above). Next: measure whether
-   the guessed reads give the runtime's SPIR-V, and look at the walker's member errors (8,728
+4. Pre-compiling from the game's files: compute is done, and its SPIR-V matches the game's for
+   93% of OoT's programs (see above). Next: look at the walker's member errors (8,728
    on OoT).
