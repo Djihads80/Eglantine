@@ -1037,13 +1037,13 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     }
     // update engine as channel may be different.
     pipeline->SetEngine(maxwell3d, gpu_memory);
-    const u32 repack_dirty = buffer_cache_runtime.SetVertexRepackLayout(
+    u32 repack_dirty = buffer_cache_runtime.SetVertexRepackLayout(
         maxwell3d->regs, pipeline->HasDynamicVertexInput());
-    if (repack_dirty) {
+    if (repack_dirty &= VideoCommon::VERTEX_BUFFER_MASK) {
         auto& flags = maxwell3d->dirty.flags;
         flags[VideoCommon::Dirty::VertexBuffers] = true;
         flags[Dirty::VertexInput] = true;
-        for (u32 binding = 0; binding < 32; ++binding) {
+        for (u32 binding = 0; binding < VideoCommon::NUM_VERTEX_BUFFERS; ++binding) {
             if (repack_dirty & (1U << binding)) {
                 flags[VideoCommon::Dirty::VertexBuffer0 + binding] = true;
             }
