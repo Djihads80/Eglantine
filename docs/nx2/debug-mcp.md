@@ -338,6 +338,34 @@ drained every 256 MiB and a capture stops at 2 GiB (`"truncated": true` in the s
 A runtime capture uses up an `EDEN_NX2_FRAME_DUMP_AT` capture that has not fired yet: they share
 one `FrameDump`. Vulkan only.
 
+## Frame spike recorder
+
+`EDEN_NX2_SPIKES=1` (or `=<ms>`, the threshold) at launch, or the `frame_spikes` tool of the
+in-app MCP server (`--mcp`) live, keeps the frames that took far longer than the others with what
+happened during each (`src/video_core/nx2_spikes.*`). A frame runs from one guest present
+(`nx2:vi2` 229) to the next; a spike is one over `min_ms` (50) and over `ratio` (2) times the
+median of the last 120 frames. Each spike gets:
+
+- the present split, which adds up to the frame: the previous present's GPU fence wait (Eden's GPU
+  thread finishing the frame before), composite and vblank pacing, then the game's own time until
+  it presents again;
+- each GPU thread's profiler zones during the frame (the recorder turns the GPU profiler on);
+  `other (no zone)` is time in no zone or in one still running at the present;
+- on Linux, CPU time and run-queue wait (runnable, waiting for a CPU) per host thread from
+  `/proc/self/task/*/schedstat`, sampled every 20 ms on a thread of its own, plus the process's
+  page faults and file reads;
+- driver pipeline builds and compiles, pipelines built on the GPU thread, draws skipped while
+  their pipeline translates, and the log lines of the frame.
+
+Each spike is also logged as one `Frame spike #n` line (at most 4 a second). The tool returns the
+newest `limit` spikes in full and the worst 8 as those lines; `enable`, `min_ms`, `ratio` and
+`clear` change it live.
+
+Reading one: most of the frame in `game` with the GPU threads idle means the game's CPU side
+(compare `CPUCore_*` CPU time with the frame); a long `fence` wait means Eden's GPU threads (their
+zones say where); long run-queue waits mean the host CPU is oversubscribed; many page faults and
+file reads mean the game is loading.
+
 ## Rejecting programs from startup
 
 `EDEN_NX2_REJECT_HASH=<hash>,...` rejects native programs by native program key (shader dump file
