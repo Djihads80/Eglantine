@@ -15,6 +15,16 @@ enum class Kind { Graphics, Compute };
 /// whether the driver's own cache works on their system. Thread safe.
 void Record(Kind kind, std::chrono::steady_clock::duration time);
 
+/// Builds recorded on this thread while it lives are the shader precache's: they are counted
+/// apart, so the game's own builds show whether the driver's cache served them.
+class PrecacheScope {
+public:
+    PrecacheScope();
+    ~PrecacheScope();
+    PrecacheScope(const PrecacheScope&) = delete;
+    PrecacheScope& operator=(const PrecacheScope&) = delete;
+};
+
 /// Logs the builds since the last summary (the pipelines built at boot) and starts over.
 void LogSummary(const char* when);
 

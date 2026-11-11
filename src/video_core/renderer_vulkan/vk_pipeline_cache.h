@@ -9,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <deque>
 #include <filesystem>
@@ -315,6 +316,24 @@ private:
     /// A marker skips it after it ran to the end for this driver and device.
     void StartShaderPrecache(u64 title_id);
     void StopShaderPrecache();
+    /// Precache builds wait while the game builds pipelines (queued translations or driver
+    /// compiles, or a pipeline built in the last moments): they share the CPU and the driver.
+    bool RuntimeBuildsBusy() const;
+    void WaitForIdleRuntimeBuilds();
+    /// A dispatch needs `key` (GPU thread): a precache build not started yet is dropped, one in
+    /// progress is waited for, briefly, so the dispatch's build finds it in the driver's cache.
+    void ClaimPrecacheProgram(const ComputePipelineCacheKey& key);
+    enum class PrecacheState : u8 { Queued, Building, Done, Claimed };
+    /// Programs the precache queued, by key. Filled before the workers start, then only the
+    /// states change.
+    std::unordered_map<ComputePipelineCacheKey, std::atomic<PrecacheState>> precache_states;
+    std::mutex precache_mutex;
+    std::condition_variable precache_condvar;
+    std::atomic<size_t> precache_claimed{}; ///< Dropped: the game built them first
+    std::atomic<size_t> precache_waited{};  ///< In progress when the game needed them
+    std::atomic<s64> precache_paused_us{};
+    /// steady_clock ticks of the last pipeline the game built or queued.
+    std::atomic<s64> last_runtime_build{};
     std::atomic_bool precache_stop{};
     std::atomic<size_t> precache_left{};
     std::atomic<size_t> precache_built{};

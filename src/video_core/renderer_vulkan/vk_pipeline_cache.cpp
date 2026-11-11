@@ -880,6 +880,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
     ++new_compute_pipelines;
     if (precache_keys.contains(key.Hash())) {
         ++precached_compute_pipelines;
+        ClaimPrecacheProgram(key);
     }
     pipeline = CreateComputePipeline(key, shader);
     return pipeline.get();
@@ -1475,35 +1476,102 @@ void PipelineCache::StartShaderPrecache(u64 title_id) {
              programs.size(), entries, threads);
     precache_left.store(programs.size(), std::memory_order_relaxed);
     precache_start = std::chrono::steady_clock::now();
+    for (const auto& [key, env] : programs) {
+        precache_states.try_emplace(key, PrecacheState::Queued);
+    }
     precache_workers.reset(new Common::ThreadWorker(threads, "VkShaderPrecache", {},
                                                     Common::ThreadPlacement::Background));
     for (auto& [key, env] : programs) {
         precache_workers->QueueWork([this, key, env = std::move(env), write_marker]() mutable {
+            WaitForIdleRuntimeBuilds();
             if (precache_stop.load(std::memory_order_relaxed)) {
                 return;
             }
-            try {
-                static const VideoCommon::GuessMissing guess{};
-                env.SetGuessMissing(&guess);
-                ShaderPools pools;
-                // Built and destroyed here, never bound: only the driver's cache keeps it.
-                if (CreateComputePipeline(pools, key, env, nullptr, false)) {
-                    precache_built.fetch_add(1, std::memory_order_relaxed);
+            auto& state{precache_states.at(key)};
+            PrecacheState expected{PrecacheState::Queued};
+            if (state.compare_exchange_strong(expected, PrecacheState::Building)) {
+                try {
+                    static const VideoCommon::GuessMissing guess{};
+                    env.SetGuessMissing(&guess);
+                    ShaderPools pools;
+                    // Built and destroyed here, never bound: only the driver's cache keeps it.
+                    const DriverBuildReport::PrecacheScope precache_scope;
+                    if (CreateComputePipeline(pools, key, env, nullptr, false)) {
+                        precache_built.fetch_add(1, std::memory_order_relaxed);
+                    }
+                } catch (const std::exception& e) {
+                    LOG_DEBUG(Render_Vulkan, "Shader precache: {}", e.what());
                 }
-            } catch (const std::exception& e) {
-                LOG_DEBUG(Render_Vulkan, "Shader precache: {}", e.what());
+                {
+                    std::scoped_lock lock{precache_mutex};
+                    state.store(PrecacheState::Done);
+                }
+                precache_condvar.notify_all();
             }
             if (precache_left.fetch_sub(1, std::memory_order_acq_rel) == 1 &&
                 !precache_stop.load(std::memory_order_relaxed)) {
                 write_marker();
-                LOG_INFO(Render_Vulkan, "Shader precache: {} compute programs built in {:.1f} s",
+                LOG_INFO(Render_Vulkan,
+                         "Shader precache: {} compute programs built in {:.1f} s ({:.1f} s of it "
+                         "waiting for the game's own builds); {} left to dispatches that needed "
+                         "them first, {} in progress when a dispatch needed them",
                          precache_built.load(std::memory_order_relaxed),
                          std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                                        precache_start)
-                             .count());
+                             .count(),
+                         precache_paused_us.load(std::memory_order_relaxed) / 1e6,
+                         precache_claimed.load(std::memory_order_relaxed),
+                         precache_waited.load(std::memory_order_relaxed));
             }
         });
     }
+}
+
+bool PipelineCache::RuntimeBuildsBusy() const {
+    // Long enough to cover the gaps between a loading burst's pipelines.
+    constexpr std::chrono::milliseconds Quiet{250};
+    const auto last = std::chrono::steady_clock::time_point{
+        std::chrono::steady_clock::duration{last_runtime_build.load(std::memory_order_relaxed)}};
+    return (translation_workers && translation_workers->PendingWork() != 0) ||
+           workers.PendingWork() != 0 || std::chrono::steady_clock::now() - last < Quiet;
+}
+
+void PipelineCache::WaitForIdleRuntimeBuilds() {
+    const auto begin = std::chrono::steady_clock::now();
+    bool paused = false;
+    while (!precache_stop.load(std::memory_order_relaxed) && RuntimeBuildsBusy()) {
+        paused = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
+    if (paused) {
+        precache_paused_us.fetch_add(std::chrono::duration_cast<std::chrono::microseconds>(
+                                         std::chrono::steady_clock::now() - begin)
+                                         .count(),
+                                     std::memory_order_relaxed);
+    }
+}
+
+void PipelineCache::ClaimPrecacheProgram(const ComputePipelineCacheKey& key) {
+    const auto it{precache_states.find(key)};
+    if (it == precache_states.end()) {
+        return;
+    }
+    auto& state{it->second};
+    PrecacheState expected{PrecacheState::Queued};
+    if (state.compare_exchange_strong(expected, PrecacheState::Claimed)) {
+        precache_claimed.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (expected != PrecacheState::Building) {
+        return;
+    }
+    // When its SPIR-V matches the dispatch's, the dispatch's build then takes about 1 ms from
+    // the driver's cache instead of compiling a second time. Bounded: a cold compile takes
+    // tens of ms, and a precache thread runs below normal priority.
+    precache_waited.fetch_add(1, std::memory_order_relaxed);
+    std::unique_lock lock{precache_mutex};
+    precache_condvar.wait_for(lock, std::chrono::milliseconds{250},
+                              [&] { return state.load() != PrecacheState::Building; });
 }
 
 void PipelineCache::StopShaderPrecache() {
@@ -1923,6 +1991,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
     const auto begin = std::chrono::steady_clock::now();
     SCOPE_EXIT {
         ReportRuntimePipeline("Graphics", begin);
+        last_runtime_build.store(std::chrono::steady_clock::now().time_since_epoch().count(),
+                                 std::memory_order_relaxed);
     };
     GraphicsEnvironments environments;
     GetGraphicsEnvironments(environments, graphics_key.unique_hashes);
@@ -2109,6 +2179,7 @@ std::optional<std::shared_future<void>> PipelineCache::QueueGraphicsTranslation(
     std::shared_future<void> done{task->done.get_future().share()};
     translating_graphics.emplace(graphics_key, QueuedGraphicsTranslation{done, task});
     report.peak_queued = std::max(report.peak_queued, translating_graphics.size());
+    last_runtime_build.store(begin.time_since_epoch().count(), std::memory_order_relaxed);
     translation_workers->QueueWork([this, key = graphics_key, task] {
         if (!task->claimed.exchange(true)) {
             TranslateGraphicsPipeline(key, std::move(task->envs), std::move(task->done),
@@ -2236,6 +2307,8 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     const auto begin = std::chrono::steady_clock::now();
     SCOPE_EXIT {
         ReportRuntimePipeline("Compute", begin);
+        last_runtime_build.store(std::chrono::steady_clock::now().time_since_epoch().count(),
+                                 std::memory_order_relaxed);
     };
     const GPUVAddr program_base{kepler_compute->regs.code_loc.Address()};
     const auto& qmd{kepler_compute->launch_description};

@@ -120,6 +120,12 @@ public:
         });
     }
 
+    /// Tasks queued or running.
+    [[nodiscard]] size_t PendingWork() const noexcept {
+        return work_scheduled.load(std::memory_order_relaxed) -
+               work_done.load(std::memory_order_relaxed);
+    }
+
     // Drops tasks no worker has started. Running tasks still finish.
     void ClearRequests() {
         std::scoped_lock lock{queue_mutex};

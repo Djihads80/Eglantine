@@ -3,6 +3,9 @@
 
 #include <algorithm>
 #include <mutex>
+#include <string>
+
+#include <fmt/format.h>
 
 #include "common/common_types.h"
 #include "common/logging.h"
@@ -14,28 +17,47 @@ namespace {
 // Over this, the driver compiled the pipeline instead of taking it from its cache.
 constexpr std::chrono::milliseconds CompiledThreshold{10};
 
-struct Totals {
-    u64 graphics{};
-    u64 compute{};
+thread_local bool precache_thread{};
+
+struct Bucket {
+    u64 count{};
     u64 compiled{};
     std::chrono::steady_clock::duration total{};
     std::chrono::steady_clock::duration max{};
 
-    void Add(Kind kind, std::chrono::steady_clock::duration time) {
-        ++(kind == Kind::Graphics ? graphics : compute);
+    void Add(std::chrono::steady_clock::duration time) {
+        ++count;
         compiled += time > CompiledThreshold ? 1 : 0;
         total += time;
         max = std::max(max, time);
     }
 
-    void Log(const char* what) const {
+    std::string Format(const char* what) const {
         const auto ms = [](auto d) { return std::chrono::duration<double, std::milli>(d).count(); };
-        const u64 count = graphics + compute;
-        LOG_INFO(Render_Vulkan,
-                 "Driver pipeline builds {}: {} graphics, {} compute; {} over {} ms (compiled, not "
-                 "from the driver's cache); {:.1f} ms mean, {:.1f} ms max",
-                 what, graphics, compute, compiled, CompiledThreshold.count(),
-                 count != 0 ? ms(total) / static_cast<double>(count) : 0.0, ms(max));
+        if (count == 0) {
+            return fmt::format("0 {}", what);
+        }
+        return fmt::format("{} {}, {} over {} ms, {:.1f} ms mean, {:.1f} ms max", count, what,
+                           compiled, CompiledThreshold.count(),
+                           ms(total) / static_cast<double>(count), ms(max));
+    }
+};
+
+struct Totals {
+    Bucket graphics;
+    Bucket compute;
+    Bucket precache;
+
+    void Add(Kind kind, std::chrono::steady_clock::duration time) {
+        (precache_thread ? precache : kind == Kind::Graphics ? graphics : compute).Add(time);
+    }
+
+    void Log(const char* what) const {
+        // Over the threshold: compiled, not from the driver's cache.
+        LOG_INFO(Render_Vulkan, "Driver pipeline builds {}: {}; {}{}", what,
+                 graphics.Format("graphics"), compute.Format("compute"),
+                 precache.count != 0 ? "; shader precache: " + precache.Format("compute")
+                                     : std::string{});
     }
 };
 
@@ -45,6 +67,14 @@ Totals summary;
 std::chrono::steady_clock::time_point window_start{std::chrono::steady_clock::now()};
 
 } // Anonymous namespace
+
+PrecacheScope::PrecacheScope() {
+    precache_thread = true;
+}
+
+PrecacheScope::~PrecacheScope() {
+    precache_thread = false;
+}
 
 void Record(Kind kind, std::chrono::steady_clock::duration time) {
     std::scoped_lock lock{mutex};
