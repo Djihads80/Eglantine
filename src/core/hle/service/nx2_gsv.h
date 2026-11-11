@@ -2195,6 +2195,7 @@ private:
                 path = fmt::format("{}/capture-{}.tga", VideoCommon::Nx2Diag::DrawListDir().string(), *id);
             }
         }
+        const bool screenshot_requested = !path.empty();
         // A "burst" file holding N in <dir> saves the next N presents instead (one-frame artifacts).
         if (directory != nullptr && (m_presents % 30) == 0) {
             const auto burst = std::filesystem::path{directory} / "burst";
@@ -2219,7 +2220,7 @@ private:
         // frames with a burst of near-white pixels (a one-frame white flash of a lit surface).
         static const bool flash_watch = std::getenv("EDEN_NX2_FLASH_WATCH") != nullptr;
         std::string watch_dir;
-        if (flash_watch && directory != nullptr && m_burst_left == 0) {
+        if (flash_watch && directory != nullptr && m_burst_left == 0 && !screenshot_requested) {
             watch_dir = directory;
             path = watch_dir + "/flash-watch.tga";
             if (m_last_capture == nullptr) {

@@ -108,6 +108,19 @@ Crashes (`svcBreak`, fatal) are posted as `crash` timeline events with the threa
 
 With `mcp_token` set, pass `Authorization: Bearer <token>` (or `?token=` in a browser).
 
+## Windows
+
+The server and the tools run the same on Windows (checked with `eden-cli --mcp` on Ocarina of Time:
+about 30 read-only tools, screenshots, button input, `/` dashboard, `/events/wait`, the Host and
+Origin checks, `quit_emulator`). Notes:
+
+- `mcp-server.json` is in `%APPDATA%\eglantine` (or `user\` next to a portable build's exe).
+- `tools/mcp/scripts/mcp.py` and `tools/nx2/debug_mcp.py` run with `python` or `py`; the project
+  `.mcp.json` starts the debug adapter as `python3`, so change it to `python` or `py` if that name is
+  not on your PATH.
+- Run the tools from native Windows Python; the MSYS `python` in Git Bash rejects `C:/` paths.
+- `tools/nx2/debug_session.py` and `tools/nx2/lab_ctl.py` / `lab_scenarios.py` cover unattended runs.
+
 ## eden-cli
 
 `eden-cli --mcp [--mcp-port N] [--mcp-allow-writes] -g <game>` serves the same tools for

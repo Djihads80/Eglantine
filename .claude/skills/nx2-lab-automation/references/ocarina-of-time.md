@@ -7,10 +7,11 @@
 
 ## Reaching a scene
 
-- Title screen with 3D background after ~90 s (first boot of a build is longer: pipelines compile).
+- Title screen with 3D background after ~90 s on the original Linux machine, ~28 s on a Windows PC
+  with a warm cache (a first boot of a build is longer: pipelines compile). The scenario polls for it.
 - `press a` (hold 200) at the title -> load screen; `a` again picks the newest save, `a` confirms;
   gameplay ~40-75 s later (Kokiri Forest in the user's save).
-- Script: `scripts/to_gameplay.sh` in this skill.
+- Script: `scripts/lab_scenarios.py gameplay` in this skill (game path: `--game` or `EDEN_NX2_GAME`).
 
 ## Findings so far (2026-11-05)
 
