@@ -8,6 +8,9 @@ output can be followed by a person or an agent.
 
     python3 -I tools/nx2/session_watch.py --out DIR [--binary build/bin/eglantine] [--no-pause]
 
+On Windows a crash is read from a minidump with cdb (WinDbg) and the Application event log; set
+EDEN_NX2_CRASH_DUMP=<crash dir> for eden-cli to write one.
+
 Read-only except for two opt-outs: pausing on guest corruption (--no-pause) and IPC tracing
 (--ipc-prefix, off by default). Nothing is written to the emulator otherwise.
 """
@@ -25,7 +28,37 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DATA = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "eglantine"
+
+
+def data_dir(binary=None):
+    """The emulator's data folder (log, crash_dumps): %APPDATA%/eglantine on Windows, or user/ next
+    to a portable build's exe, else $XDG_DATA_HOME/eglantine."""
+    if os.name == "nt":
+        if binary:
+            portable = Path(binary).resolve().parent / "user"
+            if portable.is_dir():
+                return portable
+        return Path(os.environ.get("APPDATA") or Path.home() / "AppData/Roaming") / "eglantine"
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "eglantine"
+
+
+def find_cdb():
+    """The Windows console debugger (WinDbg's package or the SDK's), which reads minidumps."""
+    exe = shutil.which("cdb")
+    if exe or os.name != "nt":
+        return exe
+    kits = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Windows Kits/10/Debuggers/x64/cdb.exe"
+    if kits.is_file():
+        return str(kits)
+    try:  # the folder of an installed package can't be listed, only its files opened
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                              "(Get-AppxPackage -Name Microsoft.WinDbg | Select-Object -First 1).InstallLocation"],
+                             capture_output=True, text=True, timeout=60).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    candidate = Path(out) / "amd64" / "cdb.exe" if out else None
+    return str(candidate) if candidate and candidate.is_file() else None
+
 TOKEN = os.environ.get("EGLANTINE_MCP_TOKEN", "")
 NUMBER = re.compile(r"0x[0-9a-fA-F]+|\d+")
 UNMAPPED = re.compile(r"Unmapped (?:Read|Write)\d+ @")
@@ -245,10 +278,31 @@ class Watcher:
         return sorted(p for p in Path(self.a.crash_dir).glob("*.dmp")
                       if p.stat().st_mtime >= self.started)
 
+    def cdb_stack(self, cdb, dump):
+        """The crashed thread of a minidump through cdb, with symbols from the build's pdbs."""
+        command = [cdb, "-z", str(dump), "-c", ".exr -1; .ecxr; k 30; q"]
+        if self.a.binary:
+            command[1:1] = ["-y", str(Path(self.a.binary).resolve().parent)]
+        r = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=300)
+        (self.out / "stackwalk.txt").write_text(r.stdout + "\n--- stderr (tail) ---\n" + r.stderr[-2000:])
+        lines, frames, listing = r.stdout.splitlines(), [], False
+        head = [x.strip() for x in lines if re.match(r"\s*(ExceptionCode|ExceptionAddress)", x)]
+        for x in lines:
+            if "Call Site" in x:
+                listing = True
+            elif listing:
+                if not re.match(r"[0-9a-f]{8}`[0-9a-f]{8} ", x):
+                    break
+                frames.append(x.rstrip())
+        return "\n".join(head + frames[:25]) or "no stack in the cdb output (see stackwalk.txt)"
+
     def stackwalk(self, dump):
         exe = shutil.which("minidump_stackwalk")
         if not exe:
-            return "minidump_stackwalk not installed"
+            cdb = find_cdb()
+            if cdb:
+                return self.cdb_stack(cdb, dump)
+            return "minidump_stackwalk not installed" + (", and no cdb (install WinDbg)" if os.name == "nt" else "")
         r = subprocess.run([exe, str(dump), str(self.symbols)], capture_output=True, text=True,
                            timeout=180)
         (self.out / "stackwalk.txt").write_text(r.stdout + "\n--- stderr (tail) ---\n" + r.stderr[-2000:])
@@ -284,6 +338,28 @@ class Watcher:
                 if not resolved.startswith("??"):
                     lines[i] = f"{lines[i].strip()}  =>  {resolved}"
         return "\n".join(lines)
+
+    def system_notes(self):
+        """What the OS recorded about the process ending: the Application event log on Windows,
+        the kernel and systemd journal elsewhere."""
+        try:
+            if os.name == "nt":
+                script = ("Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime="
+                          f"[DateTimeOffset]::FromUnixTimeSeconds({int(self.started)}).LocalDateTime}} "
+                          "-ErrorAction SilentlyContinue | Where-Object { $_.Message -match 'eglantine|eden-cli' } "
+                          "| Select-Object -First 5 | ForEach-Object { $_.TimeCreated.ToString('s') + ' ' + "
+                          "(($_.Message -split \"`r?`n\")[0]) }")
+                out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                                     capture_output=True, text=True, timeout=60).stdout
+                return "Windows event log", [x for x in out.splitlines() if x.strip()] or [
+                    "no crash line in the Application event log"]
+            j = subprocess.run(["journalctl", "--since", f"@{int(self.started)}", "--no-pager"],
+                               capture_output=True, text=True).stdout
+            hits = [x for x in j.splitlines()
+                    if re.search(r"eglantine.*(segfault|trap)|\(eglantine\).*terminated abnormally", x)]
+            return "Kernel / systemd", hits[-5:] or ["no crash line in the journal"]
+        except (OSError, subprocess.SubprocessError) as e:
+            return "System log", [f"unavailable: {e}"]
 
     def post_mortem(self):
         self.say("EMULATOR GONE: collecting evidence")
@@ -322,12 +398,8 @@ class Watcher:
             shutil.copy2(self.a.log, self.out / "eden_log.txt")
         except OSError:
             pass
-        j = subprocess.run(["journalctl", "--since", f"@{int(self.started)}", "--no-pager"],
-                           capture_output=True, text=True).stdout
-        hits = [x for x in j.splitlines()
-                if re.search(r"eglantine.*(segfault|trap)|\(eglantine\).*terminated abnormally", x)]
-        report += ["", "## Kernel / systemd", "```",
-                   *(hits[-5:] or ["no crash line in the journal"]), "```",
+        title, hits = self.system_notes()
+        report += ["", f"## {title}", "```", *hits, "```",
                    "", "## Last log events", "```"]
         report += [f"{e['seq']} [{e['kind']}] {e['source']}: {e['msg'][:160]}" for e in recent]
         report += ["```", "", "## Last IPC calls (full list in ipc-tail.jsonl)", "```"]
@@ -371,12 +443,16 @@ def main():
     ap.add_argument("--url", default="http://127.0.0.1:6544")
     ap.add_argument("--binary", help="emulator binary, to generate symbols for minidumps")
     ap.add_argument("--symbols", help="symbol store (default: next to --out)")
-    ap.add_argument("--crash-dir", default=str(DATA / "crash_dumps"))
-    ap.add_argument("--log", default=str(DATA / "log" / "eden_log.txt"))
+    ap.add_argument("--crash-dir", help="where minidumps are written (default: crash_dumps in the data folder)")
+    ap.add_argument("--log", help="the emulator's log file (default: log/eden_log.txt in the data folder)")
     ap.add_argument("--no-pause", action="store_true",
                     help="do not pause the emulator when guest memory corruption is detected")
     ap.add_argument("--ipc-prefix", help="enable IPC tracing for services with this prefix")
-    Watcher(ap.parse_args()).run_forever()
+    args = ap.parse_args()
+    data = data_dir(args.binary)
+    args.crash_dir = args.crash_dir or str(data / "crash_dumps")
+    args.log = args.log or str(data / "log" / "eden_log.txt")
+    Watcher(args).run_forever()
 
 
 if __name__ == "__main__":
