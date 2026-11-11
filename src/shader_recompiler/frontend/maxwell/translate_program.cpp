@@ -385,20 +385,7 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
                 program.info.passthrough.mask[i] = ((mask[i / 32] >> (i % 32)) & 1) == 0;
             }
 
-            // Vertex draw parameters and fragment built-ins cannot be geometry inputs.
-            for (const IR::Attribute attr : {IR::Attribute::InstanceId, IR::Attribute::VertexId,
-                                             IR::Attribute::BaseInstance, IR::Attribute::BaseVertex,
-                                             IR::Attribute::DrawID, IR::Attribute::FrontFace}) {
-                program.info.passthrough.mask[static_cast<size_t>(attr)] = false;
-            }
             if (!normalized_host_info.support_geometry_shader_passthrough) {
-                // LowerGeometryPassthrough copies only Position and generic varyings.
-                for (size_t i = 0; i < program.info.passthrough.mask.size(); ++i) {
-                    if (i < static_cast<size_t>(IR::Attribute::PositionX) ||
-                        i > static_cast<size_t>(IR::Attribute::Generic31W)) {
-                        program.info.passthrough.mask[i] = false;
-                    }
-                }
                 program.output_vertices = GetOutputTopologyVertices(program.output_topology);
                 LowerGeometryPassthrough(program, normalized_host_info);
             }

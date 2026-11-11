@@ -244,9 +244,6 @@ public:
     /// Fill image_view_ids with the graphics/compute images in indices
     void FillImageViews(std::span<ImageViewInOut> views, bool compute, bool blacklist = true);
 
-    /// Points sampled views of the draw's own colour targets at copies taken before the draw.
-    void ReplaceColorFeedbackViews(std::span<ImageViewInOut> views);
-
     /// Handle feedback loops during draws.
     void CheckFeedbackLoop(std::span<const ImageViewInOut> views);
 
@@ -648,12 +645,6 @@ private:
 
     std::deque<PendingUnswizzle> unswizzle_queue;
     u8 current_unswizzle_frame;
-
-    struct FeedbackShadow {
-        ImageId id;
-        u64 last_frame;
-    };
-    std::vector<FeedbackShadow> feedback_shadows;
 
     // Join caching
     boost::container::small_vector<ImageId, 4> join_overlap_ids;
