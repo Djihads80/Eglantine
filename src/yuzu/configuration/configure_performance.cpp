@@ -414,6 +414,8 @@ ConfigureRam::ConfigureRam(const Core::System& system_, const ConfigurationShare
     : Tab(nullptr, parent), system{system_} {
     setAccessibleName(tr("RAM"));
     auto* const layout = new QVBoxLayout(this);
+    auto* const general = new QGroupBox(tr("General"));
+    auto* const general_layout = new QVBoxLayout(general);
     for (auto* const setting :
          Settings::values.linkage.by_category[Settings::Category::RendererMemory]) {
         ConfigurationShared::Widget* const widget = builder.BuildWidget(setting, apply_funcs);
@@ -424,8 +426,9 @@ ConfigureRam::ConfigureRam(const Core::System& system_, const ConfigurationShare
             widget->deleteLater();
             continue;
         }
-        layout->addWidget(widget);
+        general_layout->addWidget(widget);
     }
+    layout->addWidget(general);
     layout->addStretch(1);
 }
 
