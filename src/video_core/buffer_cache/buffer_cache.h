@@ -2164,6 +2164,9 @@ void BufferCache<P>::UpdateVertexBuffers() {
 
     const auto flags_words = std::bit_cast<std::array<u64, 4>>(flags);
     u32 dirty_vb_mask = static_cast<u32>(flags_words[0] >> Dirty::VertexBuffer0);
+    if constexpr (NUM_VERTEX_BUFFERS < 32) {
+        dirty_vb_mask &= (1u << NUM_VERTEX_BUFFERS) - 1;
+    }
     while (dirty_vb_mask != 0) {
         const u32 index = static_cast<u32>(std::countr_zero(dirty_vb_mask));
         dirty_vb_mask &= dirty_vb_mask - 1;
