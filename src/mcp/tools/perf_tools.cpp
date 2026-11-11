@@ -30,6 +30,7 @@
 #include "mcp/tool_registry.h"
 #include "mcp/tools/tool_helpers.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_spikes.h"
 
 namespace Mcp {
 
@@ -333,6 +334,95 @@ json RunPerfSample(ToolContext& ctx, const json& args) {
 
 namespace {
 
+json SpikeJson(const VideoCommon::Nx2Spikes::Spike& s) {
+    json gpu = json::array();
+    for (const auto& thread : s.gpu) {
+        json zones = json::array();
+        for (const auto& zone : thread.zones) {
+            zones.push_back({{"zone", zone.zone}, {"ms", zone.ms}, {"calls", zone.calls}});
+        }
+        json counters = json::object();
+        for (const auto& [name, value] : thread.counters) {
+            counters[name] = value;
+        }
+        gpu.push_back({{"thread", thread.thread}, {"zones", std::move(zones)},
+                       {"counters", std::move(counters)}});
+    }
+    json host = json::array();
+    for (const auto& thread : s.host) {
+        host.push_back({{"name", thread.name},
+                        {"tid", thread.tid},
+                        {"cpu_ms", thread.cpu_ms},
+                        {"run_queue_ms", thread.run_queue_ms}});
+    }
+    json events = json::array();
+    for (const auto& event : s.events) {
+        events.push_back({{"event", event.event}, {"count", event.count}, {"ms", event.ms}});
+    }
+    json out{{"number", s.number},
+             {"present", s.present},
+             {"at_s", s.at_s},
+             {"frame_ms", s.frame_ms},
+             {"median_ms", s.median_ms},
+             {"present_split",
+              {{"game_ms", s.game_ms},
+               {"gpu_fence_wait_ms", s.fence_ms},
+               {"composite_ms", s.composite_ms},
+               {"vblank_pacing_ms", s.pace_ms}}},
+             {"gpu_threads", std::move(gpu)},
+             {"events", std::move(events)},
+             {"log", s.log}};
+    if (s.host_sampled) {
+        out["host"] = {{"span_ms", s.host_span_ms},
+                       {"threads", std::move(host)},
+                       {"minor_faults", s.minor_faults},
+                       {"major_faults", s.major_faults},
+                       {"read_kib", s.read_kib}};
+    }
+    return out;
+}
+
+/// frame_spikes tool: applies enable/threshold/clear, then returns the recorder's spikes.
+ToolResult FrameSpikes(ToolContext&, const json& args) {
+    namespace Spikes = VideoCommon::Nx2Spikes;
+    if (args.contains("min_ms") || args.contains("ratio")) {
+        const Spikes::Report current = Spikes::Read(0);
+        Spikes::Configure(args.value("min_ms", current.min_ms), args.value("ratio", current.ratio));
+    }
+    if (args.contains("enable")) {
+        Spikes::SetEnabled(args["enable"].get<bool>());
+    }
+    if (args.value("clear", false)) {
+        Spikes::Clear();
+    }
+    const Spikes::Report report = Spikes::Read(args.value("limit", size_t{8}));
+    json recent = json::array();
+    for (const auto& spike : report.recent) {
+        recent.push_back(SpikeJson(spike));
+    }
+    json worst = json::array();
+    for (const auto& spike : report.worst) {
+        worst.push_back({{"number", spike.number}, {"frame_ms", spike.frame_ms},
+                         {"summary", Spikes::Summary(spike)}});
+    }
+    json out{{"enabled", report.enabled},     {"min_ms", report.min_ms},
+             {"ratio", report.ratio},         {"presents", report.presents},
+             {"median_frame_ms", report.median_ms}, {"spikes", report.spikes},
+             {"recent", std::move(recent)},   {"worst", std::move(worst)}};
+    if (!report.enabled) {
+        out["hint"] = "Recorder is off; call with enable:true (turns the GPU profiler on too).";
+    }
+    out["legend"] =
+        "frame = from one guest present's start to the next. present_split adds up to it: the "
+        "previous present's gpu_fence_wait_ms (waiting for Eden's GPU thread to finish the "
+        "frame before), composite and vblank pacing, then game_ms (the game until it presents "
+        "again: its CPU work and GPU submits). gpu_threads: profiler zones during the frame "
+        "('split drain' on the front = waiting for the back, 'idle'/'split wait' = nothing to "
+        "do, 'other (no zone)' = no zone or one still running at the present). host: CPU time and time runnable but waiting for a CPU, per host thread, over "
+        "samples bracketing the frame (Linux).";
+    return ToolResult::Structured(std::move(out));
+}
+
 /// baseline_save tool: wraps BaselineSave, turning its error into a tool error.
 ToolResult BaselineSaveTool(ToolContext& ctx, const json& args) {
     std::string error;
@@ -410,6 +500,28 @@ void RegisterPerfTools(ToolRegistry& registry) {
         .annotations = {.read_only = true},
         .requires_game = true,
         .handler = BaselineCheckTool,
+    });
+    registry.Add(Tool{
+        .name = "frame_spikes",
+        .title = "Frame spikes",
+        .description =
+            "Frames that took far longer than the others, each with what happened during it: the "
+            "present's split (the game's own time vs waiting for the GPU thread), GPU thread "
+            "profiler zones, CPU and run-queue wait per host thread (Linux), page faults and "
+            "file reads, pipeline builds, skipped draws and the log lines of that frame. enable "
+            "turns the recorder on/off live (it turns the GPU profiler on too); a spike is a "
+            "frame over min_ms (default 50) and over ratio (default 2) times the median of the "
+            "last 120 frames. Returns the newest `limit` spikes in full and the worst 8 as one "
+            "line each.",
+        .input_schema = {{"type", "object"},
+                         {"properties",
+                          {{"enable", {{"type", "boolean"}}},
+                           {"min_ms", {{"type", "number"}, {"minimum", 5}, {"maximum", 10000}}},
+                           {"ratio", {{"type", "number"}, {"minimum", 1}, {"maximum", 100}}},
+                           {"clear", {{"type", "boolean"}}},
+                           {"limit", {{"type", "integer"}, {"minimum", 0}, {"maximum", 32}}}}},
+                         {"additionalProperties", false}},
+        .handler = FrameSpikes,
     });
     registry.Add(Tool{
         .name = "gpu_profile",

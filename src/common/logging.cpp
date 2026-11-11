@@ -472,6 +472,19 @@ void SetRingCapacity(std::size_t capacity) {
     }
 }
 
+std::size_t RingCapacity() {
+    return logging_instance ? logging_instance->ring_backend.capacity.load(std::memory_order_relaxed)
+                            : 0;
+}
+
+u64 RingNewestSequence() {
+    if (!logging_instance)
+        return 0;
+    auto& ring = logging_instance->ring_backend;
+    std::scoped_lock lock{ring.mutex};
+    return ring.next_sequence - 1;
+}
+
 std::vector<RingLine> ReadRing(u64 after) {
     std::vector<RingLine> result;
     if (!logging_instance)

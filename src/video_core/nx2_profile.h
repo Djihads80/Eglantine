@@ -3,10 +3,12 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <string>
@@ -139,6 +141,61 @@ struct ThreadData {
 
 inline thread_local ThreadData t_data;
 
+/// Totals since the thread started, never reset by the report window: the frame spike recorder
+/// (nx2_spikes.h) takes their difference over one frame.
+struct Totals {
+    std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
+    std::array<u64, static_cast<size_t>(Zone::Count)> count{};
+    std::array<u64, 10> counters{};
+};
+inline thread_local Totals t_totals;
+
+/// A thread's totals as other threads read them, refreshed by Report while g_publish is set.
+struct PublishedTotals {
+    explicit PublishedTotals(std::string thread_) : thread{std::move(thread_)} {}
+    std::string thread;
+    std::array<std::atomic<u64>, static_cast<size_t>(Zone::Count)> exclusive_ns{};
+    std::array<std::atomic<u64>, static_cast<size_t>(Zone::Count)> count{};
+    std::array<std::atomic<u64>, 10> counters{};
+};
+
+inline std::atomic<bool> g_publish{false};
+
+inline std::mutex& PublishedMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+/// One entry per profiled thread name; entries are never removed (stable addresses).
+inline std::deque<PublishedTotals>& PublishedThreads() {
+    static std::deque<PublishedTotals> threads;
+    return threads;
+}
+
+inline void Publish(const char* thread_name, u64 now) {
+    // Report runs between commands, far more often than a frame needs.
+    static thread_local u64 last_publish{};
+    static thread_local PublishedTotals* published{};
+    if (now - last_publish < 500'000) {
+        return;
+    }
+    last_publish = now;
+    if (published == nullptr) {
+        std::scoped_lock lock{PublishedMutex()};
+        auto& threads = PublishedThreads();
+        const auto it = std::find_if(threads.begin(), threads.end(),
+                                     [&](const PublishedTotals& t) { return t.thread == thread_name; });
+        published = it != threads.end() ? &*it : &threads.emplace_back(thread_name);
+    }
+    for (size_t i = 0; i < t_totals.exclusive_ns.size(); ++i) {
+        published->exclusive_ns[i].store(t_totals.exclusive_ns[i], std::memory_order_relaxed);
+        published->count[i].store(t_totals.count[i], std::memory_order_relaxed);
+    }
+    for (size_t i = 0; i < t_totals.counters.size(); ++i) {
+        published->counters[i].store(t_totals.counters[i], std::memory_order_relaxed);
+    }
+}
+
 class Scope {
 public:
     explicit Scope(Zone zone_) : zone{zone_}, enabled{Enabled()} {
@@ -159,6 +216,8 @@ public:
         const auto index = static_cast<size_t>(zone);
         data.exclusive_ns[index] += elapsed - data.child_ns;
         ++data.count[index];
+        t_totals.exclusive_ns[index] += elapsed - data.child_ns;
+        ++t_totals.count[index];
         data.child_ns = parent_child_ns + elapsed;
     }
 
@@ -196,6 +255,7 @@ inline std::unordered_set<u64>& DmaReadPages() {
 inline void Add(Counter counter, u64 amount) {
     if (Enabled()) {
         t_data.counters[static_cast<size_t>(counter)] += amount;
+        t_totals.counters[static_cast<size_t>(counter)] += amount;
     }
 }
 
@@ -207,6 +267,9 @@ inline void Report(const char* thread_name = "GPU thread") {
     }
     auto& data = t_data;
     const u64 now = Now();
+    if (g_publish.load(std::memory_order_relaxed)) {
+        Publish(thread_name, now);
+    }
     const u32 generation = g_generation.load(std::memory_order_relaxed);
     if (data.window_start == 0 || data.generation != generation) {
         data = {};

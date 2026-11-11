@@ -34,6 +34,7 @@
 #include "core/core.h"
 #include "core/device_memory.h"
 #include "video_core/nx2_diag.h"
+#include "video_core/nx2_spikes.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 #include "core/frontend/framebuffer_layout.h"
@@ -1842,6 +1843,7 @@ private:
         const auto composited = std::chrono::steady_clock::now();
         PaceToVblank(w[12]);
         const auto paced = std::chrono::steady_clock::now();
+        VideoCommon::Nx2Spikes::OnPresent(entered, waited, composited, paced);
         // Where each frame's time goes on the present thread, averaged per 600 presents: the
         // game is blocked here while Eden's GPU thread catches up (fence) and composites.
         {

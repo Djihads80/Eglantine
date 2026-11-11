@@ -9,6 +9,7 @@
 
 #include "common/common_types.h"
 #include "common/logging.h"
+#include "video_core/nx2_spikes.h"
 #include "video_core/renderer_vulkan/vk_driver_build_report.h"
 
 namespace Vulkan::DriverBuildReport {
@@ -77,6 +78,13 @@ PrecacheScope::~PrecacheScope() {
 }
 
 void Record(Kind kind, std::chrono::steady_clock::duration time) {
+    if (!precache_thread) {
+        using VideoCommon::Nx2Spikes::Event;
+        VideoCommon::Nx2Spikes::Note(Event::DriverBuild, time);
+        if (time > CompiledThreshold) {
+            VideoCommon::Nx2Spikes::Note(Event::DriverCompile, time);
+        }
+    }
     std::scoped_lock lock{mutex};
     window.Add(kind, time);
     summary.Add(kind, time);

@@ -32,6 +32,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_spikes.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
@@ -1970,6 +1971,7 @@ void ReportRuntimePipeline(const char* kind, std::chrono::steady_clock::time_poi
     static auto window = std::chrono::steady_clock::now();
     const auto now = std::chrono::steady_clock::now();
     const auto elapsed = now - begin;
+    VideoCommon::Nx2Spikes::Note(VideoCommon::Nx2Spikes::Event::RuntimePipeline, elapsed);
     total += elapsed;
     ++count;
     const auto ms = [](auto d) { return std::chrono::duration<double, std::milli>(d).count(); };
@@ -2214,6 +2216,9 @@ bool PipelineCache::WaitForGraphicsTranslation(const std::shared_future<void>& d
         report.ready_in_time += ready ? 1 : 0;
     }
     report.skipped += ready ? 0 : 1;
+    if (!ready) {
+        VideoCommon::Nx2Spikes::Note(VideoCommon::Nx2Spikes::Event::DrawSkipped);
+    }
     report.Log();
     return ready;
 }
