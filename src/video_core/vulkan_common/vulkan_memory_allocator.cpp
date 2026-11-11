@@ -20,6 +20,7 @@
 #include "common/logging.h"
 #include <ranges>
 #include "video_core/vulkan_common/vma.h"
+#include "video_core/vulkan_common/unbacked_image_policy.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -231,7 +232,19 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
     // backed: VMA would quietly place them in system memory once VRAM is full. They take the
     // unbacked sparse fallback below.
     const u64 texels = u64{ci.extent.width} * ci.extent.height * ci.extent.depth * ci.arrayLayers;
-    const bool huge = texels > (u64{1} << 28);
+    bool huge = false;
+    if (texels > UnbackedImageTexelThreshold) {
+        // What counts is the memory the image needs, not its texels (see the policy header).
+        const auto& dld = device.GetDispatchLoader();
+        VkMemoryRequirements requirements{};
+        VkImage probe{};
+        if (dld.vkCreateImage(*device.GetLogical(), &ci, nullptr, &probe) == VK_SUCCESS) {
+            dld.vkGetImageMemoryRequirements(*device.GetLogical(), probe, &requirements);
+            dld.vkDestroyImage(*device.GetLogical(), probe, nullptr);
+        }
+        huge = ShouldLeaveImageUnbacked(texels, requirements.size,
+                                        device.GetDeviceLocalMemory());
+    }
     VkResult result = huge ? VK_ERROR_OUT_OF_DEVICE_MEMORY
                            : vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {

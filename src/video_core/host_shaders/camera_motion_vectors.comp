@@ -1,0 +1,35 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#version 460 core
+
+// Motion vectors from the camera alone, for an upscaler a game doesn't give any: each pixel's
+// depth puts it back in the world, the previous frame's camera puts it on that frame's screen.
+// Writes the offset to the previous frame's position in render pixels.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D depth_image;
+layout(binding = 1, rg16f) uniform writeonly image2D motion_image;
+
+layout(push_constant) uniform PushConstants {
+    // (pixel x, pixel y, device depth, 1) of this frame to the previous frame's pixel.
+    mat4 reprojection;
+    ivec2 size;
+};
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+    const float depth = texelFetch(depth_image, pixel, 0).r;
+    const vec2 position = vec2(pixel) + 0.5;
+    const vec4 previous = reprojection * vec4(position, depth, 1.0);
+    vec2 motion = vec2(0.0);
+    // Behind the previous frame's camera: no position there to take.
+    if (previous.w > 0.0) {
+        motion = previous.xy / previous.w - position;
+    }
+    imageStore(motion_image, pixel, vec4(motion, 0.0, 0.0));
+}

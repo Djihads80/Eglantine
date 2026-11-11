@@ -285,11 +285,20 @@ void DefineEntryPoint(const IR::Program& program, EmitContext& ctx, Id main) {
         execution_model = spv::ExecutionModel::Vertex;
         break;
     case Stage::Task:
-        execution_model = spv::ExecutionModel::TaskEXT;
+        // Mesh emulation runs task programs as compute shaders too.
+        execution_model = ctx.runtime_info.mesh_as_compute ? spv::ExecutionModel::GLCompute
+                                                           : spv::ExecutionModel::TaskEXT;
         ctx.AddExecutionMode(main, spv::ExecutionMode::LocalSize, program.workgroup_size[0], 1U,
                              1U);
         break;
     case Stage::Mesh:
+        if (ctx.runtime_info.mesh_as_compute) {
+            // Mesh emulation: one compute workgroup per mesh workgroup.
+            execution_model = spv::ExecutionModel::GLCompute;
+            ctx.AddExecutionMode(main, spv::ExecutionMode::LocalSize, program.workgroup_size[0],
+                                 1U, 1U);
+            break;
+        }
         execution_model = spv::ExecutionModel::MeshEXT;
         ctx.AddExecutionMode(main, spv::ExecutionMode::LocalSize, program.workgroup_size[0], 1U,
                              1U);
@@ -486,14 +495,18 @@ void SetupCapabilities(const Profile& profile, const Info& info, EmitContext& ct
             ctx.AddCapability(spv::Capability::ShaderViewportIndexLayerEXT);
         }
     }
-    if (!profile.support_vertex_instance_id &&
-        (info.loads[IR::Attribute::InstanceId] || info.loads[IR::Attribute::VertexId])) {
+    // BaseInstance, BaseVertex and DrawIndex are DrawParameters built-ins no matter how the
+    // instance and vertex ids are read.
+    if (info.loads[IR::Attribute::BaseInstance] || info.loads[IR::Attribute::BaseVertex] ||
+        info.loads[IR::Attribute::DrawID] ||
+        (!profile.support_vertex_instance_id &&
+         (info.loads[IR::Attribute::InstanceId] || info.loads[IR::Attribute::VertexId]))) {
         ctx.AddExtension("SPV_KHR_shader_draw_parameters");
         ctx.AddCapability(spv::Capability::DrawParameters);
     }
     if ((info.uses_subgroup_vote || info.uses_subgroup_invocation_id ||
          info.uses_subgroup_shuffles || info.uses_subgroup_mask) &&
-        profile.support_vote && profile.SupportsSubgroupStage(ctx.stage)) {
+        profile.support_vote && ctx.SupportsSubgroups()) {
         ctx.AddCapability(spv::Capability::GroupNonUniformBallot);
         ctx.AddCapability(spv::Capability::GroupNonUniformShuffle);
         if (info.uses_subgroup_shuffles && profile.support_shuffle_relative) {
@@ -663,6 +676,10 @@ std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_in
     std::vector<u32> code{ctx.Assemble()};
     RewriteOpcodes(code, ctx.opcode_rewrites);
     PatchMeshInstructions(code, ctx);
+    if (ctx.cooperative_hmma) {
+        PatchCooperativeHmma(code, *ctx.cooperative_hmma);
+    }
+    program.info.uses_cooperative_matrix = ctx.cooperative_hmma.has_value();
     return code;
 }
 

@@ -158,9 +158,6 @@ struct Backend {
     virtual void Flush() noexcept = 0;
 };
 
-/// @brief Formatting specifier (to use with printf) of the equivalent fmt::format() expression
-#define CCB_PRINTF_FMT "[%4d.%06d] %s <%s> %s:%u:%s: %s"
-
 /// @brief Instead of using fmt::format() just use the system's formatting capabilities directly
 struct DirectFormatArgs {
     const char *class_name;
@@ -202,7 +199,13 @@ struct ColorConsoleBackend final : public Backend {
             }());
             SetConsoleTextAttribute(console_handle, color);
             auto const df = GetDirectFormatArgs(entry);
-            std::fprintf(stdout, CCB_PRINTF_FMT "\n", df.time_seconds, df.time_fractional, df.class_name, df.level_name, entry.filename, entry.line_num, entry.function, entry.message);
+            // One write per line: MinGW's fprintf emits each character separately, and stdout is
+            // unbuffered here, so every character became a WriteFile on the thread that logs.
+            fmt::memory_buffer line;
+            fmt::format_to(fmt::appender(line), "[{:4d}.{:06d}] {} <{}> {}:{}:{}: ", df.time_seconds, df.time_fractional, df.class_name, df.level_name, entry.filename, entry.line_num, entry.function);
+            line.append(entry.message, entry.message + entry.message_len);
+            line.push_back('\n');
+            std::fwrite(line.data(), 1, line.size(), stdout);
         }
     }
     void Flush() noexcept override {}

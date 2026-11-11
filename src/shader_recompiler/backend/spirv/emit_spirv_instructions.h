@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <vector>
+
 #include <sirit/sirit.h>
 
 #include "common/common_types.h"
@@ -23,6 +25,7 @@ namespace Shader::Backend::SPIRV {
 using Sirit::Id;
 
 class EmitContext;
+struct CooperativeHmmaTypes;
 
 // Microinstruction emitters
 Id EmitPhi(EmitContext& ctx, IR::Inst* inst);
@@ -375,6 +378,8 @@ Id EmitStorageAtomicXor32(EmitContext& ctx, const IR::Value& binding, const IR::
                           Id value);
 Id EmitStorageAtomicExchange32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                                Id value);
+Id EmitStorageAtomicCompareExchange32(EmitContext& ctx, const IR::Value& binding,
+                                      const IR::Value& offset, Id comparator, Id value);
 Id EmitStorageAtomicIAdd64(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                            Id value);
 Id EmitStorageAtomicSMin64(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
@@ -436,6 +441,8 @@ Id EmitGlobalAtomicAnd32(EmitContext& ctx, Id address, Id value);
 Id EmitGlobalAtomicOr32(EmitContext& ctx, Id address, Id value);
 Id EmitGlobalAtomicXor32(EmitContext& ctx, Id address, Id value);
 Id EmitGlobalAtomicExchange32(EmitContext& ctx, Id address, Id value);
+Id EmitGlobalAtomicCompareExchange32(EmitContext& ctx, const IR::Value& address, Id comparator,
+                                     Id value);
 Id EmitGlobalAtomicIAdd64(EmitContext& ctx);
 Id EmitGlobalAtomicSMin64(EmitContext& ctx);
 Id EmitGlobalAtomicUMin64(EmitContext& ctx);
@@ -639,5 +646,7 @@ Id EmitDPdxFine(EmitContext& ctx, Id op_a);
 Id EmitDPdyFine(EmitContext& ctx, Id op_a);
 Id EmitDPdxCoarse(EmitContext& ctx, Id op_a);
 Id EmitDPdyCoarse(EmitContext& ctx, Id op_a);
+
+void PatchCooperativeHmma(std::vector<u32>& code, const CooperativeHmmaTypes& types);
 
 } // namespace Shader::Backend::SPIRV

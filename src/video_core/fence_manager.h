@@ -25,7 +25,6 @@
 #include "video_core/gpu.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/syncpoint_manager.h"
-#include "video_core/nx2_knobs.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/rasterizer_interface.h"
 
@@ -80,9 +79,9 @@ public:
         uncommitted_operations.emplace_back(std::move(func));
     }
 
-    void SignalFence(std::function<void()>&& func) {
+    void SignalFence(std::function<void()>&& func, bool force_completion = false) {
         Nx2Profile::Scope profile_scope{Nx2Profile::Zone::Fence};
-        const bool delay_fence = Settings::IsGPUFenceBehaviorDefault() ? Settings::IsGPULevelHigh() : Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
+        const bool delay_fence = force_completion || (Settings::IsGPUFenceBehaviorDefault() ? Settings::IsGPULevelHigh() : Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate());
         if constexpr (!can_async_check) {
             TryReleasePendingFences<false>();
         }
@@ -94,7 +93,7 @@ public:
             return;
         }
         skipped_fences = 0;
-        should_flush |= query_cache.HasUncommittedFlushes();
+        should_flush |= force_completion || query_cache.HasUncommittedFlushes();
         query_cache.CommitAsyncFlushes();
         TFence new_fence = CreateFence(!should_flush);
         if constexpr (can_async_check) {
@@ -271,10 +270,7 @@ private:
             }
             {
                 std::unique_lock lock(guard);
-                // Debug knob 2 inverts EDEN_NX2_FENCE_BATCH while the game runs.
-                const size_t max_batch =
-                    Nx2Knob::Live(MaxBatch == 1, Nx2Knob::FenceBatch) ? size_t{1} : size_t{64};
-                while (batch.size() < max_batch && !fences.empty() &&
+                while (batch.size() < MaxBatch && !fences.empty() &&
                        (fences.front()->IsStubbed() || IsFenceSignaled(fences.front()))) {
                     take_front();
                 }
@@ -293,8 +289,14 @@ private:
             }
             if (buffer_pops != 0) {
                 std::scoped_lock lock{buffer_cache.mutex};
+                const u64 start = Nx2Profile::Enabled() ? Nx2Profile::Now() : 0;
                 for (size_t i = 0; i < buffer_pops; ++i) {
                     buffer_cache.PopAsyncFlushes();
+                }
+                if (Nx2Profile::Enabled()) {
+                    Nx2Profile::g_fencing_lock_ns.fetch_add(Nx2Profile::Now() - start,
+                                                            std::memory_order_relaxed);
+                    Nx2Profile::g_fencing_pops.fetch_add(buffer_pops, std::memory_order_relaxed);
                 }
             }
             // Queries and operations keep their per-fence order.

@@ -48,6 +48,9 @@ std::optional<OutAttr> OutputAttrPointer(EmitContext& ctx, IR::Attribute attr) {
         const u32 index{IR::GenericAttributeIndex(attr)};
         const u32 element{IR::GenericAttributeElement(attr)};
         const GenericElementInfo& info{ctx.output_generics.at(index).at(element)};
+        if (!Sirit::ValidId(info.id)) {
+            return std::nullopt; // output pruned, nothing downstream reads it
+        }
         if (info.num_components == 1) {
             return info.id;
         } else {
@@ -547,6 +550,13 @@ void EmitSetOFlag(EmitContext&) {
 }
 
 Id EmitWorkgroupId(EmitContext& ctx) {
+    if (Sirit::ValidId(ctx.mesh_group_index)) {
+        // Mesh emulation with a task: a mesh workgroup's index is within its task's, as in a
+        // mesh shader launched by a task shader.
+        const Id zero{ctx.u32_zero_value};
+        return ctx.OpCompositeConstruct(ctx.U32[3], ctx.OpLoad(ctx.U32[1], ctx.mesh_group_index),
+                                        zero, zero);
+    }
     return ctx.OpLoad(ctx.U32[3], ctx.workgroup_id);
 }
 

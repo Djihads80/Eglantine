@@ -10,8 +10,8 @@
 namespace Nx2Switches {
 
 /// The user's nx2_switches.txt, read at start and written by the Performance tab. Follows
-/// portable mode: <exe>\user on Windows, ./user/config elsewhere; otherwise %APPDATA%\eden or
-/// $XDG_CONFIG_HOME/eden.
+/// portable mode: <exe>\user on Windows, ./user/config elsewhere; otherwise %APPDATA%\eglantine or
+/// $XDG_CONFIG_HOME/eglantine.
 inline std::filesystem::path UserFilePath() {
 #ifdef _WIN32
     return Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) / "nx2_switches.txt";

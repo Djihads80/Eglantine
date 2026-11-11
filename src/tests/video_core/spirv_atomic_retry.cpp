@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
@@ -92,7 +93,7 @@ TEST_CASE("SPIR-V CAS retries use the exchange result as the next expected word"
             const auto variables = Instructions(code, spv::Op::OpVariable);
             const auto integers = Instructions(code, spv::Op::OpTypeInt);
             const auto comparisons = Instructions(code, spv::Op::OpIEqual);
-            REQUIRE(exchanges.size() == (explicit_shared ? 9 : 11));
+            REQUIRE(exchanges.size() == (explicit_shared ? 9u : 11u));
             for (const auto& exchange : exchanges) {
                 REQUIRE(exchange.size() == 8);
                 const u32 type = exchange[0];

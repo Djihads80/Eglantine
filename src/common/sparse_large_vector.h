@@ -35,7 +35,6 @@ inline const u64 HostPageMask = ~(HostPageSize - 1);
 
 void* AllocateMemoryPages(std::size_t size) noexcept;
 void FreeMemoryPages(void* base, std::size_t size) noexcept;
-void DecommitVectorPage(uintptr_t base) noexcept;
 
 /// A large page-aligned buffer that has optimized memory usage for zero-writes.
 template <typename T>
@@ -124,16 +123,11 @@ public:
         base = end_page;
 
         for (u64 page = base; page < end; page += HostPageSize) {
-            auto index = (page - reinterpret_cast<u64>(base_ptr)) / sizeof(T);
-            if (!IsCommittedPage(index)) {
+            if (!IsCommittedPage((page - reinterpret_cast<u64>(base_ptr)) / sizeof(T))) {
                 continue;
             }
 
-            if (end - page >= HostPageSize) {
-                DecommitPage(index);
-            } else {
-                std::memset(reinterpret_cast<void*>(page), 0, end - page);
-            }
+            std::memset(reinterpret_cast<void*>(page), 0, (std::min)(HostPageSize, end - page));
         }
     }
 
@@ -192,14 +186,6 @@ private:
 
         committed_pages[page_index >> 6].fetch_or(1ULL << (page_index & 63), std::memory_order_release);
         return true;
-    }
-
-    constexpr void DecommitPage(std::size_t index) noexcept {
-        auto page_index = (index * sizeof(T)) >> HostPageBits;
-        auto page = reinterpret_cast<uintptr_t>(base_ptr + index) & HostPageMask;
-
-        committed_pages[page_index >> 6].fetch_and(~(1ULL << (page_index & 63)), std::memory_order_release);
-        DecommitVectorPage(page);
     }
 
     std::size_t alloc_size{};

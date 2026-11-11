@@ -293,6 +293,14 @@ struct Values {
                                            true,
                                            &use_custom_cpu_ticks};
 
+    SwitchableSetting<bool> prefer_3d_vcache{linkage,
+                                             true,
+                                             "prefer_3d_vcache",
+                                             Category::Cpu,
+                                             Specialization::Default,
+                                             true,
+                                             true};
+
     Setting<bool> cpuopt_page_tables{linkage, true, "cpuopt_page_tables", Category::CpuDebug};
     Setting<bool> cpuopt_block_linking{linkage, true, "cpuopt_block_linking", Category::CpuDebug};
     Setting<bool> cpuopt_return_stack_buffer{linkage, true, "cpuopt_return_stack_buffer",
@@ -380,6 +388,13 @@ struct Values {
                                                        true};
     // NVIDIA DLSS (through NVIDIA Streamline) in place of a game's DLSS.
     SwitchableSetting<bool> nvidia_dlss{linkage, false, "nvidia_dlss", Category::Renderer};
+    SwitchableSetting<DlssQuality> nvidia_dlss_quality{linkage,
+                                                       DlssQuality::Quality,
+                                                       "nvidia_dlss_quality",
+                                                       Category::Renderer,
+                                                       Specialization::Default,
+                                                       true,
+                                                       true};
     SwitchableSetting<AspectRatio, true> aspect_ratio{linkage,
                                                       AspectRatio::R16_9,
                                                       "aspect_ratio",

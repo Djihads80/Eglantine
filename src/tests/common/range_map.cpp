@@ -1,6 +1,12 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
+#include <array>
+#include <random>
 #include <stdexcept>
 
 #include <catch2/catch_test_macros.hpp>
@@ -13,6 +19,69 @@ enum class MappedEnum : u32 {
     Valid_2 = 2,
     Valid_3 = 3,
 };
+
+TEST_CASE("Range Map: Cached sizes survive remaps, splits and merges", "[video_core]") {
+    Common::RangeMap<u64, MappedEnum> map(MappedEnum::Invalid);
+    std::array<MappedEnum, 4096> reference{};
+    std::mt19937 random{0x1bf12000};
+    for (u32 operation = 0; operation < 20000; ++operation) {
+        const u32 begin = random() % reference.size();
+        const u32 end = begin + 1 + random() % (reference.size() - begin);
+        const auto value = static_cast<MappedEnum>(random() % 4);
+        if (value == MappedEnum::Invalid) {
+            map.Unmap(begin, end);
+        } else {
+            map.Map(begin, end, value);
+        }
+        std::fill(reference.begin() + begin, reference.begin() + end, value);
+        for (const u32 address :
+             {begin, end - 1, end, static_cast<u32>(random() % reference.size())}) {
+            u32 expected{};
+            if (address < reference.size() && reference[address] != MappedEnum::Invalid) {
+                while (address + expected < reference.size() &&
+                       reference[address + expected] == reference[address]) {
+                    ++expected;
+                }
+            }
+            REQUIRE(map.GetContinuousSizeFrom(address) == expected);
+            REQUIRE(map.GetContinuousSizeFrom(address, true) == expected);
+            REQUIRE(map.GetContinuousSizeFrom(address, true) == expected);
+            if (expected > 1) {
+                REQUIRE(map.GetContinuousSizeFrom(address + 1, true) == expected - 1);
+                REQUIRE(map.GetContinuousSizeFrom(address + expected - 1, true) == 1);
+            }
+        }
+    }
+    map.Unmap(0, reference.size());
+    map.Map(1, 100, MappedEnum::Valid_1);
+    REQUIRE(map.GetContinuousSizeFrom(1, true) == 99);
+    REQUIRE(map.GetContinuousSizeFrom(~u64{0}, true) == 0);
+    REQUIRE(map.GetContinuousSizeFrom(1, true) == 99);
+    map.Unmap(0, reference.size());
+    REQUIRE(map.GetContinuousSizeFrom(1, true) == 0);
+}
+
+TEST_CASE("Range Map: cache hits retain the same guarded mapping lifetime", "[video_core]") {
+    Common::RangeMap<u64, MappedEnum> map(MappedEnum::Invalid);
+    map.Map(100, 200, MappedEnum::Valid_1);
+    bool hit{};
+    REQUIRE(map.GetContinuousSizeFrom(110, true, &hit) == 90);
+    REQUIRE_FALSE(hit);
+    REQUIRE(map.GetContinuousSizeFrom(120, true, &hit) == 80);
+    REQUIRE(hit);
+    REQUIRE(map.GetContinuousSizeFrom(120, false, &hit) == 80);
+    REQUIRE_FALSE(hit);
+    map.Map(150, 200, MappedEnum::Valid_2);
+    REQUIRE(map.GetContinuousSizeFrom(120, true, &hit) == 30);
+    REQUIRE_FALSE(hit);
+    REQUIRE(map.GetContinuousSizeFrom(140, true, &hit) == 10);
+    REQUIRE(hit);
+    map.Unmap(130, 160);
+    REQUIRE(map.GetContinuousSizeFrom(140, true, &hit) == 0);
+    REQUIRE_FALSE(hit);
+    REQUIRE(map.GetContinuousSizeFrom(129, true, &hit) == 1);
+    REQUIRE_FALSE(hit);
+}
 
 TEST_CASE("Range Map: Setup", "[video_core]") {
     Common::RangeMap<u64, MappedEnum> my_map(MappedEnum::Invalid);

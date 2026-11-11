@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Depth-compare sampling regressions from Lichii #273.
@@ -110,7 +111,7 @@ TEST_CASE("Depth sampling emits float image and result types for integer descrip
                 offset += size;
             }
             REQUIRE(image_sampled_type != 0);
-            CHECK(scalar_types.at(image_sampled_type) == (integer && !depth ? 21 : 22));
+            CHECK(scalar_types.at(image_sampled_type) == (integer && !depth ? 21u : 22u));
             if (depth) {
                 CHECK(dref_result_type == image_sampled_type);
             }

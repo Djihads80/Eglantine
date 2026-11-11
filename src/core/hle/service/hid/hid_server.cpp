@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <mutex>
 
 #include "common/common_types.h"
 #include "common/logging.h"
@@ -120,13 +121,13 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {134, C<&IHidServer::SetNpadAnalogStickUseCenterClamp>, "SetNpadAnalogStickUseCenterClamp"},
         {135, C<&IHidServer::SetNpadCaptureButtonAssignment>, "SetNpadCaptureButtonAssignment"},
         {136, C<&IHidServer::ClearNpadCaptureButtonAssignment>, "ClearNpadCaptureButtonAssignment"},
-        {137, &IHidServer::StubReplyZeroed, "Unknown137"},
-        {138, &IHidServer::StubReplyZeroed, "Unknown138"},
-        {139, &IHidServer::StubReplyZeroed, "Unknown139"},
-        {140, &IHidServer::StubReplyZeroed, "Unknown140"},
-        {150, &IHidServer::StubReplyZeroed, "Unknown150"},
-        {151, &IHidServer::StubReplyZeroed, "Unknown151"},
-        {160, &IHidServer::StubReplyZeroed, "Unknown160"},
+        {137, &IHidServer::StubReplyZeroed, "SetNpadGcAnalogStick8bitRawValue"},
+        {138, C<&IHidServer::SetSceneIdForPrivateApp>, "SetSceneIdForPrivateApp"},
+        {139, C<&IHidServer::GetSceneIdForPrivateApp>, "GetSceneIdForPrivateApp"},
+        {140, &IHidServer::StubReplyZeroed, "IsFirmwareUpdateAvailableForDebug"},
+        {150, &IHidServer::StubReplyZeroed, "GetSixAxisSensorIcSettings"},
+        {151, &IHidServer::StubReplyZeroed, "SetSixAxisSensorIcSettings"},
+        {160, &IHidServer::StubReplyZeroed, "GetSixAxisSensorIcAccelerationOffset"},
         {200, C<&IHidServer::GetVibrationDeviceInfo>, "GetVibrationDeviceInfo"},
         {201, C<&IHidServer::SendVibrationValue>, "SendVibrationValue"},
         {202, C<&IHidServer::GetActualVibrationValue>, "GetActualVibrationValue"},
@@ -140,9 +141,9 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {210, C<&IHidServer::EndPermitVibrationSession>, "EndPermitVibrationSession"},
         {211, C<&IHidServer::IsVibrationDeviceMounted>, "IsVibrationDeviceMounted"},
         {212, C<&IHidServer::SendVibrationValueInBool>, "SendVibrationValueInBool"},
-        {213, C<&IHidServer::Unknown213>, "Unknown213"},
-        {214, C<&IHidServer::SendNx2VibrationValues>, "SendNx2VibrationValues (guessed)"},
-        {220, C<&IHidServer::Unknown220>, "Unknown220"},
+        {213, &IHidServer::SendVibrationValueInMode, "SendVibrationValueInMode"},
+        {214, C<&IHidServer::SendVibrationValuesInMode>, "SendVibrationValuesInMode"},
+        {220, C<&IHidServer::IsOunceVibrationDeviceMounted>, "IsOunceVibrationDeviceMounted"},
         {300, C<&IHidServer::ActivateConsoleSixAxisSensor>, "ActivateConsoleSixAxisSensor"},
         {301, C<&IHidServer::StartConsoleSixAxisSensor>, "StartConsoleSixAxisSensor"},
         {302, C<&IHidServer::StopConsoleSixAxisSensor>, "StopConsoleSixAxisSensor"},
@@ -154,13 +155,13 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {308, &IHidServer::StubReplyZeroed, "SetSevenSixAxisSensorFusionStrength"},
         {309, &IHidServer::StubReplyZeroed, "GetSevenSixAxisSensorFusionStrength"},
         {310, C<&IHidServer::ResetSevenSixAxisSensorTimestamp>, "ResetSevenSixAxisSensorTimestamp"},
-        {311, &IHidServer::StubReplyZeroed, "Unknown311"},
-        {312, &IHidServer::StubReplyZeroed, "Unknown312"},
+        {311, &IHidServer::StubReplyZeroed, "ForceActivateConsoleSixAxisSensor"},
+        {312, &IHidServer::StubReplyZeroed, "ForceDeactivateConsoleSixAxisSensor"},
         {320, &IHidServer::StubReplyZeroed, "EnableNpadImu"}, //21.0.0+
         {321, &IHidServer::StubReplyZeroed, "DisableNpadImu"}, //21.0.0+
-        {322, &IHidServer::StubReplyZeroed, "Unknown322"},
-        {323, &IHidServer::StubReplyZeroed, "Unknown323"},
-        {324, &IHidServer::StubReplyZeroed, "Unknown324"},
+        {322, &IHidServer::StubReplyZeroed, "SetNpadImuSupportedFeatures"},
+        {323, &IHidServer::StubReplyZeroed, "EnableNpadImuHandle"},
+        {324, &IHidServer::StubReplyZeroed, "DisableNpadImuHandle"},
         {400, C<&IHidServer::IsUsbFullKeyControllerEnabled>, "IsUsbFullKeyControllerEnabled"},
         {401, &IHidServer::StubReplyZeroed, "EnableUsbFullKeyController"},
         {402, &IHidServer::StubReplyZeroed, "IsUsbFullKeyControllerConnected"},
@@ -200,13 +201,13 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {527, C<&IHidServer::EnablePalmaBoostMode>, "EnablePalmaBoostMode"},
         {528, C<&IHidServer::GetPalmaBluetoothAddress>, "GetPalmaBluetoothAddress"},
         {529, C<&IHidServer::SetDisallowedPalmaConnection>, "SetDisallowedPalmaConnection"},
-        {550, &IHidServer::StubReplyZeroed, "Unknown550"},
+        {550, &IHidServer::StubReplyZeroed, "GetGlGrButtonConfigState"},
         {1000, C<&IHidServer::SetNpadCommunicationMode>, "SetNpadCommunicationMode"},
         {1001, C<&IHidServer::GetNpadCommunicationMode>, "GetNpadCommunicationMode"},
         {1002, C<&IHidServer::SetTouchScreenConfiguration>, "SetTouchScreenConfiguration"},
         {1003, C<&IHidServer::IsFirmwareUpdateNeededForNotification>, "IsFirmwareUpdateNeededForNotification"},
         {1004, C<&IHidServer::SetTouchScreenResolution>, "SetTouchScreenResolution"},
-        {1005, &IHidServer::StubReplyZeroed, "Unknown1005"},
+        {1005, &IHidServer::StubReplyZeroed, "EnableNxTouchScreenEmulationForTouchEnter"},
         {1270, nullptr, "DeleteButtonConfigStorageRight"},
         {1271, nullptr, "IsUsingCustomButtonConfig"},
         {1272, nullptr, "IsAnyCustomButtonConfigEnabled"},
@@ -255,24 +256,24 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {3013, &IHidServer::StubReplyZeroed, "SetDebugPadGenericPadMap"}, //21.0.0+
         {3014, &IHidServer::StubReplyZeroed, "GetDebugPadKeyboardMap"}, //21.0.0+
         {3015, &IHidServer::StubReplyZeroed, "SetDebugPadKeyboardMap"}, //21.0.0+
-        {3110, &IHidServer::StubReplyZeroed, "Unknown3110"},
-        {3111, &IHidServer::StubReplyZeroed, "Unknown3111"},
-        {3112, &IHidServer::StubReplyZeroed, "Unknown3112"},
-        {3113, &IHidServer::StubReplyZeroed, "Unknown3113"},
+        {3110, &IHidServer::StubReplyZeroed, "InitializeJcms"},
+        {3111, &IHidServer::StubReplyZeroed, "FinalizeJcms"},
+        {3112, &IHidServer::StubReplyZeroed, "StartJcms"},
+        {3113, &IHidServer::StubReplyZeroed, "StopJcms"},
         {3114, &IHidServer::StubReplyZeroed, "Unknown3114"},
-        {3130, &IHidServer::StubReplyZeroed, "Unknown3130"},
-        {3131, &IHidServer::StubReplyZeroed, "Unknown3131"},
-        {3132, &IHidServer::StubReplyZeroed, "Unknown3132"},
-        {3133, &IHidServer::StubReplyZeroed, "Unknown3133"},
+        {3130, &IHidServer::StubReplyZeroed, "InitializeNmouse"},
+        {3131, &IHidServer::StubReplyZeroed, "FinalizeNmouse"},
+        {3132, C<&IHidServer::SetNmousePointerRanges>, "SetNmousePointerRanges"},
+        {3133, C<&IHidServer::GetNmousePointerRanges>, "GetNmousePointerRanges"},
         {3134, &IHidServer::StubReplyZeroed, "Unknown3134"},
-        {3135, &IHidServer::StubReplyZeroed, "Unknown3135"},
-        {3136, &IHidServer::StubReplyZeroed, "Unknown3136"},
-        {3137, &IHidServer::StubReplyZeroed, "Unknown3137"},
-        {3138, &IHidServer::StubReplyZeroed, "Unknown3138"},
-        {3139, &IHidServer::StubReplyZeroed, "Unknown3139"},
-        {3140, &IHidServer::StubReplyZeroed, "Unknown3140"},
-        {3141, &IHidServer::StubReplyZeroed, "Unknown3141"},
-        {3142, &IHidServer::StubReplyZeroed, "Unknown3142"},
+        {3135, &IHidServer::StubReplyZeroed, "EnableShowingCursor"},
+        {3136, &IHidServer::StubReplyZeroed, "SetNmouseButtonConfigJoyLeftJcms"},
+        {3137, &IHidServer::StubReplyZeroed, "SetNmouseButtonConfigJoyRightJcms"},
+        {3138, &IHidServer::StubReplyZeroed, "SetMergedNmouseSourceTypes"},
+        {3139, C<&IHidServer::InitializeNmouse2>, "InitializeNmouse2"},
+        {3140, &IHidServer::StubReplyZeroed, "SetNmousePointerPosition"},
+        {3141, &IHidServer::StubReplyZeroed, "EnableNmousePointer"},
+        {3142, &IHidServer::StubReplyZeroed, "RestrictNmousePointer"},
         {3143, &IHidServer::StubReplyZeroed, "Unknown3143"},
         {3144, &IHidServer::StubReplyZeroed, "Unknown3144"},
         {3145, &IHidServer::StubReplyZeroed, "Unknown3145"},
@@ -1113,7 +1114,7 @@ Result IHidServer::IsVibrationDeviceMounted(
     R_SUCCEED();
 }
 
-Result IHidServer::SendNx2VibrationValues(
+Result IHidServer::SendVibrationValuesInMode(
     u64 unknown, AppletResourceUserId aruid,
     InArray<Core::HID::VibrationDeviceHandle, BufferAttr_HipcPointer> vibration_handles,
     InArray<Core::HID::VibrationValue, BufferAttr_HipcPointer> vibration_values) {
@@ -1134,14 +1135,84 @@ Result IHidServer::SendNx2VibrationValues(
     R_SUCCEED();
 }
 
-Result IHidServer::Unknown213() {
-    LOG_DEBUG(Service_HID, "(STUBBED) called");
+void IHidServer::SendVibrationValueInMode(HLERequestContext& ctx) {
+    // Switchbrew names 213 but gives no layout, and two fit its 32 bytes (the mode before the
+    // handle, or after the value as in 206's padding). Log the first request so a run shows which.
+    static std::once_flag logged;
+    std::call_once(logged, [&ctx] {
+        IPC::RequestParser rp{ctx};
+        const auto w = rp.PopRaw<std::array<u32, 8>>();
+        LOG_INFO(Service_HID,
+                 "(STUBBED) first request: {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                 w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+    });
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(ResultSuccess);
+}
+
+Result IHidServer::IsOunceVibrationDeviceMounted(
+    Out<bool> out_is_mounted, Core::HID::VibrationDeviceHandle vibration_device_handle,
+    ClientAppletResourceUserId aruid) {
+    LOG_DEBUG(Service_HID,
+              "called, npad_type={}, npad_id={}, device_index={}, applet_resource_user_id={}",
+              vibration_device_handle.npad_type, vibration_device_handle.npad_id,
+              vibration_device_handle.device_index, aruid.pid);
+
+    // Like IsVibrationDeviceMounted, but a handle this doesn't recognise reads as not mounted
+    // instead of failing: the Switch 2 handle layout is only known from captures (see 214).
+    *out_is_mounted = false;
+    if (IsVibrationHandleValid(vibration_device_handle).IsSuccess()) {
+        const NpadVibrationBase* device =
+            GetResourceManager()->GetVibrationDevice(vibration_device_handle);
+        if (device != nullptr) {
+            *out_is_mounted = device->IsVibrationMounted();
+        }
+    }
+
     R_SUCCEED();
 }
 
-Result IHidServer::Unknown220(Out<u8> out) {
-    LOG_DEBUG(Service_HID, "(STUBBED) called");
-    *out = 0;
+Result IHidServer::SetSceneIdForPrivateApp(ClientAppletResourceUserId aruid, u64 scene_id) {
+    LOG_DEBUG(Service_HID, "called, scene_id={:#x}, applet_resource_user_id={}", scene_id, aruid.pid);
+    scene_ids_for_private_app[aruid.pid] = scene_id;
+    R_SUCCEED();
+}
+
+Result IHidServer::GetSceneIdForPrivateApp(Out<u64> out_scene_id,
+                                           ClientAppletResourceUserId aruid) {
+    LOG_DEBUG(Service_HID, "called, applet_resource_user_id={}", aruid.pid);
+    const auto it = scene_ids_for_private_app.find(aruid.pid);
+    *out_scene_id = it != scene_ids_for_private_app.end() ? it->second : 0;
+    R_SUCCEED();
+}
+
+Result IHidServer::InitializeNmouse2(u32 pointer_type, s32 width, s32 height, u32 unknown,
+                                     ClientAppletResourceUserId aruid, u64 t_mem_size,
+                                     InCopyHandle<Kernel::KTransferMemory> t_mem) {
+    LOG_WARNING(Service_HID,
+                "(STUBBED) called, pointer_type={}, width={}, height={}, unknown={:#x}, "
+                "applet_resource_user_id={}, t_mem_size={:#x}",
+                pointer_type, width, height, unknown, aruid.pid, t_mem_size);
+    nmouse_pointer_ranges[aruid.pid] = {width, height};
+    R_SUCCEED();
+}
+
+Result IHidServer::SetNmousePointerRanges(s32 width, s32 height,
+                                          ClientAppletResourceUserId aruid) {
+    LOG_DEBUG(Service_HID, "called, width={}, height={}, applet_resource_user_id={}", width,
+              height, aruid.pid);
+    nmouse_pointer_ranges[aruid.pid] = {width, height};
+    R_SUCCEED();
+}
+
+Result IHidServer::GetNmousePointerRanges(Out<s32> out_width, Out<s32> out_height,
+                                          ClientAppletResourceUserId aruid) {
+    LOG_DEBUG(Service_HID, "called, applet_resource_user_id={}", aruid.pid);
+    const auto it = nmouse_pointer_ranges.find(aruid.pid);
+    const NmousePointerRanges ranges =
+        it != nmouse_pointer_ranges.end() ? it->second : NmousePointerRanges{};
+    *out_width = ranges.width;
+    *out_height = ranges.height;
     R_SUCCEED();
 }
 

@@ -4,9 +4,11 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <vector>
 
 #include "common/common_types.h"
+#include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -35,11 +37,11 @@ public:
     void Process(const Device& device, Scheduler& scheduler, VkImage current_frame,
                  VkImageView current_view, u64 frame_count);
 
-    void Generate(const Device& device, Scheduler& scheduler, VkImageView destination_storage_view,
-                  float blend_factor, float flow_scale);
+    void Generate(const Device& device, Scheduler& scheduler, VkImage destination,
+                  VkImageView destination_storage_view, float blend_factor, float flow_scale);
 
     [[nodiscard]] bool IsReady() const {
-        return m_initialized && m_has_history;
+        return m_initialized && m_has_history && m_flow_valid;
     }
 
 private:
@@ -66,7 +68,8 @@ private:
 
     vk::DescriptorPool m_desc_pool;
     vk::DescriptorSets m_flow_desc_sets;
-    vk::DescriptorSets m_interp_desc_sets;
+    std::optional<DescriptorPool> m_interp_pool;
+    DescriptorAllocator m_interp_allocator;
 
     // History and motion vector images
     vk::Image m_history_image;
@@ -86,9 +89,7 @@ private:
     u64 m_last_frame_count{};
     bool m_flow_valid{};
 
-    // Descriptor caching: only update when views change
-    VkImageView m_cached_flow_current_view{VK_NULL_HANDLE};
-    VkImageView m_cached_interp_dest_view{VK_NULL_HANDLE};
+    bool m_flow_descriptors_initialized{};
 };
 
 } // namespace Vulkan

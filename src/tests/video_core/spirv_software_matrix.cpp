@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
@@ -105,25 +106,23 @@ bool HasCapability(const std::vector<u32>& code, u32 capability) {
 
 } // namespace
 
-TEST_CASE("Software HMMA shares a bounded loop without tensor extensions",
+TEST_CASE("Software HMMA shares one helper per depth without tensor extensions",
           "[video_core][tensor][ampere]") {
     for (const u32 depth : {8U, 16U}) {
         TensorProgram single{1, depth};
         const auto first = single.Emit(depth == 8 ? "software-k8" : "software-k16");
         REQUIRE_FALSE(HasCapability(first, 5357));
-        REQUIRE(Instructions(first, 246).size() == 1); // OpLoopMerge
-        REQUIRE(Instructions(first, 57).size() == 1);  // OpFunctionCall
+        REQUIRE(Instructions(first, 57).size() == 1); // OpFunctionCall
         TensorProgram repeated{64, depth};
         const auto many = repeated.Emit(depth == 8 ? "software-k8-many" : "software-k16-many");
-        REQUIRE(Instructions(many, 246).size() == 1);
         REQUIRE(Instructions(many, 57).size() == 64);
         // Three fragment-vector constructions, the call and two result extracts
-        // take at most 40 words per site; the matrix loop itself is never duplicated.
+        // take at most 40 words per site; the matrix body itself is never duplicated.
         REQUIRE(many.size() < first.size() + 64 * 40);
     }
 }
 
-TEST_CASE("Software HMMA rounds only on uniform K8 boundaries", "[video_core][tensor][ampere]") {
+TEST_CASE("Software HMMA rounds once per uniform K8 group", "[video_core][tensor][ampere]") {
     for (const u32 depth : {8U, 16U}) {
         TensorProgram fixture{1, depth};
         const auto code = fixture.Emit();
@@ -131,116 +130,42 @@ TEST_CASE("Software HMMA rounds only on uniform K8 boundaries", "[video_core][te
         for (const auto& words : Instructions(code, 43)) { // OpConstant
             constants.emplace(words[1], words[2]);
         }
-
-        const auto selections = Instructions(code, 247); // OpSelectionMerge
-        REQUIRE(selections.size() == 1);
-        REQUIRE(selections.front()[1] == 2); // DontFlatten
-        const u32 merge = selections.front()[0];
-        const auto branches = Instructions(code, 250); // OpBranchConditional
-        const auto branch =
-            std::ranges::find_if(branches, [=](const auto& words) { return words[2] == merge; });
-        REQUIRE(branch != branches.end());
-        const u32 condition = (*branch)[0];
-        const u32 round_block = (*branch)[1];
-        REQUIRE(round_block != merge);
-
-        const auto comparisons = Instructions(code, 170); // OpIEqual
-        const auto comparison = std::ranges::find_if(
-            comparisons, [=](const auto& words) { return words[1] == condition; });
-        REQUIRE(comparison != comparisons.end());
-        const u32 component = (*comparison)[2];
-        const u32 boundary = constants.at((*comparison)[3]);
-        const auto masks = Instructions(code, 199); // OpBitwiseAnd
-        const auto mask =
-            std::ranges::find_if(masks, [=](const auto& words) { return words[1] == component; });
-        REQUIRE(mask != masks.end());
-        const u32 pair = (*mask)[2];
-        const u32 pair_mask = constants.at((*mask)[3]);
-        REQUIRE(pair_mask == 3);
-        REQUIRE(boundary == 3);
-        const auto loads = Instructions(code, 61); // OpLoad
-        const auto pair_load =
-            std::ranges::find_if(loads, [=](const auto& words) { return words[1] == pair; });
-        REQUIRE(pair_load != loads.end());
-        const u32 counter = (*pair_load)[2];
-        const auto stores = Instructions(code, 62);     // OpStore
-        const auto additions = Instructions(code, 128); // OpIAdd
-        u32 initializations = 0;
-        u32 increments = 0;
-        for (const auto& store : stores) {
-            if (store[0] != counter) {
-                continue;
+        // One K=8 group is emitted once; K=16 runs it twice from a uniform counter.
+        const auto loops = Instructions(code, 246); // OpLoopMerge
+        if (depth == 8) {
+            REQUIRE(loops.empty());
+        } else {
+            REQUIRE(loops.size() == 1);
+            const auto limits = Instructions(code, 176); // OpULessThan
+            REQUIRE(limits.size() == 1);
+            REQUIRE(constants.at(limits.front()[3]) == 2);
+            const auto loads = Instructions(code, 61); // OpLoad
+            const auto counter_load = std::ranges::find_if(
+                loads, [&](const auto& words) { return words[1] == limits.front()[2]; });
+            REQUIRE(counter_load != loads.end());
+            const u32 counter = (*counter_load)[2];
+            u32 counter_stores = 0;
+            for (const auto& store : Instructions(code, 62)) { // OpStore
+                if (store[0] != counter) {
+                    continue;
+                }
+                ++counter_stores;
+                if (constants.contains(store[1])) {
+                    REQUIRE(constants.at(store[1]) == 0);
+                }
             }
-            if (constants.contains(store[1])) {
-                REQUIRE(constants.at(store[1]) == 0);
-                ++initializations;
-            } else {
-                const auto increment = std::ranges::find_if(
-                    additions, [&](const auto& words) { return words[1] == store[1]; });
-                REQUIRE(increment != additions.end());
-                REQUIRE((*increment)[2] == pair);
-                REQUIRE(constants.at((*increment)[3]) == 1);
-                ++increments;
-            }
+            REQUIRE(counter_stores == 2); // Zero, then the increment: no lane input.
         }
-        REQUIRE(initializations == 1);
-        REQUIRE(increments == 1);                    // No lane-dependent input controls rounding.
-        const auto limits = Instructions(code, 176); // OpULessThan
-        const auto limit =
-            std::ranges::find_if(limits, [=](const auto& words) { return words[2] == pair; });
-        REQUIRE(limit != limits.end());
-        const u32 pairs = constants.at((*limit)[3]);
-        REQUIRE(pairs == depth / 2);
-        std::vector<u32> rounded_pairs;
-        for (u32 value = 0; value < pairs; ++value) {
-            if ((value & pair_mask) == boundary) {
-                rounded_pairs.push_back(value);
-            }
-        }
-        REQUIRE(rounded_pairs == (depth == 8 ? std::vector<u32>{3} : std::vector<u32>{3, 7}));
-
-        // Inspect the generated function, not a second implementation of its branch.
-        // Every expensive conversion is inside the true block; no collective is.
-        u32 block = 0;
         u32 rounding_operations = 0;
         u32 fma_operations = 0;
-        u32 shuffles = 0;
-        std::vector<u32> rounded_accumulators;
-        bool round_rejoins = false;
-        for (size_t offset = 5; offset < code.size();) {
-            const u32 length = code[offset] >> 16;
-            const u32 opcode = code[offset] & 0xffffU;
-            REQUIRE(length != 0);
-            REQUIRE(offset + length <= code.size());
-            const auto words = std::span{code}.subspan(offset + 1, length - 1);
-            if (opcode == 248) { // OpLabel
-                block = words[0];
-            } else if (opcode == 12 && words[3] == 2) { // GLSL.std.450 RoundEven
-                REQUIRE(block == round_block);
-                ++rounding_operations;
-            } else if (opcode == 12 && words[3] == 50) { // GLSL.std.450 Fma
-                REQUIRE(block != round_block);
-                ++fma_operations;
-            } else if (opcode == 345) { // OpGroupNonUniformShuffle
-                REQUIRE(block != round_block);
-                ++shuffles;
-            } else if (opcode == 62 && block == round_block) { // OpStore
-                rounded_accumulators.push_back(words[0]);
-            } else if (opcode == 249 && block == round_block) { // OpBranch
-                REQUIRE(words[0] == merge);
-                round_rejoins = true;
-            } else if (opcode == 169) { // OpSelect must not evaluate a discarded conversion.
-                REQUIRE(words[2] != condition);
-            }
-            offset += length;
+        for (const auto& words : Instructions(code, 12)) { // OpExtInst
+            rounding_operations += words[3] == 2;          // GLSL.std.450 RoundEven
+            fma_operations += words[3] == 50;              // GLSL.std.450 Fma
         }
-        REQUIRE(rounding_operations == 4);
-        REQUIRE(fma_operations == 8);
-        REQUIRE(shuffles == 4);
-        REQUIRE(round_rejoins);
-        REQUIRE(rounded_accumulators.size() == 4);
-        std::ranges::sort(rounded_accumulators);
-        REQUIRE(std::ranges::adjacent_find(rounded_accumulators) == rounded_accumulators.end());
+        REQUIRE(rounding_operations == 4); // One per accumulator, after each K=8 group.
+        REQUIRE(fma_operations == 32);
+        REQUIRE(Instructions(code, 345).size() == 16); // OpGroupNonUniformShuffle
+        REQUIRE(Instructions(code, 247).empty());      // No per-pair rounding branch.
     }
 }
 
@@ -251,8 +176,192 @@ TEST_CASE("Software matrix helpers also emit for 64-lane host subgroups",
         fixture.profile.max_subgroup_size = 64;
         const auto code = fixture.Emit(depth == 8 ? "software-k8-wave64" : "software-k16-wave64");
         REQUIRE_FALSE(HasCapability(code, 5357));
-        REQUIRE(Instructions(code, 246).size() == 1);
-        REQUIRE(Instructions(code, 345).size() == 4); // OpGroupNonUniformShuffle
+        REQUIRE(Instructions(code, 345).size() == 16); // OpGroupNonUniformShuffle
+    }
+}
+
+namespace {
+
+constexpr u32 OP_COMPOSITE_EXTRACT = 81;
+constexpr u32 OP_COMPOSITE_INSERT = 82;
+constexpr u32 OP_BITCAST = 124;
+constexpr u32 OP_TYPE_COOPERATIVE_MATRIX = 4456;
+constexpr u32 OP_COOPERATIVE_MATRIX_MUL_ADD = 4459;
+constexpr u32 CAPABILITY_COOPERATIVE_MATRIX = 6022;
+constexpr u32 CAPABILITY_FLOAT16 = 9;
+constexpr u32 CAPABILITY_VULKAN_MEMORY_MODEL = 5345;
+constexpr u32 CAPABILITY_VULKAN_MEMORY_MODEL_DEVICE_SCOPE = 5346;
+
+std::map<u32, u32> Constants(const std::vector<u32>& code) {
+    std::map<u32, u32> constants;
+    for (const auto& words : Instructions(code, 43)) { // OpConstant
+        constants.emplace(words[1], words[2]);
+    }
+    return constants;
+}
+
+void RequireHmmaMatrixTypes(const std::vector<u32>& code) {
+    const auto constants = Constants(code);
+    const auto types = Instructions(code, OP_TYPE_COOPERATIVE_MATRIX);
+    REQUIRE(types.size() == 3);
+    std::array<u32, 3> columns_by_use{};
+    for (const auto& words : types) {
+        REQUIRE(words.size() == 6);
+        REQUIRE(constants.at(words[2]) == 3); // Subgroup scope
+        REQUIRE(constants.at(words[3]) == 16);
+        columns_by_use.at(constants.at(words[5])) = constants.at(words[4]);
+    }
+    REQUIRE(columns_by_use == std::array<u32, 3>{16, 8, 8}); // A, B, accumulator
+}
+
+// SPV_KHR_cooperative_matrix requires the Vulkan memory model, which spirv-val does not check.
+void RequireVulkanMemoryModel(const std::vector<u32>& code) {
+    REQUIRE(HasCapability(code, CAPABILITY_VULKAN_MEMORY_MODEL));
+    REQUIRE(HasCapability(code, CAPABILITY_VULKAN_MEMORY_MODEL_DEVICE_SCOPE));
+    const auto models = Instructions(code, 14); // OpMemoryModel
+    REQUIRE(models.size() == 1);
+    REQUIRE(models[0][1] == 3); // Vulkan
+    bool extension = false;
+    for (const auto& words : Instructions(code, 10)) { // OpExtension
+        extension |= std::string{reinterpret_cast<const char*>(words.data())} ==
+                     "SPV_KHR_vulkan_memory_model";
+    }
+    REQUIRE(extension == (code[1] < 0x00010500));
+}
+
+} // namespace
+
+TEST_CASE("Cooperative HMMA replaces the K16 software helper", "[video_core][tensor][ampere]") {
+    TensorProgram fixture{3, 16};
+    fixture.profile.support_cooperative_hmma = true;
+    const auto code = fixture.Emit("cooperative-k16");
+    REQUIRE(HasCapability(code, CAPABILITY_COOPERATIVE_MATRIX));
+    REQUIRE(HasCapability(code, CAPABILITY_FLOAT16));
+    RequireVulkanMemoryModel(code);
+    REQUIRE(fixture.program.info.uses_cooperative_matrix);
+    RequireHmmaMatrixTypes(code);
+    REQUIRE(Instructions(code, OP_COOPERATIVE_MATRIX_MUL_ADD).size() == 3);
+    REQUIRE(Instructions(code, 246).empty()); // OpLoopMerge
+    REQUIRE(Instructions(code, 57).empty());  // OpFunctionCall
+    REQUIRE(Instructions(code, 345).empty()); // OpGroupNonUniformShuffle
+    for (const auto& words : Instructions(code, 169)) { // OpSelect
+        for (const auto& type : Instructions(code, OP_TYPE_COOPERATIVE_MATRIX)) {
+            REQUIRE(words[0] != type[0]);
+        }
+    }
+}
+
+TEST_CASE("Cooperative HMMA keeps barriers valid under the Vulkan memory model",
+          "[video_core][tensor][ampere]") {
+    for (const u32 version : {0x00010400U, 0x00010600U}) {
+        TensorProgram fixture{1, 16};
+        fixture.profile.supported_spirv = version;
+        fixture.profile.support_cooperative_hmma = true;
+        IR::IREmitter ir{fixture.block};
+        ir.Barrier();
+        ir.WorkgroupMemoryBarrier();
+        ir.DeviceMemoryBarrier();
+        const auto code = fixture.Emit("cooperative-k16-barriers-" + std::to_string(version));
+        REQUIRE(code[1] == version);
+        RequireVulkanMemoryModel(code);
+        REQUIRE(Instructions(code, OP_COOPERATIVE_MATRIX_MUL_ADD).size() == 1);
+    }
+}
+
+TEST_CASE("Cooperative HMMA keeps the driver's order of A's registers",
+          "[video_core][tensor][ampere]") {
+    TensorProgram fixture{1, 16};
+    fixture.profile.support_cooperative_hmma = true;
+    const auto code = fixture.Emit();
+    const auto extracts = Instructions(code, OP_COMPOSITE_EXTRACT);
+    const auto bitcasts = Instructions(code, OP_BITCAST);
+    const auto by_result = [](const auto& instructions, u32 result) {
+        const auto it = std::ranges::find_if(
+            instructions, [=](const auto& words) { return words[1] == result; });
+        REQUIRE(it != instructions.end());
+        return *it;
+    };
+    const auto types = Instructions(code, OP_TYPE_COOPERATIVE_MATRIX);
+    const auto constants = Constants(code);
+    const auto matrix_a = std::ranges::find_if(
+        types, [&](const auto& words) { return constants.at(words[5]) == 0; });
+    REQUIRE(matrix_a != types.end());
+
+    std::array<u32, 8> register_of_element{};
+    u32 inserts = 0;
+    for (const auto& words : Instructions(code, OP_COMPOSITE_INSERT)) {
+        if (words[0] != (*matrix_a)[0]) {
+            continue;
+        }
+        const auto half = by_result(extracts, words[2]);
+        const auto halves = by_result(bitcasts, half[2]);
+        const auto guest_register = by_result(extracts, halves[2]);
+        REQUIRE(half[3] == (words[4] & 1));
+        register_of_element.at(words[4]) = guest_register[3];
+        ++inserts;
+    }
+    REQUIRE(inserts == 8);
+    REQUIRE(register_of_element == std::array<u32, 8>{0, 0, 2, 2, 1, 1, 3, 3});
+}
+
+TEST_CASE("Cooperative HMMA falls back to the software helper", "[video_core][tensor][ampere]") {
+    const auto require_software = [](TensorProgram& fixture) {
+        const auto code = fixture.Emit();
+        REQUIRE_FALSE(HasCapability(code, CAPABILITY_COOPERATIVE_MATRIX));
+        REQUIRE(Instructions(code, OP_TYPE_COOPERATIVE_MATRIX).empty());
+        REQUIRE(Instructions(code, 57).size() == 1); // OpFunctionCall
+        REQUIRE_FALSE(fixture.program.info.uses_cooperative_matrix);
+    };
+    SECTION("unsupported by the device") {
+        TensorProgram fixture{1, 16};
+        require_software(fixture);
+    }
+    SECTION("the K8 form") {
+        TensorProgram fixture{1, 8};
+        fixture.profile.support_cooperative_hmma = true;
+        require_software(fixture);
+    }
+    SECTION("a workgroup that leaves a warp unfilled") {
+        TensorProgram fixture{1, 16};
+        fixture.profile.support_cooperative_hmma = true;
+        fixture.program.workgroup_size = {48, 1, 1};
+        require_software(fixture);
+    }
+    SECTION("a workgroup row that leaves a warp unfilled") {
+        TensorProgram fixture{1, 16};
+        fixture.profile.support_cooperative_hmma = true;
+        fixture.program.workgroup_size = {16, 2, 1};
+        require_software(fixture);
+    }
+    SECTION("coherent memory, which the Vulkan memory model has no decoration for") {
+        TensorProgram fixture{1, 16};
+        fixture.profile.support_cooperative_hmma = true;
+        fixture.program.info.requires_coherent_global_memory = true;
+        require_software(fixture);
+    }
+}
+
+TEST_CASE("Cooperative HMMA self-test shader runs one lowering on one warp",
+          "[video_core][tensor][ampere]") {
+    for (const u32 version : {0x00010300U, 0x00010600U}) {
+        const auto code = Backend::SPIRV::EmitCooperativeHmmaTest(version);
+        REQUIRE(code[1] == version);
+        REQUIRE(HasCapability(code, CAPABILITY_COOPERATIVE_MATRIX));
+        RequireVulkanMemoryModel(code);
+        RequireHmmaMatrixTypes(code);
+        REQUIRE(Instructions(code, OP_COOPERATIVE_MATRIX_MUL_ADD).size() == 1);
+        const auto modes = Instructions(code, 16); // OpExecutionMode
+        REQUIRE(modes.size() == 1);
+        REQUIRE(modes[0][1] == 17); // LocalSize
+        REQUIRE(modes[0][2] == 32);
+        if (const char* directory = std::getenv("EDEN_TENSOR_TEST_OUTPUT")) {
+            std::filesystem::create_directories(directory);
+            std::ofstream file{std::filesystem::path{directory} /
+                                   ("cooperative-self-test-" + std::to_string(version) + ".spv"),
+                               std::ios::binary};
+            file.write(reinterpret_cast<const char*>(code.data()),
+                       static_cast<std::streamsize>(code.size() * sizeof(u32)));
+        }
     }
 }
 

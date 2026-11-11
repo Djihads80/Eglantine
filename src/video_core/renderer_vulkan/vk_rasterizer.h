@@ -7,6 +7,8 @@
 #pragma once
 
 #include <array>
+#include <chrono>
+#include <optional>
 #include <span>
 
 #include <boost/container/static_vector.hpp>
@@ -15,6 +17,8 @@
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
+#include "video_core/nx2.h"
+#include "video_core/ocarina_upscale.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_vulkan/blit_image.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -101,13 +105,16 @@ public:
     void FlushAll() override;
     void FlushRegion(DAddr addr, u64 size,
                      VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
-    GpuWrittenList ReadGpuWrittenCommandList(DAddr addr, std::span<u8> out) override;
+    void FlushQueryResults(DAddr addr, u64 size) override;
+    GpuWrittenList ReadGpuWrittenCommandList(DAddr addr, std::span<u8> out,
+                                             bool past_sync) override;
     void NoteGpuWrittenCommandListSynced(DAddr page) override;
     bool MustFlushRegion(DAddr addr, u64 size,
                          VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
     VideoCore::RasterizerDownloadArea GetFlushArea(DAddr addr, u64 size) override;
     void InvalidateRegion(DAddr addr, u64 size,
                           VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
+    void PrepareRegionWrite(DAddr addr, u64 size, VideoCommon::CacheType which) override;
     void InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) override;
     void OnCacheInvalidation(DAddr addr, u64 size) override;
     void OnCacheInvalidations(std::span<const std::pair<DAddr, u64>> ranges) override;
@@ -116,7 +123,7 @@ public:
     void InvalidateGPUCache() override;
     void UnmapMemory(DAddr addr, u64 size) override;
     void ModifyGPUMemory(size_t as_id, GPUVAddr addr, u64 size) override;
-    void SignalFence(std::function<void()>&& func) override;
+    void SignalFence(std::function<void()>&& func, bool force_completion = false) override;
     void SyncOperation(std::function<void()>&& func) override;
     void SignalSyncPoint(u32 value) override;
     void SignalReference() override;
@@ -147,6 +154,8 @@ public:
                                    const Tegra::Texture::TICEntry* depth,
                                    std::array<f32, 2> jitter,
                                    std::array<f32, 2> motion_scale) override;
+    bool AccelerateCameraMotionUpscale(const Tegra::Engines::Fermi2D::Surface& src,
+                                       const Tegra::Engines::Fermi2D::Surface& dst) override;
     Tegra::Engines::AccelerateDMAInterface& AccessAccelerateDMA() override;
     void AccelerateInlineToMemory(GPUVAddr address, size_t copy_size,
                                   std::span<const u8> memory) override;
@@ -177,19 +186,38 @@ private:
     template <typename Func>
     void PrepareDraw(bool is_indexed, Func&&);
     bool TryNx2IndirectReset();
+    /// Nx2Perf MacroReadWriterSet: records that draws binding the current programs write no
+    /// guest memory, when the pipeline proves it. Holds buffer_cache.mutex.
+    void Nx2ProveNonWriterDraw(const GraphicsPipeline& pipeline);
 
     void FlushWork();
+    /// Nx2Perf submit_while_waited, at FlushWork's dispatch check: submits the recorded draws
+    /// when the front waits for the back or the host GPU has caught up. True when it submitted.
+    bool SubmitWhileWaited();
 
     /// Records the copies of the command list pages the work just recorded wrote and submits, so
     /// the GPU makes them now (BufferCache::Nx2CopyListPages).
     void SubmitNx2ListCopies();
+    /// The split back's idle hook: submits pending list copies and deferred work.
+    void FlushSplitIdle();
+
+    /// FlushQueryResults' wait: a new fence behind the pending report writes. False if it gave up.
+    bool WaitQueryResultsFence(DAddr addr);
 
     /// Frame dump: starts a pass when the framebuffer changed (EDEN_NX2_FRAME_DUMP).
     void FrameDumpPass(const Framebuffer* framebuffer);
     /// Records the uniform and storage buffers of the current draw or dispatch for the frame dump.
     bool FrameDumpBuffers(bool compute, std::span<const u64> shader_hashes);
 
-    void UpdateDynamicStates();
+    /// Records the dynamic state of the draw being prepared with `pipeline` (null for
+    /// DrawTexture's blit).
+    void UpdateDynamicStates(const GraphicsPipeline* pipeline);
+
+    /// NVIDIA DLSS in place of Ocarina of Time's anti-aliasing (AccelerateCameraMotionUpscale):
+    /// notes the camera of a draw on a scene depth buffer and jitters the draw.
+    void NoteCameraMotionDraw();
+    /// Starts the jitter for a frame when its scene depth is cleared.
+    void NoteCameraMotionClear();
 
     void HandleTransformFeedback();
 
@@ -221,7 +249,7 @@ private:
     void UpdateStencilOp(Tegra::Engines::Maxwell3D::Regs& regs);
     void UpdateStencilTestEnable(Tegra::Engines::Maxwell3D::Regs& regs);
     void UpdateLogicOp(Tegra::Engines::Maxwell3D::Regs& regs);
-    void UpdateBlending(Tegra::Engines::Maxwell3D::Regs& regs);
+    void UpdateBlending(Tegra::Engines::Maxwell3D::Regs& regs, const GraphicsPipeline* pipeline);
     void UpdateColorWriteEnable(Tegra::Engines::Maxwell3D::Regs& regs);
 
     void UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs);
@@ -261,7 +289,129 @@ private:
     boost::container::static_vector<VkSampler, MAX_TEXTURES> sampler_handles;
 
     u32 draw_counter = 0;
+    /// Nx2Perf submit_while_waited (read once) and its draw minimums: while the front waits
+    /// (EDEN_NX2_SUBMIT_WAITED_DRAWS) and once the host GPU is idle (EDEN_NX2_SUBMIT_IDLE_DRAWS).
+    bool submit_while_waited{};
+    u32 submit_waited_draws{64};
+    u32 submit_idle_draws{128};
     bool mesh_draw{}; ///< the draw being prepared uses a task/mesh pipeline
+    /// Fragment output components the dynamic color write mask was last recorded with
+    u32 last_color_output_mask{};
+
+    /// A depth buffer drawn with a perspective camera since the last evaluation of
+    /// AccelerateCameraMotionUpscale, and the state of its last such draw.
+    struct CameraMotionScene {
+        GPUVAddr depth{};
+        VideoCommon::ImageInfo depth_info;
+        GPUVAddr camera{};                     ///< The camera buffer of its last draw.
+        std::array<f32, 16> view_projection{}; ///< That camera's (rows).
+        VkViewport viewport{};   ///< Viewport 0 without the jitter, on the host.
+        f32 y_sign{1.0f};        ///< -1 when the device negates y before the viewport.
+        bool depth_minus_one{};  ///< Device depth from an NDC z of -1 to 1 (else 0 to 1).
+        bool rescaled{};
+        std::array<f32, 2> jitter{}; ///< The jitter of its draws.
+        u32 draws{};
+    };
+    struct CameraMotion {
+        bool armed{}; ///< The game's anti-aliasing has run with DLSS on.
+        std::array<CameraMotionScene, 16> scenes;
+        size_t num_scenes{};
+        /// The last evaluated scene's depth buffer: its clear starts the jitter, and the scene
+        /// camera's draws on depth buffers of its size get it while active. The game draws other
+        /// depth buffers at the same address, so its size counts too.
+        GPUVAddr jitter_depth{};
+        std::array<u32, 2> jitter_depth_size{};
+        bool jitter_ready{}; ///< An evaluation ran since the scene depth was last cleared.
+        bool jitter_active{};
+        u32 phase{};
+        std::array<f32, 2> jitter{};
+        std::array<f32, 2> applied{}; ///< The jitter in the viewports now.
+        /// The last camera buffer read, until the next evaluation.
+        struct {
+            GPUVAddr address{};
+            bool perspective{};
+            std::array<f32, 16> view_projection{};
+        } camera;
+        /// The last evaluation's world to render pixel matrix, and what it was for.
+        std::optional<VideoCommon::OcarinaUpscale::Matrix> previous_screen;
+        GPUVAddr previous_depth{};
+        std::array<u32, 2> previous_size{};
+        bool previous_rescaled{};
+        std::optional<std::chrono::steady_clock::time_point> last_evaluation;
+        u32 evaluations{};
+        bool jittered{}; ///< Some evaluation had jittered draws.
+    } camera_motion;
+
+    u32 mesh_emulation_groups{};             ///< mesh workgroups of the emulated draw
+    u32 mesh_emulation_vertices_per_group{}; ///< 0 unless the draw is an emulated mesh draw
+    /// Mesh emulation diagnostics with a task program: one draw's distribution arguments.
+    struct {
+        std::span<const u8> args;
+        u64 tick{};
+        u32 tasks{};
+        u32 capacity{};
+        bool pending{};
+    } mesh_task_probe;
+    /// With a task program: the vkCmdDrawIndirect arguments the distribution pass writes.
+    struct {
+        VkBuffer buffer{};
+        VkDeviceSize offset{};
+    } mesh_emulation_indirect;
+    /// Mesh emulation diagnostics: one draw's output, read back once the GPU has written it.
+    struct MeshEmulationProbe {
+        std::span<const u8> data;
+        u64 tick{};
+        u64 frame{};
+        u32 groups{};
+        u32 block_words{};
+        u32 vertex_lines{};
+        u32 max_vertices{};
+        u32 max_primitives{};
+        std::array<u32, 4> position_lines{};
+        bool pending{};
+    } mesh_probe;
+    void ReadMeshEmulationProbe();
+    /// Mesh emulation with a task program: the output arena every task draw of a submission
+    /// allocates its mesh workgroups from, and its host-visible counter of allocated words.
+    struct MeshArena {
+        vk::Buffer buffer;
+        vk::Buffer counter;
+        u64 size{};
+        u64 tick{};
+        bool counted{}; ///< the counter of its last submission was read
+    };
+    std::vector<MeshArena> mesh_arenas;
+    size_t mesh_arena_current{~size_t{}};
+    u64 mesh_arena_size{64ULL << 20};
+    /// The current submission's arena, after its counter is reset.
+    const MeshArena& AcquireMeshArena();
+
+    struct IndirectTrace {
+        vk::Buffer readback;
+        u64 tick{};
+        u64 frame{};
+        GPUVAddr address{};
+        GPUVAddr count_address{};
+        u32 max_draws{};
+        u32 sampled_commands{};
+        bool pending{};
+        bool include_count{};
+        bool byte_count{};
+    };
+    std::array<IndirectTrace, 8> indirect_traces;
+    u64 trace_cpu_frame{};
+    bool trace_sample_frame{true};
+    u64 trace_frame{};
+    u64 trace_window_frames{};
+    u64 trace_draws{};
+    u64 trace_skipped{};
+    u64 trace_indirect{};
+    u64 trace_zero_direct{};
+    /// Vertex and fragment hashes of the draw being recorded, for GPU timing.
+    std::pair<u64, u64> trace_draw_hashes{};
+    u32 trace_captures{};
+    u32 trace_capture_dropped{};
+    u32 trace_failure_details{};
 };
 
 } // namespace Vulkan

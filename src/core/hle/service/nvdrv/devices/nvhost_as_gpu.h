@@ -222,13 +222,13 @@ private:
     } vm;
     std::unique_ptr<Tegra::MemoryManager> gmmu;
 
-    struct IoctlNx2SyncpointShimInfo {
-        u64_le address;
-        u32_le stride;
-        u32_le count;
+    struct IoctlGetSyncRoMap {
+        u64_le base_gpuva;
+        u32_le sync_size;
+        u32_le num_syncpoints;
     };
-    static_assert(sizeof(IoctlNx2SyncpointShimInfo) == 16);
-    NvResult Nx2GetSyncpointShimInfo(IoctlNx2SyncpointShimInfo& params);
+    static_assert(sizeof(IoctlGetSyncRoMap) == 16);
+    NvResult GetSyncRoMap(IoctlGetSyncRoMap& params);
     bool nx2_syncpoint_shim{};
 
     // Switch 2: maps GPU-accessible process memory (CPU range) at a GPU address.

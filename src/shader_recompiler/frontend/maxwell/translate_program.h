@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -21,7 +24,8 @@ namespace Shader::Maxwell {
                                            Flow::CFG& cfg, const HostTranslateInfo& host_info);
 
 [[nodiscard]] IR::Program MergeDualVertexPrograms(IR::Program& vertex_a, IR::Program& vertex_b,
-                                                  Environment& env_vertex_b);
+                                                  Environment& env_vertex_b,
+                                                  const HostTranslateInfo& host_info);
 
 void ConvertLegacyToGeneric(IR::Program& program, const RuntimeInfo& runtime_info);
 

@@ -23,6 +23,7 @@ private:
     FileSys::VirtualFile backend;
 
     static constexpr s64 ReadBytesPerSecond = 40'000'000;
+    static constexpr s64 Switch2ReadBytesPerSecond = 100'000'000;
     static constexpr s64 MaxChargedReadSize = 64 * 1024;
     std::chrono::steady_clock::time_point next_read_tick{};
 

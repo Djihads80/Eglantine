@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -5,6 +8,7 @@
 #include "video_core/control/channel_state.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2.h"
 #include "video_core/renderer_null/null_rasterizer.h"
 
 namespace Null {
@@ -31,6 +35,10 @@ void RasterizerNull::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
     if (!gpu_memory) {
         return;
     }
+    const auto cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
+    if (!cpu_addr) {
+        return;
+    }
     if (True(flags & VideoCommon::QueryPropertiesFlags::HasTimeout)) {
         u64 ticks = m_gpu.GetTicks();
         gpu_memory->Write<u64>(gpu_addr + 8, ticks);
@@ -38,6 +46,7 @@ void RasterizerNull::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
     } else {
         gpu_memory->Write<u32>(gpu_addr, payload);
     }
+    Tegra::Nx2SemaphoreWaiters::Get().OnWrite(*cpu_addr, payload);
 }
 void RasterizerNull::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr gpu_addr,
                                                u32 size) {}
@@ -63,7 +72,7 @@ VideoCore::RasterizerDownloadArea RasterizerNull::GetFlushArea(PAddr addr, u64 s
 void RasterizerNull::InvalidateGPUCache() {}
 void RasterizerNull::UnmapMemory(DAddr addr, u64 size) {}
 void RasterizerNull::ModifyGPUMemory(size_t as_id, GPUVAddr addr, u64 size) {}
-void RasterizerNull::SignalFence(std::function<void()>&& func) {
+void RasterizerNull::SignalFence(std::function<void()>&& func, bool /*force_completion*/) {
     func();
 }
 void RasterizerNull::SyncOperation(std::function<void()>&& func) {
@@ -91,7 +100,12 @@ bool RasterizerNull::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surfac
     return true;
 }
 void RasterizerNull::AccelerateInlineToMemory(GPUVAddr address, size_t copy_size,
-                                              std::span<const u8> memory) {}
+                                              std::span<const u8> memory) {
+    if (!gpu_memory) {
+        return;
+    }
+    gpu_memory->WriteBlockUnsafe(address, memory.data(), copy_size);
+}
 void RasterizerNull::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                                        const VideoCore::DiskResourceLoadCallback& callback) {}
 void RasterizerNull::InitializeChannel(Tegra::Control::ChannelState& channel) {

@@ -76,8 +76,8 @@ public:
     /// Signal disabling of a uniform buffer
     virtual void DisableGraphicsUniformBuffer(size_t stage, u32 index) = 0;
 
-    /// Signal a GPU based semaphore as a fence
-    virtual void SignalFence(std::function<void()>&& func) = 0;
+    /// Signal a GPU based semaphore as a fence. force_completion also waits at low accuracy.
+    virtual void SignalFence(std::function<void()>&& func, bool force_completion = false) = 0;
 
     /// Send an operation to be done after a certain amount of flushes.
     virtual void SyncOperation(std::function<void()>&& func) = 0;
@@ -98,14 +98,23 @@ public:
     virtual void FlushRegion(DAddr addr, u64 size,
                              VideoCommon::CacheType which = VideoCommon::CacheType::All) = 0;
 
+    /// Writes the region's query reports to guest memory, waiting for pending host results.
+    virtual void FlushQueryResults(DAddr addr, u64 size) {
+        FlushRegion(addr, size, VideoCommon::CacheType::QueryCache);
+    }
+
     /// Switch 2, from the GPU thread's front: where a GPU-written command list's words are.
     enum class GpuWrittenList {
         Unknown, ///< Neither: the caller drains, flushes the page and notes it synced
         Copied,  ///< `out` (within one 4 KiB page) is filled from the copy made after its writer
         Synced,  ///< Guest memory holds the page: no GPU work wrote it since it was flushed
+        /// Draws write the page: ask again with `past_sync` once the split's back ran the work
+        /// before the last host-level wait (GpuSplit::WaitForSync)
+        NeedsSync,
     };
     virtual GpuWrittenList ReadGpuWrittenCommandList([[maybe_unused]] DAddr addr,
-                                                     [[maybe_unused]] std::span<u8> out) {
+                                                     [[maybe_unused]] std::span<u8> out,
+                                                     [[maybe_unused]] bool past_sync) {
         return GpuWrittenList::Unknown;
     }
 
@@ -121,6 +130,10 @@ public:
     /// Notify rasterizer that any caches of the specified region should be invalidated
     virtual void InvalidateRegion(DAddr addr, u64 size,
                                   VideoCommon::CacheType which = VideoCommon::CacheType::All) = 0;
+
+    /// Called before guest memory in the region is overwritten, ahead of InvalidateRegion
+    virtual void PrepareRegionWrite([[maybe_unused]] DAddr addr, [[maybe_unused]] u64 size,
+                                    [[maybe_unused]] VideoCommon::CacheType which) {}
 
     virtual void InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) {
         if (!Settings::values.skip_cpu_inner_invalidation.GetValue()) {
@@ -197,6 +210,14 @@ public:
         const Tegra::Engines::Fermi2D::Surface& motion_vectors,
         const Tegra::Texture::TICEntry* depth, std::array<f32, 2> jitter,
         std::array<f32, 2> motion_scale) {
+        return false;
+    }
+
+    /// NVIDIA DLSS (DLAA or Super Resolution) in place of a game's own anti-aliasing / upscaling
+    /// of src into dst (Ocarina of Time; ocarina_upscale.h), with jitter and camera motion from
+    /// the host. False when it can't run; the caller retains its native dispatch.
+    [[nodiscard]] virtual bool AccelerateCameraMotionUpscale(
+        const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst) {
         return false;
     }
 

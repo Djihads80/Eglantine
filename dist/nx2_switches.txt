@@ -1,8 +1,8 @@
 # Switch NX2 - read when the Eglantine GUI starts.
 # One NAME=VALUE per line. Lines starting with # are ignored.
 # A variable already set in the environment wins over this file.
-# Between files, the user copy (%APPDATA%\eden\nx2_switches.txt, or
-# $XDG_CONFIG_HOME/eden/nx2_switches.txt; in a portable build user\nx2_switches.txt, or
+# Between files, the user copy (%APPDATA%\eglantine\nx2_switches.txt, or
+# $XDG_CONFIG_HOME/eglantine/nx2_switches.txt; in a portable build user\nx2_switches.txt, or
 # user/config/nx2_switches.txt) wins over this one, so editing this file is never
 # needed: copy the lines you want into your own and restart.
 #

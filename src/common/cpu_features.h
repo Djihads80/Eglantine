@@ -115,6 +115,7 @@ public:
     u64 rdtsc_ns_factor;
     std::atomic<u64> cntpct_rdtsc_factor;
     u64 gputick_rdtsc_factor;
+    u64 base_rdtsc{};
     bool invariant;
 #elif defined(HAS_NCE)
     using FactorType = unsigned __int128;

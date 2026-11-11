@@ -27,6 +27,9 @@ public:
     using Word = std::uint32_t;
     using Result = TuringMacroInterpreter::Result;
 
+    /// Emits a batching program buffers before calling `emit` for them in order.
+    static constexpr Word EmitBatch = 32;
+
     struct State {
         std::array<Word, 24> regs;
         Word carry;
@@ -53,6 +56,20 @@ public:
         bool (*emit)(State*, Word method, Word value);
         Word (*read)(State*, Word address);
         const std::vector<Word>* fifo;
+        Word emit_count;
+        Word emit_capacity; ///< Emits buffered before `emit` runs; 0 calls it for each
+        std::uint8_t borrowed; ///< `params` is not `fifo`'s until the FIFO holds words
+        std::array<Word, 2 * EmitBatch> emit_buffer; ///< (method, value) pairs
+    };
+
+    struct Options {
+        /// Buffer emits of methods below 0xe00 other than MME_DMA_READ(_FIFOED) (0x157/0x158)
+        /// and call `emit` for them in order before a register read, before any other emit, when
+        /// the buffer fills and at the end. `emit` must accept every method buffered. Needs a
+        /// program prepared with batch_emits.
+        bool batch_emits{};
+        /// Reuse one State across calls instead of initializing every field.
+        bool keep_state{};
     };
 
     enum Error : Word {
@@ -91,35 +108,71 @@ public:
     }
 
     /// Compiles `code` (3 words per instruction) when it differs from what was compiled.
-    void Prepare(std::span<const Word> code, std::uint64_t generation) {
-        if (program && generation == compiled_generation) {
-            return;
+    /// The plain and the batching program are kept apart: callers that share one engine's JIT
+    /// (3D macros and compute's front) may want different ones on alternate calls.
+    void Prepare(std::span<const Word> code, std::uint64_t generation, bool batch_emits = false) {
+        const std::size_t slot = batch_emits ? 1 : 0;
+        if (!programs[slot] || generation != compiled_generations[slot]) {
+            programs[slot] = std::make_unique<Program>(code, batch_emits);
+            compiled_generations[slot] = generation;
         }
-        program = std::make_unique<Program>(code);
-        compiled_generation = generation;
+        program = programs[slot].get();
+        compiled_batch = batch_emits;
     }
 
     template <typename Read, typename Emit>
     Result Execute(Word start, std::vector<Word>& parameters, std::span<Word> data_ram, Read read,
                    Emit emit) {
-        State state;
+        return Execute(start, parameters, {}, data_ram, read, emit, Options{});
+    }
+
+    /// `borrowed`: the parameters when they are not in `fifo` (which is empty then). An emit that
+    /// appends to `fifo` copies them there first; the program reads from `fifo` from then on.
+    template <typename Read, typename Emit>
+    Result Execute(Word start, std::vector<Word>& fifo, std::span<const Word> borrowed,
+                   std::span<Word> data_ram, Read read, Emit emit, Options options) {
+        State local;
+        const bool keep = options.keep_state && !kept_busy;
+        if (keep && !kept) {
+            kept = std::make_unique<State>();
+        }
+        State& state = keep ? *kept : local;
         state.regs.fill(0);
         state.carry = state.method = state.increment = 0;
-        state.loop_count = state.loop_start = state.loop_end = 0;
+        state.loop_count = 0;
         state.consumed = 0;
-        state.fail_pc = 0;
-        state.end_next = state.stopped = state.cancel_end = 0;
+        state.end_next = state.stopped = 0;
+        if (!keep) {
+            // A kept State holds these from its last call: none is read before the call writes
+            // it. cancel_end and next_pc are set first by every flow instruction, scratch_x/y
+            // right before their use, loop_start/loop_end are read only while loop_count is
+            // not 0 (only a LOOP sets it, writing both), and nothing writes fail_pc.
+            state.loop_start = state.loop_end = 0;
+            state.fail_pc = 0;
+            state.cancel_end = 0;
+        }
         state.start = start;
         state.steps = 1000000;
-        state.params = parameters.data();
-        state.params_size = static_cast<Word>(parameters.size());
+        const bool borrow = !borrowed.empty() && fifo.empty();
+        state.params = borrow ? borrowed.data() : fifo.data();
+        state.params_size = static_cast<Word>(borrow ? borrowed.size() : fifo.size());
+        state.borrowed = borrow ? 1 : 0;
         state.dram = data_ram.data();
-        state.fifo = &parameters;
+        state.fifo = &fifo;
+        state.emit_count = 0;
+        state.emit_capacity = options.batch_emits && compiled_batch ? EmitBatch : 0;
         Thunks<Read, Emit> thunks{read, emit};
         state.user = &thunks;
         state.emit = &Thunks<Read, Emit>::CallEmit;
         state.read = &Thunks<Read, Emit>::CallRead;
+        kept_busy |= keep;
         const Word error = program->entry(&state);
+        if (state.emit_count != 0) {
+            Thunks<Read, Emit>::Flush(&state);
+        }
+        if (keep) {
+            kept_busy = false;
+        }
         if (error == None) {
             return {true, state.fail_pc, state.consumed, {}};
         }
@@ -131,21 +184,37 @@ private:
     struct Thunks {
         Read& read;
         Emit& emit;
+        static void Flush(State* state) {
+            Thunks& self = *static_cast<Thunks*>(state->user);
+            const Word count = state->emit_count;
+            state->emit_count = 0;
+            for (Word i = 0; i < count; ++i) {
+                self.emit(state->emit_buffer[i * 2], state->emit_buffer[i * 2 + 1]);
+            }
+        }
         static bool CallEmit(State* state, Word method, Word value) {
+            if (state->emit_count != 0) {
+                Flush(state);
+            }
             const bool ok = static_cast<Thunks*>(state->user)->emit(method, value);
             // MME_DMA_READ_FIFOED appends to the FIFO from inside the emit.
-            state->params = state->fifo->data();
-            state->params_size = static_cast<Word>(state->fifo->size());
+            if (!state->borrowed || !state->fifo->empty()) {
+                state->params = state->fifo->data();
+                state->params_size = static_cast<Word>(state->fifo->size());
+            }
             return ok;
         }
         static Word CallRead(State* state, Word address) {
+            if (state->emit_count != 0) {
+                Flush(state);
+            }
             return static_cast<Thunks*>(state->user)->read(address);
         }
     };
 
     struct Program : Xbyak::CodeGenerator {
-        explicit Program(std::span<const Word> code)
-            : Xbyak::CodeGenerator(1 << 20, Xbyak::AutoGrow) {
+        explicit Program(std::span<const Word> code, bool batch_emits_)
+            : Xbyak::CodeGenerator(1 << 20, Xbyak::AutoGrow), batch_emits{batch_emits_} {
             Generate(code);
             ready();
             entry = getCode<Word (*)(State*)>();
@@ -391,12 +460,36 @@ private:
                 }
                 if (d.out_emit[lane]) {
                     Output(eax, d, d.out_emit[lane]);
+                    Xbyak::Label call_emit, emitted;
+                    if (batch_emits) {
+                        // Into the buffer unless it is full or the method is one the macro
+                        // sees the effect of (DMA reads) or one `emit` may refuse.
+                        mov(ecx, dword[st + offsetof(State, method)]);
+                        mov(edx, dword[st + offsetof(State, emit_count)]);
+                        cmp(edx, dword[st + offsetof(State, emit_capacity)]);
+                        jae(call_emit);
+                        cmp(ecx, 0xe00);
+                        jae(call_emit);
+                        mov(r8d, ecx);
+                        sub(r8d, 0x157);
+                        cmp(r8d, 1);
+                        jbe(call_emit);
+                        mov(dword[st + rdx * 8 + offsetof(State, emit_buffer)], ecx);
+                        mov(dword[st + rdx * 8 + (offsetof(State, emit_buffer) + 4)], eax);
+                        inc(edx);
+                        mov(dword[st + offsetof(State, emit_count)], edx);
+                        jmp(emitted, T_NEAR);
+                        L(call_emit);
+                    }
                     mov(arg2.cvt32(), eax);
                     mov(arg1.cvt32(), dword[st + offsetof(State, method)]);
                     mov(arg0, st);
                     call(ptr[st + offsetof(State, emit)]);
                     test(al, al);
                     jz(fail_emit, T_NEAR);
+                    if (batch_emits) {
+                        L(emitted);
+                    }
                     mov(eax, dword[st + offsetof(State, increment)]);
                     add(dword[st + offsetof(State, method)], eax);
                 }
@@ -648,6 +741,7 @@ private:
             }
         }
 
+        bool batch_emits{};
         std::vector<Xbyak::Label> labels;
         std::vector<bool> loop_end, after_end;
         Xbyak::Label table, dispatch, success, leave;
@@ -655,8 +749,12 @@ private:
             fail_loop, fail_dread, fail_dwrite, fail_output, fail_emit, fail_outside, fail_steps;
     };
 
-    std::unique_ptr<Program> program;
-    std::uint64_t compiled_generation{~std::uint64_t{0}};
+    std::array<std::unique_ptr<Program>, 2> programs; ///< Plain, batching
+    std::array<std::uint64_t, 2> compiled_generations{~std::uint64_t{0}, ~std::uint64_t{0}};
+    Program* program{}; ///< The one the last Prepare chose
+    bool compiled_batch{};
+    std::unique_ptr<State> kept; ///< Options::keep_state
+    bool kept_busy{};
 };
 
 } // namespace Tegra

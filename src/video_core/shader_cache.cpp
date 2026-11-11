@@ -25,7 +25,9 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2.h"
 #include "video_core/nx2_debug_control.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/shader_cache.h"
 #include "video_core/shader_environment.h"
 #include "video_core/texture_cache/util.h"
@@ -140,6 +142,14 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
     const GPUVAddr base_addr{maxwell3d->regs.program_region.Address()};
     const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
     const bool mesh{native && maxwell3d->regs.IsMeshEnabled()};
+    const size_t memory_id = gpu_memory->GetID();
+    const u64 map_serial = gpu_memory->GetMapSerial();
+    const u64 inv_serial = invalidation_serial.load(std::memory_order_acquire);
+    // Read before anything is resolved: a program dropped meanwhile moved it on.
+    const u64 code_epoch = Tegra::g_nx2_code_epoch.load(std::memory_order_acquire);
+    nx2_resolved_epoch = 0;
+    nx2_code_ranges = {};
+    bool code_ranges_known = true;
     for (size_t index = 0; index < Tegra::Engines::Maxwell3D::Regs::MaxShaderProgram; ++index) {
         if (!maxwell3d->regs.IsShaderConfigEnabled(index)) {
             unique_hashes[index] = 0;
@@ -160,13 +170,14 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
         const GPUVAddr shader_addr{native
             ? (static_cast<u64>(shader_config.reserved[0] & 0xff) << 32) | shader_config.reserved[1]
             : base_addr + shader_config.offset};
-        const std::optional<VAddr> cpu_shader_addr{gpu_memory->GpuToCpuAddress(shader_addr)};
-        if (!cpu_shader_addr) {
+        std::optional<VAddr> cpu_shader_addr;
+        const ShaderInfo* shader_info{
+            TryGetResolved(shader_addr, memory_id, map_serial, inv_serial, cpu_shader_addr)};
+        if (!shader_info && !cpu_shader_addr) {
             LOG_ERROR(HW_GPU, "Invalid GPU address for shader {:#016x}", shader_addr);
             last_shaders_valid = false;
             return false;
         }
-        const ShaderInfo* shader_info{TryGet(*cpu_shader_addr)};
         if (!shader_info && native && IsRejected(*cpu_shader_addr)) {
             // A rejected program fails the same way every time it is bound: skip its draws
             // without rethrowing (two C++ throws each time cost ~1-2% of the GPU thread).
@@ -182,6 +193,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
                 RethrowIfRejected(*cpu_shader_addr);
                 GraphicsEnvironment env{*maxwell3d, *gpu_memory, program, native ? shader_addr : base_addr, start_address};
                 shader_info = MakeShaderInfo(env, *cpu_shader_addr);
+                CacheResolved(shader_addr, memory_id, map_serial, inv_serial, shader_info);
             } catch (const Shader::Exception&) {
                 RememberRejection(*cpu_shader_addr);
                 // Once per program: which stage slot it is bound to, its header and the slot's
@@ -204,8 +216,21 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
                      program == Tegra::Engines::Maxwell3D::Regs::ShaderType::Tessellation)) {
             unique_hashes[index] ^= MeshStateHash();
         }
+        if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::MacroReadWriterSet)) {
+            const std::optional<DAddr> code{cpu_shader_addr ? cpu_shader_addr
+                                                            : gpu_memory->GpuToCpuAddress(shader_addr)};
+            // No range: nothing can be proven for these programs (nx2_resolved_epoch stays 0).
+            code_ranges_known &= code.has_value();
+            nx2_code_ranges[index] = {code ? *code : 0,
+                                      code ? (std::max<u64>)(shader_info->size_bytes, 1) : 0};
+        }
     }
     last_shaders_valid = true;
+    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::MacroReadWriterSet) &&
+        code_ranges_known) {
+        nx2_resolved_epoch = code_epoch;
+        nx2_resolved_map = map_serial;
+    }
     return true;
 } catch (const Shader::Exception& error) {
     auto& native = maxwell3d->GetNativeMacroEngine();
@@ -240,18 +265,24 @@ const ShaderInfo* ShaderCache::ComputeShader() {
     const GPUVAddr program_base{kepler_compute->regs.code_loc.Address()};
     const auto& qmd{kepler_compute->launch_description};
     const GPUVAddr shader_addr{program_base + qmd.program_start};
-    const std::optional<VAddr> cpu_shader_addr{gpu_memory->GpuToCpuAddress(shader_addr)};
+    const size_t memory_id = gpu_memory->GetID();
+    const u64 map_serial = gpu_memory->GetMapSerial();
+    const u64 inv_serial = invalidation_serial.load(std::memory_order_acquire);
+    std::optional<VAddr> cpu_shader_addr;
+    if (const ShaderInfo* const shader =
+            TryGetResolved(shader_addr, memory_id, map_serial, inv_serial, cpu_shader_addr)) {
+        return shader;
+    }
     if (!cpu_shader_addr) {
         LOG_ERROR(HW_GPU, "Invalid GPU address for shader {:#016x}", shader_addr);
         return nullptr;
     }
-    if (const ShaderInfo* const shader = TryGet(*cpu_shader_addr)) {
-        return shader;
-    }
+    RethrowIfRejected(*cpu_shader_addr);
     try {
-        RethrowIfRejected(*cpu_shader_addr);
         ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
-        return MakeShaderInfo(env, *cpu_shader_addr);
+        const ShaderInfo* const shader = MakeShaderInfo(env, *cpu_shader_addr);
+        CacheResolved(shader_addr, memory_id, map_serial, inv_serial, shader);
+        return shader;
     } catch (const Shader::Exception&) {
         RememberRejection(*cpu_shader_addr);
         throw;
@@ -273,6 +304,8 @@ bool ShaderCache::IsRejected(VAddr addr) {
 void ShaderCache::RememberRejection(VAddr addr) {
     std::scoped_lock lock{rejected_mutex};
     rejected_native.emplace(addr, std::current_exception());
+    // InnerInvalidation skips pages the filter never saw; a rewrite here must still drop this.
+    page_filter.Mark(addr, 1);
     rejected_lowest.store((std::min)(rejected_lowest.load(std::memory_order_relaxed), addr),
                           std::memory_order_relaxed);
     rejected_highest.store((std::max)(rejected_highest.load(std::memory_order_relaxed), addr),
@@ -312,11 +345,53 @@ ShaderInfo* ShaderCache::TryGet(VAddr addr) const {
     return it->second->data;
 }
 
+const ShaderInfo* ShaderCache::TryGetResolved(GPUVAddr shader_addr, size_t memory_id,
+                                              u64 map_serial, u64 inv_serial,
+                                              std::optional<VAddr>& out_cpu_addr) {
+    const size_t slot = ((shader_addr >> 4) ^ (shader_addr >> 16) ^ memory_id) &
+                        (ResolvedShaderCacheSize - 1);
+    auto& entry = resolved_shader_cache[slot];
+    if (entry.shader_addr == shader_addr && entry.memory_id == memory_id &&
+        entry.map_serial == map_serial && entry.invalidation_serial == inv_serial &&
+        entry.info != nullptr) {
+        return entry.info;
+    }
+    out_cpu_addr = gpu_memory->GpuToCpuAddress(shader_addr);
+    if (!out_cpu_addr) {
+        return nullptr;
+    }
+    const ShaderInfo* const info = TryGet(*out_cpu_addr);
+    if (info != nullptr) {
+        entry.shader_addr = shader_addr;
+        entry.memory_id = memory_id;
+        entry.map_serial = map_serial;
+        entry.invalidation_serial = inv_serial;
+        entry.info = info;
+    }
+    return info;
+}
+
+void ShaderCache::CacheResolved(GPUVAddr shader_addr, size_t memory_id, u64 map_serial,
+                                u64 inv_serial, const ShaderInfo* info) noexcept {
+    if (!info) {
+        return;
+    }
+    const size_t slot = ((shader_addr >> 4) ^ (shader_addr >> 16) ^ memory_id) &
+                        (ResolvedShaderCacheSize - 1);
+    auto& entry = resolved_shader_cache[slot];
+    entry.shader_addr = shader_addr;
+    entry.memory_id = memory_id;
+    entry.map_serial = map_serial;
+    entry.invalidation_serial = inv_serial;
+    entry.info = info;
+}
+
 void ShaderCache::Register(std::unique_ptr<ShaderInfo> data, VAddr addr, size_t size) {
     std::scoped_lock lock{invalidation_mutex, lookup_mutex};
 
     const VAddr addr_end = addr + size;
     Entry* const entry = NewEntry(addr, addr_end, data.get());
+    page_filter.Mark(addr, size);
 
     const u64 page_end = (addr_end + YUZU_PAGESIZE - 1) >> YUZU_PAGEBITS;
     for (u64 page = addr >> YUZU_PAGEBITS; page < page_end; ++page) {
@@ -353,6 +428,7 @@ void ShaderCache::RemovePendingShaders() {
     if (marked_for_removal.empty()) {
         return;
     }
+    invalidation_serial.fetch_add(1, std::memory_order_release);
     // Remove duplicates
     std::ranges::sort(marked_for_removal);
     marked_for_removal.erase(std::unique(marked_for_removal.begin(), marked_for_removal.end()),
@@ -385,6 +461,7 @@ void ShaderCache::RemovePendingShaders() {
 
 void ShaderCache::InvalidatePageEntries(std::vector<Entry*>& entries, VAddr addr, VAddr addr_end) {
     size_t index = 0;
+    bool invalidated = false;
     while (index < entries.size()) {
         Entry* const entry = entries[index];
         if (!entry->Overlaps(addr, addr_end)) {
@@ -395,6 +472,12 @@ void ShaderCache::InvalidatePageEntries(std::vector<Entry*>& entries, VAddr addr
         UnmarkMemory(entry);
         RemoveEntryFromInvalidationCache(entry);
         marked_for_removal.push_back(entry);
+        invalidated = true;
+    }
+    if (invalidated) {
+        invalidation_serial.fetch_add(1, std::memory_order_release);
+        // Every MacroReadWriterSet proof made before this may name a program that changed.
+        Tegra::Nx2BumpCodeEpoch();
     }
 }
 

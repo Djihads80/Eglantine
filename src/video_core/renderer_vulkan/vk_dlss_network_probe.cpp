@@ -173,6 +173,7 @@ std::optional<VideoCore::GameDlssProbe> DlssNetworkProbe::Probe(VkImageView inpu
         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0,
                                read_results);
     });
+    scheduler.InvalidateDescriptorBuffer();
     ticks[next] = scheduler.CurrentTick();
     next = (next + 1) % SLOTS;
     return result;

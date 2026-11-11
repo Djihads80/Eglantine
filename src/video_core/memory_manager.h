@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -72,6 +73,16 @@ public:
     template <typename T>
     [[nodiscard]] T Read(GPUVAddr addr) const;
 
+    /// One 4 KiB page's host pointer for repeated small reads (ReadU32). Valid only while the
+    /// mappings cannot change, e.g. within one draw's setup on the GPU thread.
+    struct ReadPageCache {
+        GPUVAddr page{~GPUVAddr{0}};
+        const u8* pointer{};
+    };
+
+    /// Read<u32>, translating the address's page only when it differs from the cached one.
+    [[nodiscard]] u32 ReadU32(GPUVAddr addr, ReadPageCache& cache) const;
+
     template <typename T>
     void Write(GPUVAddr addr, T data);
 
@@ -118,6 +129,8 @@ public:
     /// without a translation per word.
     void ReadWordsUnsafe(GPUVAddr gpu_src_addr, u32* dest, std::size_t count) const;
     void WriteBlockCached(GPUVAddr gpu_dest_addr, const void* src_buffer, std::size_t size);
+    /// WriteBlockCached of `count` consecutive words within one device page, in a single write.
+    void WriteWordsCached(GPUVAddr gpu_dest_addr, const u32* words, std::size_t count);
 
     /**
      * Checks if a gpu region can be simply read with a pointer.
@@ -147,6 +160,12 @@ public:
     GPUVAddr MapSparse(GPUVAddr gpu_addr, std::size_t size, bool is_big_pages = true);
     void Unmap(GPUVAddr gpu_addr, std::size_t size);
 
+    /// Writes the query reports in the range to guest memory, waiting for pending host results.
+    void FlushQueryResults(GPUVAddr gpu_addr, size_t size) const;
+
+    /// Publish cached writes before changing the translation or its device backing.
+    void PreserveMapping(GPUVAddr gpu_addr, std::size_t size);
+
     void FlushRegion(GPUVAddr gpu_addr, size_t size,
                      VideoCommon::CacheType which = VideoCommon::CacheType::All) const;
 
@@ -158,10 +177,8 @@ public:
 
     size_t MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const;
 
-    /// Bumped after each page table change: lookups cached under one value stay valid until then.
-    [[nodiscard]] u64 MapSerial() const {
-        return map_serial.load(std::memory_order_acquire);
-    }
+    /// MaxContinuousRange by walking the page tables (the answer with Nx2Perf off).
+    size_t MaxContinuousRangeUncached(GPUVAddr gpu_addr, size_t size) const;
 
     bool IsWithinGPUAddressRange(GPUVAddr gpu_addr) const {
         return gpu_addr < address_space_size;
@@ -172,13 +189,23 @@ public:
     size_t GetMemoryLayoutSize(GPUVAddr gpu_addr,
                                size_t max_size = (std::numeric_limits<size_t>::max)()) const;
 
+    [[nodiscard]] u64 GetMapSerial() const noexcept {
+        return map_serial.load(std::memory_order_acquire);
+    }
+
+    /// GetMemoryLayoutSize from the kind map under its lock (the answer with Nx2Perf off).
+    size_t GetMemoryLayoutSizeUncached(GPUVAddr gpu_addr) const;
+
     void FlushCaching();
 
     /// Leaves the caches' invalidation of a range already written for the next FlushCaching
     /// (before every draw, dispatch, clear and copy), merged with neighbouring ranges.
     void AccumulateInvalidation(GPUVAddr gpu_addr, std::size_t size) {
+        NoteDeferredCodeWrite(gpu_addr, size);
         accumulator.Add(gpu_addr, size);
     }
+    /// Nx2Perf MacroReadWriterSet: an invalidation left for FlushCaching reaches proven code.
+    void NoteDeferredCodeWrite(GPUVAddr gpu_addr, std::size_t size) const;
 
     const u8* GetSpan(const GPUVAddr src_addr, const std::size_t size) const;
     u8* GetSpan(const GPUVAddr src_addr, const std::size_t size);
@@ -187,7 +214,20 @@ private:
     template <typename FuncMapped, typename FuncReserved, typename FuncUnmapped>
     inline void MemoryOperation(GPUVAddr gpu_src_addr, std::size_t size, bool is_big_page, FuncMapped&& func_mapped, FuncReserved&& func_reserved, FuncUnmapped&& func_unmapped) const;
 
-    size_t MaxContinuousRangeUncached(GPUVAddr gpu_addr, size_t size) const;
+    /// Immutable copy of the device-contiguous runs and the kind map that readers query without
+    /// a lock; each thread swaps its copy when map_serial changes.
+    struct MappingSnapshot {
+        struct Run {
+            GPUVAddr begin;
+            GPUVAddr end;
+        };
+        std::vector<Run> runs;
+        std::vector<std::pair<s64, PTEKind>> kinds;
+    };
+
+    /// Rebuilds the runs through the big pages a page table operation touched.
+    void UpdateContinuousRuns(GPUVAddr gpu_addr, size_t size);
+    const MappingSnapshot& CurrentSnapshot() const;
 
     void ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std::size_t size, VideoCommon::CacheType which, bool unsafe) const;
     void WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffer, std::size_t size, VideoCommon::CacheType which, bool unsafe);
@@ -214,10 +254,10 @@ private:
 
     const u64 address_space_bits;
     GPUVAddr split_address;
-    const u64 page_bits;
+    static constexpr size_t page_bits{12};
+    static constexpr size_t page_size{1ULL << page_bits};
+    static constexpr size_t page_mask{page_size - 1ULL};
     u64 address_space_size;
-    u64 page_size;
-    u64 page_mask;
     u64 page_table_mask;
     static constexpr u64 cpu_page_bits{12};
 
@@ -253,8 +293,19 @@ private:
 
     bool native_tiling{};
     mutable std::mutex guard;
-    /// Bumped after each page table change; MaxContinuousRange answers are kept until then.
+    /// Bumped after each page table change; readers keep their MappingSnapshot until then.
     std::atomic<u64> map_serial{};
+
+    struct ContinuousRun {
+        GPUVAddr end;
+        DAddr device_addr;
+    };
+    /// Maximal GPU ranges, keyed by their start, that are mapped to one device range: what
+    /// MaxContinuousRangeUncached walks to. Kept only with Nx2Perf on.
+    std::map<GPUVAddr, ContinuousRun> continuous_runs;
+    mutable std::shared_ptr<const MappingSnapshot> snapshot;
+    mutable u64 snapshot_serial{};
+    mutable std::mutex runs_guard;
 
     static constexpr size_t continuous_bits = 64;
 

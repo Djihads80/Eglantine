@@ -90,7 +90,7 @@ void CollectInterpolationInfo(Environment& env, IR::Program& program) {
     }
 }
 
-void AddNVNStorageBuffers(IR::Program& program) {
+void AddNVNStorageBuffers(IR::Program& program, const HostTranslateInfo& host_info) {
     if (!program.info.uses_global_memory) {
         return;
     }
@@ -129,6 +129,11 @@ void AddNVNStorageBuffers(IR::Program& program) {
         if (it != descs.end()) {
             it->is_written |= program.info.stores_global_memory;
             continue;
+        }
+        if (descs.size() >= Optimization::StorageBufferLimit(host_info)) {
+            throw NotImplementedException("Binding {} storage buffers to a stage that binds {}",
+                                          descs.size() + 1,
+                                          Optimization::StorageBufferLimit(host_info));
         }
         descs.push_back({
             .cbuf_index = driver_cbuf,
@@ -385,7 +390,20 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
                 program.info.passthrough.mask[i] = ((mask[i / 32] >> (i % 32)) & 1) == 0;
             }
 
+            // Vertex draw parameters and fragment built-ins cannot be geometry inputs.
+            for (const IR::Attribute attr : {IR::Attribute::InstanceId, IR::Attribute::VertexId,
+                                             IR::Attribute::BaseInstance, IR::Attribute::BaseVertex,
+                                             IR::Attribute::DrawID, IR::Attribute::FrontFace}) {
+                program.info.passthrough.mask[static_cast<size_t>(attr)] = false;
+            }
             if (!normalized_host_info.support_geometry_shader_passthrough) {
+                // LowerGeometryPassthrough copies only Position and generic varyings.
+                for (size_t i = 0; i < program.info.passthrough.mask.size(); ++i) {
+                    if (i < static_cast<size_t>(IR::Attribute::PositionX) ||
+                        i > static_cast<size_t>(IR::Attribute::Generic31W)) {
+                        program.info.passthrough.mask[i] = false;
+                    }
+                }
                 program.output_vertices = GetOutputTopologyVertices(program.output_topology);
                 LowerGeometryPassthrough(program, normalized_host_info);
             }
@@ -475,12 +493,12 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
     Optimization::VendorWorkaroundPass(program);
 
     CollectInterpolationInfo(env, program);
-    AddNVNStorageBuffers(program);
+    AddNVNStorageBuffers(program, normalized_host_info);
     return program;
 }
 
 IR::Program MergeDualVertexPrograms(IR::Program& vertex_a, IR::Program& vertex_b,
-                                    Environment& env_vertex_b) {
+                                    Environment& env_vertex_b, const HostTranslateInfo& host_info) {
     IR::Program result{};
     Optimization::VertexATransformPass(vertex_a);
     Optimization::VertexBTransformPass(vertex_b);
@@ -503,7 +521,9 @@ IR::Program MergeDualVertexPrograms(IR::Program& vertex_a, IR::Program& vertex_b
     result.info.stores.mask |= vertex_b.info.stores.mask;
 
     Optimization::JoinTextureInfo(result.info, vertex_b.info);
-    Optimization::JoinStorageInfo(result.info, vertex_b.info);
+    // The two halves are one stage: their storage buffers share its limit.
+    Optimization::JoinStorageInfo(result.info, vertex_b.info,
+                                  Optimization::StorageBufferLimit(host_info));
     Optimization::DeadCodeEliminationPass(result);
     if (Settings::values.renderer_debug) {
         Optimization::VerificationPass(result);

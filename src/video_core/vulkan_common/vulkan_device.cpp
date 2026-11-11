@@ -596,6 +596,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
 #endif
     }
 
+    host_float16_supported = features.shader_float16_int8.shaderFloat16;
     if (is_nvidia) {
         const auto arch = GetNvidiaArch();
         if (arch >= NvidiaArchitecture::Arch_AmpereOrNewer) {
@@ -759,7 +760,22 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
                                VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
     }
 
+    // The float16 workarounds above keep shaders from doing float16 arithmetic. Cooperative
+    // matrices only pass 16-bit floats to the tensor cores and back, so they keep the device
+    // feature, which no other shader then uses.
+    float16_math = features.shader_float16_int8.shaderFloat16;
+    if (extensions.cooperative_matrix) {
+        features.shader_float16_int8.shaderFloat16 = VK_TRUE;
+        LOG_INFO(Render_Vulkan, "VK_KHR_cooperative_matrix enabled for guest tensor operations");
+    }
+
+    // Enable float16 on the device when the GPU has it, so host-only shaders (frame generation)
+    // may use it; guest shaders keep following the workaround above (IsFloat16Supported).
+    if (host_float16_supported) {
+        features.shader_float16_int8.shaderFloat16 = VK_TRUE;
+    }
     logical = vk::Device::Create(physical, queue_cis, ExtensionListForVulkan(loaded_extensions), first_next, dld);
+    features.shader_float16_int8.shaderFloat16 = float16_math;
 
     graphics_queue = logical.GetQueue(graphics_family);
     present_queue = logical.GetQueue(present_family);
@@ -1334,6 +1350,11 @@ bool Device::GetSuitability(bool requires_swapchain) {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT;
         SetNext(next, properties.custom_border_color);
     }
+    if (extensions.cooperative_matrix) {
+        properties.cooperative_matrix.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR;
+        SetNext(next, properties.cooperative_matrix);
+    }
 
     // Perform the property fetch.
     physical.GetProperties2(properties2);
@@ -1448,8 +1469,10 @@ void Device::RemoveUnsuitableExtensions() {
     RemoveExtensionFeatureIfUnsuitable(extensions.depth_clip_control, features.depth_clip_control,
                                        VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
 
-    // VK_EXT_descriptor_buffer
-    extensions.descriptor_buffer = features.descriptor_buffer.descriptorBuffer;
+    // VK_EXT_descriptor_buffer (EDEN_NX2_NO_DESCRIPTOR_BUFFER=1 falls back to descriptor sets, for A/B
+    // tests of GPU faults)
+    extensions.descriptor_buffer = features.descriptor_buffer.descriptorBuffer &&
+                                   std::getenv("EDEN_NX2_NO_DESCRIPTOR_BUFFER") == nullptr;
     RemoveExtensionFeatureIfUnsuitable(extensions.descriptor_buffer, features.descriptor_buffer,
                                        VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
 
@@ -1598,6 +1621,12 @@ void Device::RemoveUnsuitableExtensions() {
     features.mesh_shader.primitiveFragmentShadingRateMeshShader = VK_FALSE;
     features.mesh_shader.meshShaderQueries = VK_FALSE;
     extensions.mesh_shader = features.mesh_shader.taskShader && features.mesh_shader.meshShader;
+    // EDEN_NX2_FORCE_MESH_FALLBACK=1: leave VK_EXT_mesh_shader disabled, so task/mesh draws take
+    // the compute fallback a device without it uses.
+    if (extensions.mesh_shader && std::getenv("EDEN_NX2_FORCE_MESH_FALLBACK") != nullptr) {
+        LOG_WARNING(Render_Vulkan, "EDEN_NX2_FORCE_MESH_FALLBACK: VK_EXT_mesh_shader disabled");
+        extensions.mesh_shader = false;
+    }
     RemoveExtensionFeatureIfUnsuitable(extensions.mesh_shader, features.mesh_shader,
                                        VK_EXT_MESH_SHADER_EXTENSION_NAME);
 
@@ -1605,6 +1634,45 @@ void Device::RemoveUnsuitableExtensions() {
     extensions.shader_quad_control = features.shader_quad_control.shaderQuadControl;
     RemoveExtensionFeatureIfUnsuitable(extensions.shader_quad_control, features.shader_quad_control,
                                        VK_KHR_SHADER_QUAD_CONTROL_EXTENSION_NAME);
+
+    // VK_KHR_cooperative_matrix
+    // Used only for the guest's HMMA.16816.F16: the same M=16 N=8 K=16 shape with 16-bit floats
+    // in every matrix, as a subgroup operation of compute shaders whose subgroups are the guest's
+    // 32-lane warp. The matrices hold 16-bit floats, so the device needs shaderFloat16. Shaders
+    // with them use the Vulkan memory model and run with full subgroups.
+    {
+        const bool has_shape = std::ranges::any_of(
+            physical.GetCooperativeMatrixPropertiesKHR(),
+            [](const VkCooperativeMatrixPropertiesKHR& shape) {
+                return shape.MSize == 16 && shape.NSize == 8 && shape.KSize == 16 &&
+                       shape.AType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                       shape.BType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                       shape.CType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                       shape.ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                       shape.saturatingAccumulation == VK_FALSE &&
+                       shape.scope == VK_SCOPE_SUBGROUP_KHR;
+            });
+        extensions.cooperative_matrix =
+            extensions.cooperative_matrix && features.cooperative_matrix.cooperativeMatrix &&
+            has_shape &&
+            (properties.cooperative_matrix.cooperativeMatrixSupportedStages &
+             VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
+            (properties.subgroup_properties.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
+            properties.subgroup_properties.subgroupSize == GuestWarpSize &&
+            // Compute subgroups may vary between these sizes (always with SPIR-V 1.6), and the
+            // per-lane matrix layout needs exactly the guest's 32 lanes.
+            extensions.subgroup_size_control &&
+            properties.subgroup_size_control.minSubgroupSize == GuestWarpSize &&
+            properties.subgroup_size_control.maxSubgroupSize == GuestWarpSize &&
+            features.subgroup_size_control.computeFullSubgroups &&
+            features.vulkan_memory_model.vulkanMemoryModel &&
+            features.vulkan_memory_model.vulkanMemoryModelDeviceScope &&
+            features.shader_float16_int8.shaderFloat16;
+        features.cooperative_matrix.cooperativeMatrixRobustBufferAccess = VK_FALSE;
+        RemoveExtensionFeatureIfUnsuitable(extensions.cooperative_matrix,
+                                           features.cooperative_matrix,
+                                           VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+    }
 
     // VK_KHR_workgroup_memory_explicit_layout
     extensions.workgroup_memory_explicit_layout =

@@ -18,7 +18,7 @@ namespace VideoCommon::ShaderWarm {
 
 /// Precache files use the Vulkan pipeline cache version: the emulator loads one only when it
 /// matches, so the two must move together (vk_pipeline_cache.cpp checks it).
-constexpr u32 WarmCacheVersion = 31;
+constexpr u32 WarmCacheVersion = 33;
 
 using ComputeKey = std::array<u8, 24>;
 

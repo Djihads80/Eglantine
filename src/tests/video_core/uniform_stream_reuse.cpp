@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
@@ -64,6 +65,7 @@ void CheckBound(const Runtime& runtime, const Memory& memory, u64 address, u32 s
 
 TEST_CASE("Uniform stream reuse preserves data through mutation and session resets",
           "[video_core]") {
+    using VideoCommon::BindSmallComputeUniformReusing;
     using VideoCommon::BindSmallUniformReusing;
     Memory memory;
     Runtime runtime;
@@ -73,6 +75,17 @@ TEST_CASE("Uniform stream reuse preserves data through mutation and session rese
               "valid small uniform rejected");
         CheckBound(runtime, memory, address, size);
     };
+    bind(0, 0, 0, 64);
+    bind(0, 0, 0, 64);
+    Check(runtime.allocations.size() == 1, "identical bytes were copied twice");
+    Check(BindSmallComputeUniformReusing(runtime, memory, 0, 0, 0, 64),
+          "valid compute uniform rejected");
+    Check(runtime.allocations.size() == 2, "compute slot shared graphics allocation");
+    Check(BindSmallComputeUniformReusing(runtime, memory, 0, 0, 0, 64),
+          "valid compute uniform rejected on repeat");
+    Check(runtime.allocations.size() == 2, "identical compute bytes were copied twice");
+    VideoCommon::ResetUniformStreamReuse<Runtime>();
+    runtime.allocations.clear();
     bind(0, 0, 0, 64);
     bind(0, 0, 0, 64);
     Check(runtime.allocations.size() == 1, "identical bytes were copied twice");
