@@ -1,0 +1,15 @@
+[33md9330e37c2[m feat(oot): added recommended settings + fixed CMakeLists windows options
+[33m088ffcb042[m Merge pull request #429 from CloudP4bbs/pr/msvc-release-fixes
+[33m424ff3b300[m Merge pull request #150
+[33m60be2b2cba[m Merge issue-385-nup-extract into merge/nup-editor
+[33m3cca70eee6[m Merge PR #428 (MateescuAdrian/feat/nup-metadata-edit) into merge/nup-editor
+[33m3fa3214f33[m nup: find icons online and edit localized names in the metadata editor
+[33m66255aa2aa[m feat(nup): allow editing game name and icon metadata with auto-detect and upload
+[33m98cc44dadd[m yuzu: show NVIDIA's DLSS files in the Graphics tab and fetch them from NVIDIA
+[33m964a39cc6b[m CMake/MSVC: let a clean Release build finish
+[33m15255641e2[m[33m ([m[1;31morigin/feat/nup-packer-ui[m[33m)[m qt: add a metadata dialog and a progress window to Convert to NUP
+[33m926e7ac6af[m file_sys: add a deterministic NUP packer, Convert to NUP in Qt and eden-cli --pack-nup (#271)
+[33m3003c5fa4a[m Merge pull request #105 from shiv121231/nx2
+[33m37908985af[m[33m ([m[1;33mtag: [m[1;33mbuild-92[m[33m)[m cmake: skip the pre-commit hook copy when .git is not a directory
+[33mbbca26a547[m nx2: load nx2_switches.txt at startup and ship tuned defaults
+[33mb610259c74[m Suppress unused warnings with WERROR enabled
