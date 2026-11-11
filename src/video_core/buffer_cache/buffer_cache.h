@@ -2163,9 +2163,14 @@ void BufferCache<P>::UpdateVertexBuffers() {
     flags[Dirty::VertexBuffers] = false;
 
     const auto flags_words = std::bit_cast<std::array<u64, 4>>(flags);
+    static_assert(Dirty::VertexBuffer31 < 64, "vertex buffer flags must fit in the first word");
     u32 dirty_vb_mask = static_cast<u32>(flags_words[0] >> Dirty::VertexBuffer0);
-    if constexpr (NUM_VERTEX_BUFFERS < 32) {
-        dirty_vb_mask &= (1u << NUM_VERTEX_BUFFERS) - 1;
+    if (const u32 unsupported = dirty_vb_mask & ~VERTEX_BUFFER_MASK; unsupported != 0) {
+        LOG_WARNING(HW_GPU, "Ignoring unsupported vertex streams, mask={:#x}", unsupported);
+        for (u32 index = NUM_VERTEX_BUFFERS; index < 32; ++index) {
+            flags[Dirty::VertexBuffer0 + index] = false;
+        }
+        dirty_vb_mask &= VERTEX_BUFFER_MASK;
     }
     while (dirty_vb_mask != 0) {
         const u32 index = static_cast<u32>(std::countr_zero(dirty_vb_mask));
