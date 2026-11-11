@@ -473,6 +473,9 @@ if (zstd_ADDED)
     add_library(zstd::libzstd ALIAS libzstd_static)
 endif()
 
+# nxformat (.nx game archives)
+include(NxFormat)
+
 # nlohmann
 AddJsonPackage(nlohmann)
 

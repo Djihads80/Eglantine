@@ -130,6 +130,10 @@ AppLoader_NSP::LoadResult AppLoader_NSP::Load(Kernel::KProcess& process, Core::S
         return {ResultStatus::ErrorNSPMissingProgramNCA, {}};
     }
 
+    if (secondary_loader == nullptr) {
+        return {ResultStatus::ErrorNSPMissingProgramNCA, {}};
+    }
+
     const auto result = secondary_loader->Load(process, system);
     if (result.first != ResultStatus::Success) {
         return result;
@@ -189,6 +193,9 @@ ResultStatus AppLoader_NSP::VerifyIntegrity(std::function<bool(size_t, size_t)> 
 }
 
 ResultStatus AppLoader_NSP::ReadRomFS(FileSys::VirtualFile& out_file) {
+    if (secondary_loader == nullptr) {
+        return ResultStatus::ErrorNSPMissingProgramNCA;
+    }
     return secondary_loader->ReadRomFS(out_file);
 }
 
@@ -235,6 +242,20 @@ ResultStatus AppLoader_NSP::ReadIcon(std::vector<u8>& buffer) {
     return ResultStatus::Success;
 }
 
+ResultStatus AppLoader_NSP::ReadOriginalIcon(std::vector<u8>& buffer) const {
+    const auto control = nsp->GetNCA(FileSys::GetBaseTitleID(nsp->GetProgramTitleID()),
+                                     FileSys::ContentRecordType::Control);
+    if (control == nullptr || control->GetStatus() != ResultStatus::Success) {
+        return ResultStatus::ErrorNoControl;
+    }
+    const auto [nacp, icon] = FileSys::PatchManager::ParseControlRomFS(control->GetRomFS());
+    if (icon == nullptr) {
+        return ResultStatus::ErrorNoIcon;
+    }
+    buffer = icon->ReadAllBytes();
+    return ResultStatus::Success;
+}
+
 ResultStatus AppLoader_NSP::ReadTitle(std::string& title) {
     if (nacp_file == nullptr) {
         return ResultStatus::ErrorNoControl;
@@ -265,14 +286,23 @@ ResultStatus AppLoader_NSP::ReadManualRomFS(FileSys::VirtualFile& out_file) {
 }
 
 ResultStatus AppLoader_NSP::ReadBanner(std::vector<u8>& buffer) {
+    if (secondary_loader == nullptr) {
+        return ResultStatus::ErrorNSPMissingProgramNCA;
+    }
     return secondary_loader->ReadBanner(buffer);
 }
 
 ResultStatus AppLoader_NSP::ReadLogo(std::vector<u8>& buffer) {
+    if (secondary_loader == nullptr) {
+        return ResultStatus::ErrorNSPMissingProgramNCA;
+    }
     return secondary_loader->ReadLogo(buffer);
 }
 
 ResultStatus AppLoader_NSP::ReadNSOModules(Modules& modules) {
+    if (secondary_loader == nullptr) {
+        return ResultStatus::ErrorNSPMissingProgramNCA;
+    }
     return secondary_loader->ReadNSOModules(modules);
 }
 

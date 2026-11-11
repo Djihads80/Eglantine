@@ -40,6 +40,11 @@ if (NOT TARGET enet::enet)
     add_library(enet::enet ALIAS enet)
 endif()
 
+# nxformat reader, header-only
+add_library(nxformat_reader INTERFACE)
+target_include_directories(nxformat_reader SYSTEM INTERFACE ./nxformat)
+target_compile_features(nxformat_reader INTERFACE cxx_std_17)
+
 # stb
 add_library(stb stb/stb_dxt.cpp)
 target_include_directories(stb PUBLIC ./stb)
