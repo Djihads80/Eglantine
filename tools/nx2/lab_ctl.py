@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import signal
 import struct
 import subprocess
@@ -82,6 +83,31 @@ def stop_process(pid, grace=2 if WINDOWS else 10):
         deadline = time.time() + 5
         while pid_alive(pid) and time.time() < deadline:
             time.sleep(0.1)
+
+
+def own_log_path(binary):
+    """The log file the emulator writes itself. On Windows nothing goes to stdout: it is
+    <exe dir>/user/log/eden_log.txt for a portable install, else %APPDATA%/eglantine/log, the same file
+    the Qt app uses. None where stdout carries the log."""
+    if not WINDOWS:
+        return None
+    portable = os.path.join(os.path.dirname(os.path.abspath(binary)), "user", "log", "eden_log.txt")
+    if os.path.isdir(os.path.dirname(portable)):
+        return portable
+    return os.path.join(os.environ.get("APPDATA", ""), "eglantine", "log", "eden_log.txt")
+
+
+def collect_log(diag):
+    """Copies the emulator's own log over <diag>/emulator.log (Windows; the stdout capture is empty)."""
+    path = read(os.path.join(diag, "emulator.logpath"))
+    started = os.path.getmtime(os.path.join(diag, "emulator.logpath")) if path else 0
+    if not path:
+        return
+    try:
+        if os.path.getmtime(path) >= started - 2:  # this run's, not an older run's
+            shutil.copyfile(path, os.path.join(diag, "emulator.log"))
+    except OSError:
+        pass
 
 
 def detached_kwargs():
@@ -277,6 +303,17 @@ def command_launch(args):
             os.unlink(os.path.join(args.diag_dir, stale))
     binary = args.binary or os.path.join(REPO, "build", "bin", "eden-cli" + (".exe" if WINDOWS else ""))
     log = open(os.path.join(args.diag_dir, "emulator.log"), "w")
+    own_log = own_log_path(binary)
+    for name in ("emulator.logpath",):
+        try:
+            os.unlink(os.path.join(args.diag_dir, name))
+        except OSError:
+            pass
+    if own_log:
+        # The emulator rotates this file on launch; keep the previous run's (the Qt app's, say).
+        if os.path.isfile(own_log):
+            shutil.copyfile(own_log, os.path.join(args.diag_dir, "prev-eden_log.txt"))
+        write_atomic(os.path.join(args.diag_dir, "emulator.logpath"), own_log)
     command = [binary] + (["-c", args.config] if args.config else []) + ["-g", args.game]
     process = subprocess.Popen(command, env=environment, stdout=log, stderr=subprocess.STDOUT,
                                cwd=REPO, **detached_kwargs())
@@ -297,6 +334,7 @@ def command_watchdog(args):
         time.sleep(1)
     if pid_alive(args.pid):
         stop_process(args.pid)
+    collect_log(args.diag_dir)
 
 
 def command_stop(args):
@@ -305,6 +343,7 @@ def command_stop(args):
     if not pid:
         sys.exit("no emulator.pid")
     stop_process(int(pid))
+    collect_log(args.diag_dir)
     try:
         os.unlink(path)
     except OSError:

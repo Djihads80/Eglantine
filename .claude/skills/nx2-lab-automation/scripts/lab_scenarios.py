@@ -278,6 +278,7 @@ def scenario_watch(args):
     os.makedirs(folder)
     try:
         to_gameplay(args, [f"EDEN_NX2_FRAME_CAPTURE={folder}", "EDEN_NX2_FLASH_WATCH=1"])
+        since = lab_ctl.frame(args.diag_dir) or 0
         time.sleep(3)
         pre_moves(args)
         deadline = time.time() + float(args.count)
@@ -291,7 +292,11 @@ def scenario_watch(args):
             text = handle.read().replace(b"\0", b"").decode("utf-8", "replace")
         for line in [line for line in text.splitlines() if "flash watch" in line][-20:]:
             log(line)
-    log(f"saved: {len(glob.glob(os.path.join(folder, 'flash-*.tga')))} frames in {folder}")
+    flashes = [int(re.findall(r"flash-(\d+)", name)[0]) for name in os.listdir(folder)
+               if re.match(r"^flash-\d+\.tga$", name)]
+    # Menus and fades before the game are near-white too: count what happened in the game itself.
+    log(f"saved: {len(flashes)} frames in {folder}, {len([n for n in flashes if n >= since])} "
+        f"from present {since} on (gameplay)")
 
 
 def scenario_survey(args):
@@ -340,6 +345,7 @@ def contact_sheet(folder, shots):
 
 
 def keep_log(args, name):
+    lab_ctl.collect_log(args.diag_dir)
     source = os.path.join(args.diag_dir, "emulator.log")
     target = os.path.join(args.diag_dir, name)
     try:
