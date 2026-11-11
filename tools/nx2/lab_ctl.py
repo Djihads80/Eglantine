@@ -34,6 +34,58 @@ import zlib
 KEY = re.compile(r"^[0-9a-f]{16}$")
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
+WINDOWS = os.name == "nt"
+
+
+# --- processes: the emulator and everything it starts, on Linux/macOS and Windows -------------
+
+def pid_alive(pid):
+    if WINDOWS:
+        import ctypes  # os.kill(pid, 0) would terminate the process there
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        kernel32.CloseHandle(handle)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def kill_tree(pid, force):
+    """Asks the process and its children to end; `force` kills them."""
+    if WINDOWS:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T"] + (["/F"] if force else []),
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        return
+    try:
+        os.killpg(pid, signal.SIGKILL if force else signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+
+def stop_process(pid, grace=2 if WINDOWS else 10):
+    # Windows: the polite request only reaches a window, which a hidden eden-cli ignores.
+    kill_tree(pid, False)
+    deadline = time.time() + grace
+    while pid_alive(pid) and time.time() < deadline:
+        time.sleep(0.2)
+    if pid_alive(pid):
+        kill_tree(pid, True)
+
+
+def detached_kwargs():
+    """Popen arguments that leave a child in its own process group, outliving this command."""
+    if WINDOWS:
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008}  # DETACHED_PROCESS
+    return {"start_new_session": True}
 
 
 def read(path, default=None):
@@ -220,34 +272,40 @@ def command_launch(args):
     for stale in os.listdir(args.diag_dir):
         if re.match(r"^(diag-state\.json|draw-list|draw-list-\d+\.tsv|capture-\d+\.tga)$", stale):
             os.unlink(os.path.join(args.diag_dir, stale))
-    binary = args.binary or os.path.join(REPO, "build", "bin", "eden-cli")
+    binary = args.binary or os.path.join(REPO, "build", "bin", "eden-cli" + (".exe" if WINDOWS else ""))
     log = open(os.path.join(args.diag_dir, "emulator.log"), "w")
     command = [binary] + (["-c", args.config] if args.config else []) + ["-g", args.game]
-    process = subprocess.Popen(command, env=environment, stdout=log,
-                               stderr=subprocess.STDOUT, start_new_session=True, cwd=REPO)
+    process = subprocess.Popen(command, env=environment, stdout=log, stderr=subprocess.STDOUT,
+                               cwd=REPO, **detached_kwargs())
     write_atomic(os.path.join(args.diag_dir, "emulator.pid"), str(process.pid))
     if args.max_seconds:
-        # A watchdog, so a forgotten run does not keep the GPU busy: kills the process group after
-        # that long unless the emulator is already gone.
-        subprocess.Popen(["/bin/sh", "-c", f"sleep {args.max_seconds}; kill -TERM -{process.pid} 2>/dev/null; "
-                          f"sleep 10; kill -KILL -{process.pid} 2>/dev/null"], start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # A watchdog, so a forgotten run does not keep the GPU busy: stops the emulator after that
+        # long unless it is already gone.
+        subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "-d", args.diag_dir,
+                          "_watchdog", str(process.pid), str(args.max_seconds)],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, **detached_kwargs())
     print(json.dumps({"pid": process.pid, "log": log.name, "max_seconds": args.max_seconds}))
 
 
+def command_watchdog(args):
+    deadline = time.time() + args.seconds
+    while time.time() < deadline and pid_alive(args.pid):
+        time.sleep(1)
+    if pid_alive(args.pid):
+        stop_process(args.pid)
+
+
 def command_stop(args):
-    pid = read(os.path.join(args.diag_dir, "emulator.pid"))
+    path = os.path.join(args.diag_dir, "emulator.pid")
+    pid = read(path)
     if not pid:
         sys.exit("no emulator.pid")
+    stop_process(int(pid))
     try:
-        os.killpg(int(pid), signal.SIGTERM)
-        for _ in range(50):
-            os.kill(int(pid), 0)
-            time.sleep(0.2)
-        os.killpg(int(pid), signal.SIGKILL)
-    except ProcessLookupError:
+        os.unlink(path)
+    except OSError:
         pass
-    os.unlink(os.path.join(args.diag_dir, "emulator.pid"))
     print("stopped")
 
 
@@ -404,6 +462,11 @@ def main():
     launch.set_defaults(func=command_launch)
 
     commands.add_parser("stop").set_defaults(func=command_stop)
+
+    watchdog = commands.add_parser("_watchdog")  # started by launch; not for direct use
+    watchdog.add_argument("pid", type=int)
+    watchdog.add_argument("seconds", type=int)
+    watchdog.set_defaults(func=command_watchdog)
 
     show = commands.add_parser("state", help="programs seen recently, busiest first")
     show.add_argument("--kind", choices=("v", "p", "c"))
