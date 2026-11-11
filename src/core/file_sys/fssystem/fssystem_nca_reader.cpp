@@ -84,9 +84,11 @@ Result NcaReader::Initialize(VirtualFile base_storage, const NcaCryptoConfigurat
 
     // Validate the magic.
     if (const Result magic_result = CheckNcaMagic(m_header.magic); R_FAILED(magic_result)) {
-        // Try to use a plaintext header.
+        // Try to use a plaintext header, as a decrypted NCA (DNCA magic) has.
         base_storage->ReadObject(std::addressof(m_header), 0);
-        R_UNLESS(R_SUCCEEDED(CheckNcaMagic(m_header.magic)), magic_result);
+        R_UNLESS(m_header.magic == NcaHeader::MagicDecrypted ||
+                     R_SUCCEEDED(CheckNcaMagic(m_header.magic)),
+                 magic_result);
 
         // Configure to use the plaintext header.
         auto base_storage_size = base_storage->GetSize();

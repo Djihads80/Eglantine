@@ -329,11 +329,11 @@ private:
                                  VirtualFile meta_storage, const NcaPatchInfo& patch_info);
 
     Result CreatePatchMetaStorage(VirtualFile* out_aes_ctr_ex_meta, VirtualFile* out_indirect_meta,
+                                  NcaFsHeader::EncryptionType encryption_type,
                                   VirtualFile* out_verification, VirtualFile base_storage,
                                   s64 offset, const NcaAesCtrUpperIv& upper_iv,
                                   const NcaPatchInfo& patch_info,
                                   const NcaMetaDataHashDataInfo& meta_data_hash_data_info);
-
 
     Result CreateSha3Storage(VirtualFile* out, VirtualFile base_storage,
                              const NcaFsHeader::HashData::HierarchicalSha256Data& hash_data);

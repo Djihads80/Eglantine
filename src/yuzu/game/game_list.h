@@ -90,6 +90,7 @@ public:
 
 public slots:
     void SetNupConversionRunning(bool running);
+    void SetNxToolRunning(bool running);
     void RefreshGameDirectory();
     void RefreshExternalContent();
     void UpdateIconSizes();
@@ -111,6 +112,10 @@ signals:
     void ConvertToNupRequested(const std::string& game_path);
     void ExtractNupRequested(const std::string& game_path);
     void EditNupMetadataRequested(const std::string& game_path);
+    void ConvertToNxRequested(const std::string& game_path);
+    void AddToNxRequested(const std::string& game_path);
+    void RemoveFromNxRequested(const std::string& game_path);
+    void EditNxMetadataRequested(const std::string& game_path);
     void CopyTIDRequested(u64 program_id);
     void CreateShortcut(u64 program_id, const std::string& game_path,
                         const QtCommon::Game::ShortcutTarget target);
@@ -172,6 +177,7 @@ private:
     bool m_isTreeMode = true;
     bool m_populating = false;
     bool nup_conversion_running{};
+    bool nx_tool_running{};
     QAbstractItemView* m_currentView = nullptr;
 };
 

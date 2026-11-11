@@ -99,6 +99,9 @@ Result NcaFileSystemDriver::OpenStorageImpl(VirtualFile* out, NcaFsHeaderReader*
     // Process sparse layer.
     s64 fs_data_offset = 0;
     if (out_header_reader->ExistsSparseLayer()) {
+        // A decrypted NCA keeps no sparse layer: its bucket would need a decryption.
+        R_UNLESS(m_reader->GetMagic() != NcaHeader::MagicDecrypted, ResultInvalidNcaFsHeader);
+
         // Get the sparse info.
         const auto& sparse_info = out_header_reader->GetSparseInfo();
 
@@ -153,12 +156,22 @@ Result NcaFileSystemDriver::OpenStorageImpl(VirtualFile* out, NcaFsHeaderReader*
         R_TRY(this->CreatePatchMetaStorage(
             std::addressof(patch_meta_aes_ctr_ex_meta_storage),
             std::addressof(patch_meta_indirect_meta_storage),
+            out_header_reader->GetEncryptionType(),
             ctx != nullptr ? std::addressof(ctx->patch_layer_info_storage) : nullptr, storage,
             fs_data_offset, out_header_reader->GetAesCtrUpperIv(), patch_info,
             out_header_reader->GetPatchMetaDataHashDataInfo()));
     }
 
-    if (patch_info.HasAesCtrExTable()) {
+    if (patch_info.HasAesCtrExTable() &&
+        out_header_reader->GetEncryptionType() == NcaFsHeader::EncryptionType::None &&
+        m_reader->GetMagic() == NcaHeader::MagicDecrypted) {
+        // Decrypted update content: the counter table describes data that is already plain.
+        storage =
+            std::make_shared<OffsetVfsFile>(std::move(storage), patch_info.aes_ctr_ex_offset, 0);
+        if (ctx != nullptr) {
+            ctx->fs_data_storage = storage;
+        }
+    } else if (patch_info.HasAesCtrExTable()) {
         // Check the encryption type.
         ASSERT(out_header_reader->GetEncryptionType() == NcaFsHeader::EncryptionType::None ||
                out_header_reader->GetEncryptionType() == NcaFsHeader::EncryptionType::AesCtrEx ||
@@ -302,6 +315,11 @@ Result NcaFileSystemDriver::CreateStorageByRawStorage(VirtualFile* out,
 
     // Process hash/integrity layer.
     switch (header_reader->GetHashType()) {
+    case NcaFsHeader::HashType::None:
+        // Only a decrypted NCA built from an extracted tree has a section without hashes.
+        R_UNLESS(m_reader->GetMagic() == NcaHeader::MagicDecrypted,
+                 ResultInvalidNcaFsHeaderHashType);
+        break;
     case NcaFsHeader::HashType::HierarchicalSha256Hash:
         R_TRY(CreateSha256Storage(&storage, std::move(storage),
                                   header_reader->GetHashData().hierarchical_sha256_data));
@@ -346,6 +364,10 @@ Result NcaFileSystemDriver::OpenIndirectableStorageAsOriginal(
     // Process sparse layer.
     s64 fs_data_offset = 0;
     if (header_reader->ExistsSparseLayer()) {
+        // A decrypted NCA keeps no sparse layer: its bucket would need a decryption.
+        const auto& owner = m_original_reader != nullptr ? m_original_reader : m_reader;
+        R_UNLESS(owner->GetMagic() != NcaHeader::MagicDecrypted, ResultInvalidNcaFsHeader);
+
         // Get the sparse info.
         const auto& sparse_info = header_reader->GetSparseInfo();
 
@@ -1042,9 +1064,9 @@ Result NcaFileSystemDriver::CreateIndirectStorage(
 
 Result NcaFileSystemDriver::CreatePatchMetaStorage(
     VirtualFile* out_aes_ctr_ex_meta, VirtualFile* out_indirect_meta,
-    VirtualFile* out_layer_info_storage, VirtualFile base_storage, s64 offset,
-    const NcaAesCtrUpperIv& upper_iv, const NcaPatchInfo& patch_info,
-    const NcaMetaDataHashDataInfo& meta_data_hash_data_info) {
+    NcaFsHeader::EncryptionType encryption_type, VirtualFile* out_layer_info_storage,
+    VirtualFile base_storage, s64 offset, const NcaAesCtrUpperIv& upper_iv,
+    const NcaPatchInfo& patch_info, const NcaMetaDataHashDataInfo& meta_data_hash_data_info) {
     // Validate preconditions.
     ASSERT(out_aes_ctr_ex_meta != nullptr);
     ASSERT(out_indirect_meta != nullptr);
@@ -1085,9 +1107,14 @@ Result NcaFileSystemDriver::CreatePatchMetaStorage(
 
     // Create the decrypted storage.
     VirtualFile decrypted_storage;
-    R_TRY(this->CreateAesCtrStorage(std::addressof(decrypted_storage), std::move(enc_storage),
-                                    offset + patch_info.indirect_offset, upper_iv,
-                                    AlignmentStorageRequirement::None));
+    if (encryption_type != NcaFsHeader::EncryptionType::None ||
+        m_reader->GetMagic() != NcaHeader::MagicDecrypted) {
+        R_TRY(this->CreateAesCtrStorage(std::addressof(decrypted_storage), std::move(enc_storage),
+                                        offset + patch_info.indirect_offset, upper_iv,
+                                        AlignmentStorageRequirement::None));
+    } else {
+        decrypted_storage = std::move(enc_storage);
+    }
 
     // Create the verification storage.
     VirtualFile integrity_storage;

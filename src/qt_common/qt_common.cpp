@@ -55,11 +55,10 @@ std::shared_ptr<FileSys::RealVfsFilesystem> vfs = nullptr;
 std::unique_ptr<FileSys::ManualContentProvider> provider = nullptr;
 std::unique_ptr<EmuThread> emu_thread = nullptr;
 
-const QStringList supported_file_extensions = {QStringLiteral("nro"), QStringLiteral("nso"),
-                                               QStringLiteral("nca"), QStringLiteral("xci"),
-                                               QStringLiteral("xcz"), QStringLiteral("nsp"),
-                                               QStringLiteral("nsz"), QStringLiteral("nup"),
-                                               QStringLiteral("kip")};
+const QStringList supported_file_extensions = {
+    QStringLiteral("nro"), QStringLiteral("nso"), QStringLiteral("nca"), QStringLiteral("xci"),
+    QStringLiteral("xcz"), QStringLiteral("nsp"), QStringLiteral("nsz"), QStringLiteral("nup"),
+    QStringLiteral("nx"),  QStringLiteral("kip")};
 
 Core::Frontend::WindowSystemType GetWindowSystemType() {
     // Determine WSI type based on Qt platform.

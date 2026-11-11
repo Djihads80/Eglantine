@@ -30,6 +30,7 @@
 #include "core/loader/nso.h"
 #include "core/loader/nsp.h"
 #include "core/loader/nup.h"
+#include "core/loader/nx.h"
 #include "core/loader/xci.h"
 
 namespace Loader {
@@ -133,6 +134,8 @@ FileType IdentifyFile(FileSys::VirtualFile file) {
         return *xci_type;
     } else if (const auto nup_type = IdentifyFileLoader<AppLoader_NUP>(file)) {
         return *nup_type;
+    } else if (const auto nx_type = IdentifyFileLoader<AppLoader_NX>(file)) {
+        return *nx_type;
     } else if (const auto nro_type = IdentifyFileLoader<AppLoader_NRO>(file)) {
         return *nro_type;
     } else if (const auto nca_type = IdentifyFileLoader<AppLoader_NCA>(file)) {
@@ -153,7 +156,7 @@ FileType IdentifyFile(FileSys::VirtualFile file) {
 
 bool IsContainerType(FileType type) {
     return type == FileType::NSP || type == FileType::NSZ || type == FileType::XCI ||
-           type == FileType::XCZ || type == FileType::NUP;
+           type == FileType::XCZ || type == FileType::NUP || type == FileType::NX;
 }
 
 bool IsBootableGameContainer(FileSys::VirtualFile file, FileType type, u64 program_id,
@@ -182,6 +185,10 @@ bool IsBootableGameContainer(FileSys::VirtualFile file, FileType type, u64 progr
             return true;
         }
         return false;
+    }
+
+    if (type == FileType::NX) {
+        return AppLoader_NX::IsBootable(file);
     }
 
     if (!IsContainerType(type)) {
@@ -213,6 +220,8 @@ FileType GuessFromFilename(const std::string& name) {
         return FileType::NSP;
     else if (extension == "nup")
         return FileType::NUP;
+    else if (extension == "nx")
+        return FileType::NX;
     else if (extension == "nsz")
         return FileType::NSZ;
     else if (extension == "kip")
@@ -240,6 +249,8 @@ std::string GetFileTypeString(FileType type) {
         return "NSZ";
     case FileType::NUP:
         return "NUP";
+    case FileType::NX:
+        return "NX";
     case FileType::KIP:
         return "KIP";
     case FileType::DeconstructedRomDirectory:
@@ -410,6 +421,10 @@ static std::unique_ptr<AppLoader> GetFileLoader(Core::System& system, FileSys::V
     // NUP (NX Package) container format.
     case FileType::NUP:
         return std::make_unique<AppLoader_NUP>(std::move(file));
+
+    // NX game archive.
+    case FileType::NX:
+        return std::make_unique<AppLoader_NX>(system, std::move(file), program_id, program_index);
 
     // NX deconstructed ROM directory.
     case FileType::DeconstructedRomDirectory:

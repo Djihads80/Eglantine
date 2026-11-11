@@ -24,6 +24,8 @@ add_executable(tests
     video_core/spirv_fragment_shuffle.cpp
     video_core/mesh_fallback.cpp
     video_core/spirv_software_matrix.cpp
+    core/nx_archive.cpp
+    frontend_common/nx_archive.cpp
     common/bit_field.cpp
     common/cityhash.cpp
     common/container_hash.cpp
@@ -96,8 +98,11 @@ add_executable(tests
 
 create_target_directory_groups(tests)
 
-target_link_libraries(tests PRIVATE common core input_common video_core)
+target_link_libraries(tests PRIVATE common core input_common video_core frontend_common)
 target_link_libraries(tests PRIVATE ${PLATFORM_LIBRARIES} Catch2::Catch2WithMain Threads::Threads)
+
+target_compile_definitions(tests PRIVATE
+    EGLANTINE_NX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/core/nx_fixtures")
 
 add_test(NAME tests COMMAND tests)
 
