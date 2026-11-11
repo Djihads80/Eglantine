@@ -454,6 +454,9 @@ def main():
     adapter = Adapter(Emulator(args.server))
     if args.call is not None:
         sys.exit(call_once(adapter, args.call, args.out, sys.stdout))
+    # MCP stdio messages are newline-delimited UTF-8: Windows text mode would end lines with \r\n.
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8", newline="\n")
     serve(adapter, sys.stdin, sys.stdout)
 
 
