@@ -33,7 +33,6 @@
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
-#include "video_core/renderer_vulkan/pipeline_cache_dir.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vertex_repack.h"
@@ -843,18 +842,13 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         }
     }
 
-    const auto base_dir{
-        CreatePipelineCacheDir(Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir), title_id)};
-    if (base_dir.empty()) {
-        LOG_ERROR(Render_Vulkan,
-                  "Pipeline cache disabled for this session: failed to create the cache "
-                  "directory for title {:016x}",
-                  title_id);
-        // Do not keep writing to the previous title's cache files.
-        pipeline_cache_filename.clear();
-        mesh_pipeline_cache_filename.clear();
-        used_pipelines_filename.clear();
-        vulkan_pipeline_cache_filename.clear();
+    const auto shader_dir{Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir)};
+    auto base_dir{shader_dir / fmt::format("{:016x}", title_id)};
+    if (title_id == 0x0400C3F00006E000ULL) {
+        base_dir /= "mkw_zero_depth_v1";
+    }
+    if (!Common::FS::CreateDir(shader_dir) || !Common::FS::CreateDir(base_dir)) {
+        LOG_ERROR(Common_Filesystem, "Failed to create pipeline cache directories");
         return;
     }
     pipeline_cache_filename = base_dir / "vulkan.bin";
