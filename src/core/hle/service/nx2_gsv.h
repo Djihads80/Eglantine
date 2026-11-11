@@ -1428,11 +1428,17 @@ private:
     // Every 30 s: the backing of sparse blocks and GPU-only regions is marked cold. The game
     // writes it once (texture uploads by 2D blits: title 1 fills 2-4 GB of texture pools) and it
     // is read again only when the texture cache builds an image over it, so the OS may compress or
-    // page it out before anything else. Last member: stops before the regions are destroyed.
+    // page it out before anything else. Marking it cold (when RAM is low mode, RAM not low) is done
+    // once per region; paging out repeats every pass, since using the pages brings them back.
+    // Last member: stops before the regions are destroyed.
     void HintColdBacking() {
-        if (!Common::ColdHintsEnabled()) {
+        const auto mode = Common::ColdHintModeInEffect();
+        if (mode == Settings::ColdHintMode::Off) {
+            m_cold_hinted.clear();
             return;
         }
+        const bool marking_only =
+            mode == Settings::ColdHintMode::WhenRamIsLow && !Common::MemoryIsLow();
         struct Range {
             u64 physical_offset;
             u64 virtual_address;
@@ -1441,7 +1447,14 @@ private:
         std::vector<Range> ranges;
         {
             std::scoped_lock lk{m_region_mutex};
+            std::set<std::pair<u64, const void*>> present;
             for (const auto& [gpu_address, region] : m_gpu_only_regions) {
+                const std::pair<u64, const void*> id{gpu_address, region.pages.get()};
+                present.insert(id);
+                if (marking_only && m_cold_hinted.contains(id)) {
+                    continue;
+                }
+                m_cold_hinted.insert(id);
                 u64 virtual_address = region.cpu_address;
                 for (const auto& block : *region.pages) {
                     ranges.push_back({GetInteger(block.GetAddress()) - Core::DramMemoryMap::Base,
@@ -1449,12 +1462,29 @@ private:
                     virtual_address += block.GetSize();
                 }
             }
+            std::erase_if(m_cold_hinted, [&](const auto& id) { return !present.contains(id); });
         }
+        const auto begin = std::chrono::steady_clock::now();
+        u64 marked{};
+        u64 paged{};
         auto& buffer = system.DeviceMemory().buffer;
         for (const Range& range : ranges) {
-            buffer.HintCold(range.physical_offset, range.size, range.virtual_address);
+            const auto action =
+                buffer.HintCold(range.physical_offset, range.size, range.virtual_address);
+            (action == Common::ColdHintAction::PagedOut ? paged : marked) +=
+                action == Common::ColdHintAction::None ? 0 : range.size;
+        }
+        if (marked != 0 || paged != 0) {
+            LOG_INFO(Service, "Cold hints for GPU-only regions: {} MiB marked cold, {} MiB paged "
+                              "out, {:.1f} ms",
+                     marked >> 20, paged >> 20,
+                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                               begin)
+                         .count());
         }
     }
+    /// GPU-only regions already marked cold, by GPU address and page group (cold hint thread).
+    std::set<std::pair<u64, const void*>> m_cold_hinted;
     std::jthread m_cold_hint_thread{[this](std::stop_token stop) {
         Common::SetCurrentThreadName("nx2:ColdHint");
         Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);

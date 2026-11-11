@@ -424,19 +424,28 @@ ToolResult FrameSpikes(ToolContext&, const json& args) {
     return ToolResult::Structured(std::move(out));
 }
 
-/// cold_hints tool: reads or sets whether uploaded guest memory is paged out (HostMemory::HintCold).
+/// cold_hints tool: reads or overrides the cold hint mode (HostMemory::HintCold).
 ToolResult ColdHints(ToolContext&, const json& args) {
-    if (args.contains("enable")) {
-        Common::SetColdHintsEnabled(args["enable"].get<bool>());
+    using Mode = Settings::ColdHintMode;
+    if (args.contains("mode")) {
+        const std::string mode = args["mode"].get<std::string>();
+        Common::OverrideColdHintMode(mode == "off"               ? Mode::Off
+                                     : mode == "when_ram_is_low" ? Mode::WhenRamIsLow
+                                                                 : Mode::Always);
     }
+    const Mode mode = Common::ColdHintModeInEffect();
     return ToolResult::Structured(json{
-        {"enabled", Common::ColdHintsEnabled()},
-        {"legend", "On: every 600 frames the guest memory of uploaded textures and buffers, and "
-                   "every 30 s that of sparse and GPU-only regions, is paged out "
-                   "(madvise MADV_PAGEOUT), which lowers RAM use but stalls the GPU threads "
-                   "while it runs. Off: nothing is paged out from now on. Without an override it "
-                   "follows the cold_hints setting (Performance > RAM, off by default); "
-                   "EDEN_NX2_COLD_HINT=0/1 or this tool override it until the emulator exits."}});
+        {"mode", mode == Mode::Off              ? "off"
+                 : mode == Mode::WhenRamIsLow ? "when_ram_is_low"
+                                              : "always"},
+        {"memory_low", Common::MemoryIsLow()},
+        {"legend",
+         "Guest memory of uploaded textures and buffers (every 600 frames) and of sparse and "
+         "GPU-only regions (every 30 s): always = paged out at each pass (stalls the GPU threads "
+         "while it runs); when_ram_is_low = marked cold (MADV_COLD, reclaimed first by the kernel) "
+         "and paged out only while memory_low; off = left alone. Without an override it follows "
+         "the cold_hint_mode setting (Performance > RAM, off by default); EDEN_NX2_COLD_HINT "
+         "(off, low, always) or this tool override it until the emulator exits."}});
 }
 
 /// baseline_save tool: wraps BaselineSave, turning its error into a tool error.
@@ -520,12 +529,16 @@ void RegisterPerfTools(ToolRegistry& registry) {
     registry.Add(Tool{
         .name = "cold_hints",
         .title = "Cold hints",
-        .description = "Read or set (enable) whether the emulator pages out guest memory it "
-                       "considers cold: uploaded textures and buffers every 600 frames, sparse "
-                       "and GPU-only regions every 30 s. Lowers RAM use; each pass stalls the "
-                       "GPU threads while it runs.",
+        .description = "Read or override (mode) what the emulator does with guest memory the host "
+                       "GPU holds a copy of: uploaded textures and buffers every 600 frames, "
+                       "sparse and GPU-only regions every 30 s. off, when_ram_is_low (mark cold, "
+                       "page out only under memory pressure) or always (page out at each pass, "
+                       "which stalls the GPU threads while it runs). Also reports memory_low.",
         .input_schema = {{"type", "object"},
-                         {"properties", {{"enable", {{"type", "boolean"}}}}},
+                         {"properties",
+                          {{"mode",
+                            {{"type", "string"},
+                             {"enum", {"off", "when_ram_is_low", "always"}}}}}},
                          {"additionalProperties", false}},
         .handler = ColdHints,
     });

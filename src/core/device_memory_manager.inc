@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
+#include <chrono>
 #include <limits>
 #include <memory>
 #include <type_traits>
@@ -18,6 +19,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/div_ceil.h"
+#include "common/logging.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/device_memory.h"
@@ -190,7 +192,7 @@ void DeviceMemoryManager<Traits>::HintCold(DAddr address, size_t size) {
         VAddr virtual_address; ///< 0: no CPU mapping known
         u64 size;
     };
-    if (!Common::ColdHintsEnabled()) {
+    if (Common::ColdHintModeInEffect() == Settings::ColdHintMode::Off) {
         return;
     }
     std::vector<Run> runs;
@@ -220,11 +222,31 @@ void DeviceMemoryManager<Traits>::HintCold(DAddr address, size_t size) {
         cold_hint_worker = std::make_unique<Common::ThreadWorker>(1, "DeviceMemory:ColdHint");
     }
     cold_hint_worker->QueueWork([this, runs = std::move(runs)] {
+        // The worker's totals, logged at most every 10 s (each uploaded range is a call).
+        static u64 marked{};
+        static u64 paged{};
+        static std::chrono::steady_clock::duration busy{};
+        static auto logged = std::chrono::steady_clock::now();
+        const auto begin = std::chrono::steady_clock::now();
         for (const Run& run : runs) {
-            device_memory_ptr->buffer.HintCold(
+            const auto action = device_memory_ptr->buffer.HintCold(
                 run.physical_offset, run.size,
                 run.virtual_address != 0 ? std::optional<size_t>{run.virtual_address}
                                          : std::nullopt);
+            (action == Common::ColdHintAction::PagedOut ? paged : marked) +=
+                action == Common::ColdHintAction::None ? 0 : run.size;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        busy += now - begin;
+        if (now - logged >= std::chrono::seconds{10} && (marked != 0 || paged != 0)) {
+            LOG_INFO(HW_Memory,
+                     "Cold hints for uploaded memory: {} MiB marked cold, {} MiB paged out, "
+                     "{:.1f} ms",
+                     marked >> 20, paged >> 20,
+                     std::chrono::duration<double, std::milli>(busy).count());
+            marked = paged = 0;
+            busy = {};
+            logged = now;
         }
     });
 }

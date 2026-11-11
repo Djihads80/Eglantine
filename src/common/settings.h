@@ -616,10 +616,17 @@ struct Values {
                                                 false,
                                                 &private_driver_shader_cache};
 
-    // Pages out guest memory of uploaded textures and buffers (HostMemory::HintCold). Lowers RAM
-    // use, but each pass stalls the GPU threads (Mario Kart World: 60-700 ms every 600 frames).
-    Setting<bool> cold_hints{linkage,          false, "cold_hints", Category::RendererMemory,
-                             Specialization::Default, true, true};
+    // Guest memory of uploaded textures and buffers, which the host GPU holds a copy of
+    // (HostMemory::HintCold): Always pages it out at each pass, which lowers RAM use but stalls the
+    // GPU threads (Mario Kart World: 60-700 ms every 600 frames); WhenRamIsLow only marks it to be
+    // reclaimed first, and pages it out while the system is short of memory.
+    Setting<ColdHintMode> cold_hint_mode{linkage,
+                                         ColdHintMode::Off,
+                                         "cold_hint_mode",
+                                         Category::RendererMemory,
+                                         Specialization::Default,
+                                         true,
+                                         true};
 
     SwitchableSetting<bool> enable_compute_pipelines{linkage, false, "enable_compute_pipelines",
                                                      Category::RendererAdvanced};

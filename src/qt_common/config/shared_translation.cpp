@@ -270,11 +270,13 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "time significantly in cases where the Vulkan driver does not store pipeline cache "
               "files internally."));
     INSERT(Settings, private_driver_shader_cache, QString(), QString());
-    INSERT(Settings, cold_hints, tr("Page out uploaded guest memory"),
-           tr("Every few seconds, hands the guest memory of textures and buffers already on the "
-              "GPU back to the operating system, which lowers RAM use (Mario Kart World: about "
-              "1.2 GB).\nEach pass stalls rendering while it runs, from tens to hundreds of "
-              "milliseconds, longer the longer a game runs. Leave it off unless RAM is short."));
+    INSERT(Settings, cold_hint_mode, tr("Release uploaded guest memory"),
+           tr("Hands the guest memory of textures and buffers already on the GPU back to the "
+              "operating system (Mario Kart World: about 1.2 GB).\n"
+              "When RAM is low: only marks it to be reclaimed first, and "
+              "pages it out only while the system is short of memory.\n"
+              "Always: pages it out every few seconds, which stalls rendering for tens to "
+              "hundreds of milliseconds each time."));
 #if defined(__linux__)
     INSERT(Settings, driver_shader_cache_size, tr("Separate driver shader cache"),
            tr("Keeps the NVIDIA driver's shader cache for this emulator in its own folder, up to "
@@ -437,6 +439,12 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                               PAIR(FramePacingMode, Target_60, tr("60 FPS")),
                               PAIR(FramePacingMode, Target_90, tr("90 FPS")),
                               PAIR(FramePacingMode, Target_120, tr("120 FPS")),
+                          }});
+    translations->insert({Settings::EnumMetadata<Settings::ColdHintMode>::Index(),
+                          {
+                              PAIR(ColdHintMode, Off, tr("Off")),
+                              PAIR(ColdHintMode, WhenRamIsLow, tr("When RAM is low")),
+                              PAIR(ColdHintMode, Always, tr("Always")),
                           }});
     translations->insert({Settings::EnumMetadata<Settings::VramUsageMode>::Index(),
                           {
