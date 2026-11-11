@@ -134,4 +134,9 @@ u32 IPv4AddressToInteger(IPv4Address ip_addr);
 // named to avoid name collision with Windows macro
 std::variant<std::vector<AddrInfo>, GetAddrInfoError> GetAddressInfo(const std::string& host, const std::optional<std::string>& service);
 
+/// Whether the resolver answers Nintendo's servers itself instead of looking them up (see
+/// sfdnsres): nothing that needs them can connect, so titles have no internet even though the LAN
+/// works. NIFM reports that state to titles.
+bool AreNintendoServersBlocked();
+
 } // namespace Network

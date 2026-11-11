@@ -23,11 +23,14 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/stb.h"
+#include "core/arm/debug.h"
 #include "core/core.h"
 #include "core/debugger/nx2_debug_server.h"
 #include "core/debugger/nx2_debug_tools.h"
 #include "core/frontend/framebuffer_layout.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/k_readable_event.h"
+#include "core/hle/service/kernel_helpers.h"
 #include "core/memory.h"
 #include "hid_core/hid_core.h"
 #include "video_core/gpu.h"
@@ -324,6 +327,96 @@ json LogFilter(ToolState& state, const json& params) {
     json result = {{"previous", state.log_filter}, {"filter", filter}};
     state.log_filter = filter;
     return result;
+}
+
+/// The registers a waiting thread blocked in: for the address-arbiter and condition-variable waits
+/// the object is an address rather than a handle, so the arguments are all there is to report.
+std::string ThreadArgs(const Kernel::KThread& thread) {
+    const auto& context = thread.GetContext();
+    return fmt::format("r0={:#x} r1={:#x} r2={:#x} r3={:#x}", context.r[0], context.r[1],
+                       context.r[2], context.r[3]);
+}
+
+/// Names the objects a waiting thread is blocked on, read from its svc arguments: the handles the
+/// service gave it resolved back to the name of the event (or the object type). The svc argument
+/// layout differs between callers, so it also reports the raw registers.
+json WaitedObjects(ToolState& state, Kernel::KProcess& process, const Kernel::KThread& thread) {
+    const auto& context = thread.GetContext();
+    Kernel::KernelCore& kernel = state.system.Kernel();
+    json handles = json::array();
+    const std::pair<u64, u32> layouts[] = {
+        {context.r[1], static_cast<u32>(context.r[2])},
+        {context.r[0], static_cast<u32>(context.r[1])},
+    };
+    for (const auto& [pointer, count] : layouts) {
+        if (count == 0 || count > 16) {
+            continue;
+        }
+        std::vector<u8> bytes(4 * count);
+        if (ReadGuestMemory(process.GetMemory(), pointer, bytes)) {
+            continue;
+        }
+        for (u32 i = 0; i < count; ++i) {
+            const u32 handle = static_cast<u32>(bytes[4 * i]) |
+                               static_cast<u32>(bytes[4 * i + 1]) << 8 |
+                               static_cast<u32>(bytes[4 * i + 2]) << 16 |
+                               static_cast<u32>(bytes[4 * i + 3]) << 24;
+            std::string description;
+            auto readable =
+                process.GetHandleTable().GetObject<Kernel::KReadableEvent>(kernel, handle);
+            if (readable.IsNotNull()) {
+                description = ::Service::KernelHelpers::DebugEventName(readable.GetPointerUnsafe());
+            }
+            if (description.empty()) {
+                auto object = process.GetHandleTable().GetObject<Kernel::KAutoObject>(kernel, handle);
+                if (object.IsNotNull()) {
+                    description = object->GetTypeName();
+                }
+            }
+            handles.push_back(fmt::format("{:#x}={}", handle, description));
+        }
+        break;
+    }
+    return {{"handles", std::move(handles)}, {"args", ThreadArgs(thread)}};
+}
+
+json Threads(ToolState& state, const json& params) {
+    const std::string name_filter = params.value("name", std::string{});
+    const int frames = Param<int>(params, "frames", 6, 0, 32);
+    Kernel::KProcess& process = Application(state);
+
+    json threads = json::array();
+    for (Kernel::KThread& thread : process.GetThreadList()) {
+        const std::optional<std::string> name = Core::GetThreadName(&thread);
+        if (!name_filter.empty() && name.value_or("").find(name_filter) == std::string::npos) {
+            continue;
+        }
+        const std::string thread_state = Core::GetThreadState(&thread);
+        json entry = {
+            {"name", name.value_or(fmt::format("Thread {:d}", thread.GetThreadId()))},
+            {"id", fmt::format("{:x}", thread.GetThreadId())},
+            {"state", thread_state},
+            {"priority", thread.GetPriority()},
+            {"core", thread.GetActiveCore()},
+            {"pc", HexAddress(thread.GetContext().pc)},
+        };
+        if (thread_state.find("Synchronization") != std::string::npos) {
+            entry["waits_on"] = WaitedObjects(state, process, thread);
+        } else if (thread_state.starts_with("Waiting")) {
+            entry["args"] = ThreadArgs(thread);
+        }
+        json trace = json::array();
+        if (frames > 0 && thread.GetOwnerProcess() != nullptr) {
+            const std::vector<Core::BacktraceEntry> backtrace = Core::GetBacktrace(&thread);
+            for (size_t i = 0; i < backtrace.size() && i < static_cast<size_t>(frames); ++i) {
+                const Core::BacktraceEntry& frame = backtrace[i];
+                trace.push_back(fmt::format("{}+{:#x} {}", frame.module, frame.offset, frame.name));
+            }
+        }
+        entry["backtrace"] = std::move(trace);
+        threads.push_back(std::move(entry));
+    }
+    return {{"threads", std::move(threads)}};
 }
 
 json CaptureFrame(ToolState& state, const json& params) {
@@ -652,6 +745,7 @@ Handlers MakeHandlers(const std::shared_ptr<ToolState>& state) {
         {"capture_frame", handler(CaptureFrame)},
         {"reject_shaders", handler(RejectShaders)},
         {"sample", handler(SampleThreads)},
+        {"threads", handler(Threads)},
         {"read_memory", handler(ReadMemory)},
         {"search_memory", handler(SearchMemory)},
         {"write_memory", handler(WriteMemory)},

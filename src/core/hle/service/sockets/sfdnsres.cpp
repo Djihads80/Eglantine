@@ -422,5 +422,13 @@ DNS_PRIV::DNS_PRIV(Core::System& system_)
 
 DNS_PRIV::~DNS_PRIV() = default;
 
-
 } // namespace Service::Sockets
+
+namespace Network {
+
+bool AreNintendoServersBlocked() {
+    // The block list above is unconditional; a setting to allow these again belongs here.
+    return true;
+}
+
+} // namespace Network

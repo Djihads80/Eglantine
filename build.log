@@ -1,0 +1,81 @@
+[0/1] Re-running CMake...
+-- [DetectArchitecture] Target architecture: x86_64
+-- [UseCcache] Found ccache at: /usr/bin/ccache
+-- [CPMUtil] Using system package OpenSSL@3.6.5
+-- Fetching needed dependencies with CPM
+-- [CPMUtil] Using system package Boost@1.92.0
+-- [CPMUtil] Using system package fmt@12.2.0
+-- [CPMUtil] Using system package lz4@ebb370ca83
+-- [CPMUtil] Using bundled package zstd@33618c8
+-- ZSTD VERSION: 1.5.8
+-- CMAKE_INSTALL_PREFIX: /usr/local
+-- CMAKE_INSTALL_LIBDIR: lib
+-- ZSTD_LEGACY_SUPPORT enabled
+-- Multi-threading support enabled
+-- [CPMUtil] Using system package nlohmann_json@3.12.0
+-- [CPMUtil] Using system package ZLIB@1.3.2
+-- [CPMUtil] Using bundled package Opus@a3f0ec02b3
+CMake Warning at .cache/cpm/opus/a3f0ec02b3/cmake/OpusPackageVersion.cmake:61 (message):
+  Could not get package version.
+Call Stack (most recent call first):
+  .cache/cpm/opus/a3f0ec02b3/CMakeLists.txt:5 (get_package_version)
+
+
+-- Opus project version: 0
+-- Performing Test VLA_SUPPORTED -- success
+-- Check CPU arch: CMAKE_GENERATOR_PLATFORM= CMAKE_SYSTEM_PROCESSOR=x86_64
+-- Performing Test CPU_INFO_BY_ASM_SUPPORTED -- success
+-- Performing Test CPU_INFO_BY_C_SUPPORTED -- success
+-- Check SIMD support by compiler
+-- The following features have been enabled:
+
+ * OPUS_ENABLE_FLOAT_API, compile with the floating point API (for machines with float library).
+ * OPUS_HARDENING, run-time checks that are cheap and safe for use in production.
+ * OPUS_VAR_ARRAYS, use variable length arrays for stack arrays.
+ * OPUS_STACK_PROTECTOR, use stack protection.
+ * OPUS_FORTIFY_SOURCE, add protection against buffer overflows.
+ * OPUS_X86_MAY_HAVE_SSE, does runtime check for SSE1 support.
+ * OPUS_X86_MAY_HAVE_SSE2, does runtime check for SSE2 support.
+ * OPUS_X86_MAY_HAVE_SSE4_1, does runtime check for SSE4.1 support.
+ * OPUS_X86_MAY_HAVE_AVX2, does runtime check for AVX FMA AVX2 support.
+ * OPUS_X86_PRESUME_SSE, assume target CPU has SSE1 support (override runtime check).
+ * OPUS_X86_PRESUME_SSE2, assume target CPU has SSE2 support (override runtime check).
+
+-- The following OPTIONAL packages have been found:
+
+ * RenderDoc
+ * Git
+
+-- The following REQUIRED packages have been found:
+
+ * Threads
+
+-- The following features have been disabled:
+
+ * OPUS_BUILD_SHARED_LIBRARY, build shared library.
+ * OPUS_BUILD_TESTING, build tests.
+ * OPUS_CUSTOM_MODES, enable non-Opus modes, e.g. 44.1 kHz & 2^n frames.
+ * OPUS_BUILD_PROGRAMS, build programs.
+ * OPUS_DISABLE_INTRINSICS, disable all intrinsics optimizations.
+ * OPUS_FIXED_POINT, compile as fixed-point (for machines without a fast enough FPU).
+ * OPUS_FLOAT_APPROX, enable floating point approximations (Ensure your platform supports IEEE 754 before enabling).
+ * OPUS_ASSERTIONS, additional software error checking.
+ * OPUS_FUZZING, causes the encoder to make random decisions (do not use in production).
+ * OPUS_CHECK_ASM, enable bit-exactness checks between optimized and c implementations.
+ * OPUS_DNN_FLOAT_DEBUG, Run DNN computations as float for debugging purposes.
+ * OPUS_INSTALL, Install Opus targets
+ * OPUS_INSTALL_PKG_CONFIG_MODULE, install pkg-config module.
+ * OPUS_INSTALL_CMAKE_CONFIG_MODULE, install CMake package config module.
+ * OPUS_DRED, enable DRED.
+ * OPUS_OSCE, enable OSCE.
+ * OPUS_FIXED_POINT_DEBUG, debug fixed-point implementation.
+ * OPUS_USE_ALLOCA, use alloca for stack arrays (on non-C99 compilers).
+ * OPUS_NONTHREADSAFE_PSEUDOSTACK, use a non threadsafe pseudostack when neither variable length arrays or alloca is supported.
+ * OPUS_FAST_MATH, enable fast math (unsupported and discouraged use, as code is not well tested with this build option).
+ * OPUS_X86_PRESUME_SSE4_1, assume target CPU has SSE4.1 support (override runtime check).
+ * OPUS_X86_PRESUME_AVX2, assume target CPU has AVX FMA AVX2 support (override runtime check).
+
+-- Platform Libraries: rt
+-- [CPMUtil] Using bundled package xbyak@v7.40.1
+-- [CPMUtil] Using system package enet@v1.3.18
+-- [CPMUtil] Using bundled package zbic@11b08f2712264bbed731545085cbd9702096ceb7

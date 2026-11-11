@@ -139,6 +139,19 @@ TOOLS = [
         },
     },
     {
+        "name": "threads",
+        "description": "The game's guest threads with their state, PC and a short backtrace: for a "
+                       "title that stopped making progress, shows what each thread waits in. "
+                       "'name' keeps threads whose name contains it; 'frames' sets backtrace depth.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "frames": {"type": "integer", "minimum": 0, "maximum": 32},
+            },
+        },
+    },
+    {
         "name": "read_memory",
         "description": "Reads up to 64 KiB of the game's guest virtual memory, read only and "
                        "while it runs. 'as' formats it: hex (default), u32, u64 (hex strings) or "
