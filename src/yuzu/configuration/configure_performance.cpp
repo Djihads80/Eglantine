@@ -12,13 +12,12 @@
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QVBoxLayout>
-#include "common/fs/fs_paths.h"
-#include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "yuzu/configuration/shared_widget.h"
 #include "yuzu/configuration/configure_performance.h"
+#include "yuzu/nx2_switches.h"
 
 namespace Performance {
 
@@ -197,12 +196,7 @@ State::State(QObject* parent) : QObject(parent) {
 
 std::filesystem::path State::SwitchFilePath() {
     // The user copy the emulator reads at start (main.cpp, LoadNx2Switches).
-#ifdef _WIN32
-    const auto config_dir = Common::FS::GetAppDataRoamingDirectory() / EDEN_DIR;
-#else
-    const auto config_dir = Common::FS::GetDataDirectory("XDG_CONFIG_HOME") / EDEN_DIR;
-#endif
-    return config_dir / "nx2_switches.txt";
+    return Nx2Switches::UserFilePath();
 }
 
 bool State::IsEnabled(const std::string& line) const {

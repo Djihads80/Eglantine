@@ -198,6 +198,7 @@ add_executable(yuzu
     multiplayer/state.cpp
     multiplayer/state.h
     multiplayer/validation.h
+    nx2_switches.h
     startup_checks.cpp
     startup_checks.h
     set_play_time_dialog.cpp
