@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "tools": {
+    "cmake": {
+      "version": "3.30.5",
+      "windows-x86_64": {
+        "url": "https://github.com/Kitware/CMake/releases/download/v3.30.5/cmake-3.30.5-windows-x86_64.zip",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "bin": "cmake-3.30.5-windows-x86_64/bin"
+      },
+      "linux-x86_64": {
+        "url": "https://github.com/Kitware/CMake/releases/download/v3.30.5/cmake-3.30.5-linux-x86_64.tar.gz",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "bin": "cmake-3.30.5-linux-x86_64/bin"
+      }
+    },
+    "ninja": {
+      "version": "1.12.1",
+      "windows-x86_64": {
+        "url": "https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-win.zip",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "bin": ""
+      },
+      "linux-x86_64": {
+        "url": "https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-linux.zip",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "bin": ""
+      }
+    }
+  },
+  "configure": {
+    "common": ["-DCMAKE_BUILD_TYPE=Release", "-DENABLE_UPDATE_CHECKER=ON"],
+    "windows": [],
+    "linux": []
+  },
+  "targets": ["yuzu"],
+  "windows": {
+    "winget": [
+      {
+        "provides": "msvc",
+        "id": "Microsoft.VisualStudio.2022.BuildTools",
+        "override": "--passive --wait --norestart --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621"
+      },
+      {"provides": "git", "id": "Git.Git"},
+      {"provides": "glslang", "id": "KhronosGroup.VulkanSDK"}
+    ]
+  },
+  "linux": {
+    "apt": {
+      "verified": true,
+      "packages": ["build-essential", "git", "pkg-config", "libssl-dev", "glslang-tools", "qt6-base-dev"]
+    },
+    "pacman": {"verified": false, "packages": ["base-devel", "git", "openssl", "glslang", "qt6-base"]},
+    "dnf": {"verified": false, "packages": ["gcc-c++", "git", "openssl-devel", "glslang", "qt6-qtbase-devel"]}
+  }
+}
