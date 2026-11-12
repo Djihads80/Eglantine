@@ -100,6 +100,12 @@ add_executable(tests
 
 create_target_directory_groups(tests)
 
+if (ENABLE_UPDATE_CHECKER)
+    target_sources(tests PRIVATE
+        common/update_checker.cpp
+        ../frontend_common/update_checker.cpp)
+endif()
+
 target_link_libraries(tests PRIVATE common core input_common video_core)
 
 if (ENABLE_MCP_SERVER)

@@ -5,46 +5,81 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#ifdef NIGHTLY_BUILD
-#include <boost/algorithm/string/classification.hpp>
-#include <boost/algorithm/string/split.hpp>
-#endif
-
-#include <fmt/format.h>
-#include "common/net/net.h"
-#include "common/scm_rev.h"
-#include "update_checker.h"
-
 #include "common/logging.h"
+#include "common/scm_rev.h"
+#include "frontend_common/update_checker.h"
 
-std::optional<Common::Net::Release> UpdateChecker::GetUpdate() {
-    const auto list = Common::Net::GetReleases();
-    if (list.releases.empty()) return std::nullopt;
-    const std::optional<Common::Net::Release> latest = list.releases.front();
+namespace UpdateChecker {
 
-    LOG_INFO(Frontend, "Received update {}", latest->title);
-
-#ifdef NIGHTLY_BUILD
-    std::vector<std::string> result;
-
-    boost::split(result, latest->tag, boost::is_any_of("."));
-    if (result.size() != 2)
+std::optional<Channel> ChannelOfTag(std::string_view tag) {
+    const auto version = ParseTag(tag);
+    if (!version) {
         return std::nullopt;
-
-    const std::string tag = result[1];
-
-    boost::split(result, std::string{Common::g_build_version}, boost::is_any_of("-"));
-    if (result.empty())
-        return std::nullopt;
-
-    const std::string build = result[0];
-#else
-    const std::string tag = latest->tag;
-    const std::string build = Common::g_build_version;
-#endif
-
-    if (tag != build)
-        return latest;
-
-    return std::nullopt;
+    }
+    return version->rc == 0 ? Channel::Stable : Channel::ReleaseCandidate;
 }
+
+std::optional<Channel> BuildChannel() {
+    return ChannelOfTag(Common::g_build_version);
+}
+
+Failure ClassifyFailure(int status) {
+    if (status == 403 || status == 429) {
+        return Failure::RateLimited;
+    }
+    return status >= 400 ? Failure::Http : Failure::Network;
+}
+
+std::optional<Common::Net::Release> SelectUpdate(std::span<const Common::Net::Release> releases,
+                                                 std::string_view current_tag, Channel channel,
+                                                 std::string_view platform,
+                                                 Common::Net::LinuxPackage package) {
+    auto newest = ParseTag(current_tag);
+    if (!newest) {
+        return std::nullopt;
+    }
+
+    const Common::Net::Release* selected = nullptr;
+    for (const auto& release : releases) {
+        const auto version = ParseTag(release.tag);
+        if (!version || *version <= *newest) {
+            continue;
+        }
+        if (channel == Channel::Stable && version->rc != 0) {
+            continue;
+        }
+        if (!platform.empty() && release.GetPlatformAssets(platform, package).empty()) {
+            continue;
+        }
+        newest = version;
+        selected = &release;
+    }
+    return selected ? std::make_optional(*selected) : std::nullopt;
+}
+
+CheckResult Check(Channel channel) {
+    if (!ParseTag(Common::g_build_version)) {
+        return {.failure = Failure::NotReleaseBuild};
+    }
+
+    const auto list = Common::Net::GetReleases();
+    if (!list.ok) {
+        LOG_WARNING(Frontend, "Update check failed with status {}", list.status);
+        return {.failure = ClassifyFailure(list.status), .status = list.status};
+    }
+
+    auto update = SelectUpdate(list.releases, Common::g_build_version, channel,
+                               Common::g_build_release_platform,
+                               Common::Net::CurrentLinuxPackage());
+    if (update) {
+        LOG_INFO(Frontend, "Received update {}", update->title);
+    }
+    return {.update = std::move(update)};
+}
+
+std::optional<Common::Net::Release> GetUpdate() {
+    const auto channel = BuildChannel();
+    return channel ? Check(*channel).update : std::nullopt;
+}
+
+} // namespace UpdateChecker
