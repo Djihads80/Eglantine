@@ -18,7 +18,7 @@ namespace VideoCommon::ShaderWarm {
 
 /// Precache files use the Vulkan pipeline cache version: the emulator loads one only when it
 /// matches, so the two must move together (vk_pipeline_cache.cpp checks it).
-constexpr u32 WarmCacheVersion = 33;
+constexpr u32 WarmCacheVersion = 34;
 
 /// What the builder finds in the game files, recorded in the precache's count file. A file built by
 /// an older builder is rebuilt at boot (RefreshWarmFiles). 2: Mario Kart World's .esetb effects.
