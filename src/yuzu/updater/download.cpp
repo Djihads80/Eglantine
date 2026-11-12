@@ -12,9 +12,7 @@
 
 #include "common/httplib.h"
 
-#ifdef YUZU_BUNDLED_OPENSSL
-#include <openssl/cert.h>
-#endif
+#include "common/net/ca_store.h"
 
 namespace UpdateDownload {
 
@@ -83,9 +81,7 @@ Outcome Download(const Request& request, QSaveFile& file, const Callbacks& callb
             client.set_connection_timeout(timeout_seconds);
             client.set_read_timeout(timeout_seconds);
             client.set_write_timeout(timeout_seconds);
-#ifdef YUZU_BUNDLED_OPENSSL
-            client.load_ca_cert_store(kCert, sizeof(kCert));
-#endif
+            Common::Net::ConfigureCaStore(client);
             body_wanted = false;
             result = client.Get(path, response_handler, content_receiver, progress_callback);
             if (!result || result->status < 300 || result->status >= 400 ||
