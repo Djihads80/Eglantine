@@ -324,7 +324,30 @@ void Maxwell3D::DrawManager::ProcessDraw(Maxwell3D& maxwell3d, bool draw_indexed
         draw_indexed ? draw_state.index_buffer.count : draw_state.vertex_buffer.count;
     LOG_TRACE(HW_GPU, "called, topology={}, count={}", draw_state.topology, draw_indexed ? draw_state.index_buffer.count : draw_state.vertex_buffer.count);
     UpdateTopology(maxwell3d);
-    if (maxwell3d.ShouldExecute()) {
+    // EDEN_NX2_DRAW_STATS=1: how many draws reach the rasterizer, and how many of them are empty
+    // (no elements or no instances) or skipped by a render-enable condition (diagnostic).
+    static const bool stats_enabled = std::getenv("EDEN_NX2_DRAW_STATS") != nullptr;
+    const bool execute = maxwell3d.ShouldExecute();
+    if (stats_enabled) [[unlikely]] {
+        static std::atomic<u64> total{0}, skipped{0}, empty{0}, executed{0};
+        static std::atomic<u64> next_log{5000};
+        total.fetch_add(1, std::memory_order_relaxed);
+        if (!execute) {
+            skipped.fetch_add(1, std::memory_order_relaxed);
+        } else if (draw_state.draw_element_count == 0 || instance_count == 0) {
+            empty.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            executed.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (const u64 n = total.load(std::memory_order_relaxed); n >= next_log.load()) {
+            next_log.store(n + 100000);
+            LOG_INFO(HW_GPU,
+                     "nx2 draws: {} so far, {} skipped by a render-enable condition, {} empty, {} "
+                     "real",
+                     n, skipped.load(), empty.load(), executed.load());
+        }
+    }
+    if (execute) {
         maxwell3d.rasterizer->Draw(draw_indexed, instance_count);
     }
 }

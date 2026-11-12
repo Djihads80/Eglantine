@@ -11,6 +11,13 @@ class ShaderNotify {
 public:
     [[nodiscard]] int ShadersBuilding() noexcept;
 
+    /// Shaders queued but not yet built, without touching the reporting window (safe to call
+    /// alongside ShadersBuilding()).
+    [[nodiscard]] int NumBuildingNoReport() const noexcept {
+        return num_building.load(std::memory_order_relaxed) -
+               num_complete.load(std::memory_order_relaxed);
+    }
+
     void MarkShaderComplete() noexcept {
         ++num_complete;
     }

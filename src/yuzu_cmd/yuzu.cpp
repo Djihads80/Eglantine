@@ -21,6 +21,7 @@
 #include <optional>
 #include <regex>
 #include <string>
+#include "common/fs/fs_util.h"
 #include "common/settings_enums.h"
 #include "core/launch_params.h"
 #ifdef __EMSCRIPTEN__
@@ -31,6 +32,7 @@
 
 #include <fmt/ostream.h>
 
+#include "common/driver_shader_cache.h"
 #include "common/fs/fs_util.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
@@ -57,12 +59,17 @@
 #include "video_core/gpu.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
+#include "video_core/shader_warm/shader_warm_builder.h"
 #include "yuzu_cmd/emu_window/emu_window_sdl3.h"
 #ifdef HAS_OPENGL
 #include "yuzu_cmd/emu_window/emu_window_sdl3_gl.h"
 #endif
 #include "yuzu_cmd/emu_window/emu_window_sdl3_null.h"
 #include "yuzu_cmd/emu_window/emu_window_sdl3_vk.h"
+#ifdef YUZU_ENABLE_MCP
+#include "mcp/server.h"
+#include "yuzu_cmd/mcp_host_cli.h"
+#endif
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/resource.h>
@@ -254,6 +261,11 @@ struct SdlState {
     InputCommon::InputSubsystem input_subsystem{};
     std::unique_ptr<EmuWindow_SDL3> emu_window;
     bool network_initialized{};
+#ifdef YUZU_ENABLE_MCP
+    // Built-in MCP server (only with --mcp): destroyed before the system shuts down.
+    std::unique_ptr<CliMcpHost> mcp_host;
+    std::unique_ptr<Mcp::Server> mcp_server;
+#endif
 };
 
 constexpr int kRestartExitCode = 75;
@@ -479,6 +491,72 @@ static bool EditNup(const Core::LaunchParams& lp) {
     }
 }
 
+/// Hidden test hook (not in --help): builds a game's shader precache file without booting it.
+///   yuzu-cmd --build-warm <game file> <title id hex> <output dir>
+static bool BuildWarm(Core::System& system, int argc, char** argv) {
+    namespace ShaderWarm = VideoCommon::ShaderWarm;
+    if (argc < 5) {
+        fmt::print(stderr, "usage: --build-warm <game> <title id> <output dir>\n");
+        return false;
+    }
+    system.SetContentProvider(std::make_unique<FileSys::ContentProviderUnion>());
+    system.SetFilesystem(std::make_shared<FileSys::RealVfsFilesystem>());
+    const u64 title_id = std::strtoull(argv[3], nullptr, 16);
+    ShaderWarm::BuildOptions options;
+    options.output_dir = Common::FS::ToU8String(argv[4]);
+    std::string last_stage;
+    auto last_print = std::chrono::steady_clock::now();
+    const auto begin = last_print;
+    const auto on_progress = [&](const ShaderWarm::Progress& progress) {
+        const auto now = std::chrono::steady_clock::now();
+        if (progress.stage == last_stage && now - last_print < std::chrono::seconds{5}) {
+            return;
+        }
+        last_stage = progress.stage;
+        last_print = now;
+        fmt::print("{:7.1f} s  {}: {} / {}\n",
+                   std::chrono::duration<double>(now - begin).count(), progress.stage,
+                   progress.done, progress.total);
+        std::fflush(stdout);
+    };
+    const auto result = ShaderWarm::BuildWarmFilesWith(
+        system, Common::FS::ToU8String(argv[2]), title_id, options, on_progress, {});
+    // The error can hold a Windows path: escape it so the summary stays valid JSON.
+    std::string error;
+    for (const char c : result.error) {
+        switch (c) {
+        case '"':
+            error += "\\\"";
+            break;
+        case '\\':
+            error += "\\\\";
+            break;
+        case '\n':
+            error += "\\n";
+            break;
+        case '\r':
+            error += "\\r";
+            break;
+        case '\t':
+            error += "\\t";
+            break;
+        default:
+            if (static_cast<unsigned char>(c) < 0x20) {
+                error += fmt::format("\\u{:04x}", static_cast<unsigned>(c));
+            } else {
+                error += c;
+            }
+            break;
+        }
+    }
+    fmt::print("{{\"ok\": {}, \"error\": \"{}\", \"archives\": {}, \"compute\": {}, "
+               "\"skipped\": {}, \"seconds\": {:.1f}}}\n",
+               result.ok, error, result.archives, result.compute_programs, result.skipped,
+               std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count());
+    std::fflush(stdout);
+    return result.ok;
+}
+
 extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 #ifdef _WIN32
     SetUnhandledExceptionFilter(WriteCrashDump);
@@ -510,6 +588,10 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     Common::Log::SetColorConsoleBackendEnabled(true);
     Common::Log::Start();
 
+    if (argc > 1 && std::string_view{argv[1]} == "--build-warm") {
+        return BuildWarm(state->system, argc, argv) ? SDL_APP_SUCCESS : SDL_APP_FAILURE;
+    }
+
     int option_index = 0;
 #ifdef _WIN32
     int argc_w;
@@ -526,6 +608,10 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     LocalFree(argv_w);
 #endif
     SdlConfig config{lp.config_path};
+    // Before anything loads a GPU driver.
+    Common::ConfigureDriverShaderCache(Settings::values.private_driver_shader_cache.GetValue(),
+                                       Settings::values.driver_shader_cache_size.GetValue());
+    Common::CreateDriverShaderCacheFolder();
 
     Core::ApplyLaunchParams(lp);
 
@@ -723,6 +809,24 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     void(state->system.Run());
     if (state->system.DebuggerEnabled())
         state->system.InitializeDebugger();
+
+#ifdef YUZU_ENABLE_MCP
+    // eden-cli starts the MCP server only when asked (--mcp), so unattended runs never collide
+    // with a desktop emulator holding the port.
+    if (lp.mcp_enable) {
+        Mcp::ServerConfig mcp_config;
+        mcp_config.port = lp.mcp_port.value_or(Settings::values.mcp_port.GetValue());
+        mcp_config.allow_writes = lp.mcp_allow_writes || Settings::values.mcp_allow_writes.GetValue();
+        mcp_config.bearer_token = Settings::values.mcp_token.GetValue();
+        state->mcp_host = std::make_unique<CliMcpHost>(state->system, state->input_subsystem);
+        state->mcp_server =
+            std::make_unique<Mcp::Server>(state->system, *state->mcp_host, std::move(mcp_config));
+        if (const std::string error = state->mcp_server->Start(); !error.empty()) {
+            LOG_ERROR(Frontend, "MCP server: {}", error);
+            state->mcp_server.reset();
+        }
+    }
+#endif
     return SDL_APP_CONTINUE;
 }
 // EDEN_NX2_KEY_SCRIPT="seconds:code,seconds:-code,..." (or "@<file>"): press (code) or release (-code) keyboard
@@ -847,6 +951,14 @@ static void RunKeyScript(InputCommon::InputSubsystem& input_subsystem, Core::Sys
 extern "C" SDL_AppResult SDL_AppIterate(void *appstate) {
     SdlState *state = (SdlState *)appstate;
     RunKeyScript(state->input_subsystem, state->system);
+#ifdef YUZU_ENABLE_MCP
+    if (state->mcp_host) {
+        state->mcp_host->DrainMainThread();
+        if (state->mcp_host->QuitRequested()) {
+            return SDL_APP_SUCCESS;
+        }
+    }
+#endif
     if (state->emu_window) {
         state->emu_window->ApplyPendingTitle();
     }
@@ -866,6 +978,10 @@ extern "C" void SDL_AppQuit(void *appstate, SDL_AppResult result) {
     if (!state) {
         return;
     }
+#ifdef YUZU_ENABLE_MCP
+    state->mcp_server.reset(); // stops serving before the system goes away
+    state->mcp_host.reset();
+#endif
     state->system.DetachDebugger();
     // SDL calls this even when SDL_AppInit never powered the system on (no ROM given, --help or
     // --version): the kernel is uninitialised then, and Pause()/ShutdownMainProcess() would

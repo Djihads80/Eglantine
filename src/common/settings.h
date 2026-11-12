@@ -616,6 +616,33 @@ struct Values {
         linkage, true, "use_vulkan_driver_pipeline_cache", Category::RendererAdvanced,
         Specialization::Default};
 
+    // Linux: the GPU driver's shader cache in a folder of our own (ConfigureDriverShaderCache),
+    // with its size limit in GiB. Applied at startup, before anything loads a driver.
+    Setting<bool> private_driver_shader_cache{linkage, true, "private_driver_shader_cache",
+                                              Category::RendererAdvanced, Specialization::Paired};
+    Setting<u32, true> driver_shader_cache_size{linkage,
+                                                10,
+                                                1,
+                                                1024,
+                                                "driver_shader_cache_size",
+                                                Category::RendererAdvanced,
+                                                Specialization::Countable,
+                                                true,
+                                                false,
+                                                &private_driver_shader_cache};
+
+    // Guest memory of uploaded textures and buffers, which the host GPU holds a copy of
+    // (HostMemory::HintCold): Always pages it out at each pass, which lowers RAM use but stalls the
+    // GPU threads (Mario Kart World: 60-700 ms every 600 frames); WhenRamIsLow only marks it to be
+    // reclaimed first, and pages it out while the system is short of memory.
+    Setting<ColdHintMode> cold_hint_mode{linkage,
+                                         ColdHintMode::Off,
+                                         "cold_hint_mode",
+                                         Category::RendererMemory,
+                                         Specialization::Default,
+                                         true,
+                                         true};
+
     SwitchableSetting<bool> enable_compute_pipelines{linkage, false, "enable_compute_pipelines",
                                                      Category::RendererAdvanced};
 
@@ -896,6 +923,11 @@ struct Values {
     bool record_frame_times;
     Setting<bool> use_gdbstub{linkage, false, "use_gdbstub", Category::Debugging};
     Setting<u16> gdbstub_port{linkage, 6543, "gdbstub_port", Category::Debugging};
+    // Built-in MCP server (see tools/mcp/README.md). Loopback only, off by default.
+    Setting<bool> enable_mcp_server{linkage, false, "enable_mcp_server", Category::Debugging};
+    Setting<u16> mcp_port{linkage, 6544, "mcp_port", Category::Debugging};
+    Setting<bool> mcp_allow_writes{linkage, false, "mcp_allow_writes", Category::Debugging};
+    Setting<std::string> mcp_token{linkage, std::string{}, "mcp_token", Category::Debugging};
     SwitchableSetting<std::string> program_args{linkage,
                                                 std::string(),
                                                 "program_args",

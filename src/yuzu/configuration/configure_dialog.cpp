@@ -26,6 +26,7 @@
 #include "yuzu/configuration/configure_input.h"
 #include "yuzu/configuration/configure_input_player.h"
 #include "yuzu/configuration/configure_network.h"
+#include "yuzu/configuration/configure_performance.h"
 #include "yuzu/configuration/configure_profile_manager.h"
 #include "yuzu/configuration/configure_system.h"
 #include "yuzu/configuration/configure_ui.h"
@@ -59,6 +60,16 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
       hotkeys_tab{std::make_unique<ConfigureHotkeys>(system_.HIDCore(), this)},
       input_tab{std::make_unique<ConfigureInput>(system_, this)},
       network_tab{std::make_unique<ConfigureNetwork>(system_, this)},
+      performance_state{std::make_unique<Performance::State>()},
+      performance_nvidia_tab{std::make_unique<ConfigurePerformance>(
+          Performance::Platform::Nvidia, *performance_state, vk_device_records, this)},
+      performance_amd_tab{std::make_unique<ConfigurePerformance>(
+          Performance::Platform::Amd, *performance_state, vk_device_records, this)},
+      performance_intel_tab{std::make_unique<ConfigurePerformance>(
+          Performance::Platform::Intel, *performance_state, vk_device_records, this)},
+      performance_macos_tab{std::make_unique<ConfigurePerformance>(
+          Performance::Platform::MacOs, *performance_state, vk_device_records, this)},
+      performance_ram_tab{std::make_unique<ConfigureRam>(system_, *builder, this)},
       profile_tab{std::make_unique<ConfigureProfileManager>(system_, this)},
       system_tab{std::make_unique<ConfigureSystem>(system_, nullptr, *builder, this)},
       web_tab{std::make_unique<ConfigureWeb>(this)} {
@@ -133,6 +144,8 @@ void ConfigureDialog::ApplyConfiguration() {
     graphics_tab->ApplyConfiguration();
     graphics_advanced_tab->ApplyConfiguration();
     graphics_extensions_tab->ApplyConfiguration();
+    performance_state->Apply();
+    performance_ram_tab->ApplyConfiguration();
     audio_tab->ApplyConfiguration();
     debug_tab_tab->ApplyConfiguration();
     web_tab->ApplyConfiguration();
@@ -171,7 +184,7 @@ void ConfigureDialog::HandleApplyButtonClicked() {
 Q_DECLARE_METATYPE(QList<QWidget*>);
 
 void ConfigureDialog::PopulateSelectionList() {
-    const std::array<std::pair<QString, QList<QWidget*>>, 6> items{
+    const std::array<std::pair<QString, QList<QWidget*>>, 7> items{
         {{tr("General"),
           {general_tab.get(), hotkeys_tab.get(), ui_tab.get(), web_tab.get(), debug_tab_tab.get()}},
          {tr("System"),
@@ -180,6 +193,9 @@ void ConfigureDialog::PopulateSelectionList() {
          {tr("CPU"), {cpu_tab.get()}},
          {tr("Graphics"),
           {graphics_tab.get(), graphics_advanced_tab.get(), graphics_extensions_tab.get()}},
+         {tr("Performance"),
+          {performance_nvidia_tab.get(), performance_amd_tab.get(), performance_intel_tab.get(),
+           performance_macos_tab.get(), performance_ram_tab.get()}},
          {tr("Audio"), {audio_tab.get()}},
          {tr("Controls"), input_tab->GetSubTabs()}},
     };

@@ -9,13 +9,17 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <deque>
 #include <filesystem>
+#include <functional>
+#include <future>
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -39,6 +43,7 @@
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/shader_cache.h"
+#include "video_core/stage_cache.h"
 
 namespace Core {
 class System;
@@ -182,12 +187,75 @@ private:
     [[nodiscard]] bool DeferRuntimeBuild();
     void ChargeRuntimeBuild(std::chrono::steady_clock::time_point begin);
 
+    /// Whether the current draw may be skipped while its pipeline is being built.
+    [[nodiscard]] bool CanSkipDraw() noexcept;
+
+    /// Builds the pipeline of graphics_key, which graphics_cache lacks. Returns false when it is
+    /// left translating on a worker or deferred by the build budget (the draw is skipped), true
+    /// when graphics_cache now holds it (null if the build failed).
+    bool BuildNewGraphicsPipeline(bool is_indexed);
+
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline();
+
+    // Native graphics pipelines translated on worker threads (BuildNewGraphicsPipeline).
+    using GraphicsEnvironmentArray =
+        std::array<VideoCommon::GraphicsEnvironment, Maxwell::MaxShaderProgram>;
+
+    /// A pipeline a worker translated, waiting for the GPU thread to adopt it.
+    struct TranslatedGraphicsPipeline {
+        GraphicsPipelineCacheKey key;
+        std::unique_ptr<GraphicsPipeline> pipeline; ///< Null when the build failed
+        GraphicsEnvironmentArray envs;              ///< For the disk cache
+        std::chrono::steady_clock::duration time{};
+        std::chrono::steady_clock::duration latency{}; ///< Queued to finished
+    };
+
+    /// A queued translation. Whoever claims it first runs it: a worker, or the GPU thread for a
+    /// draw that can't be skipped, which then doesn't wait for the queue to reach it.
+    struct PendingGraphicsTranslation {
+        std::atomic_bool claimed{};
+        GraphicsEnvironmentArray envs;
+        std::promise<void> done;
+        std::chrono::steady_clock::time_point queued_at;
+    };
+    struct QueuedGraphicsTranslation {
+        std::shared_future<void> done;
+        std::shared_ptr<PendingGraphicsTranslation> task;
+    };
+
+    [[nodiscard]] bool CanTranslateAsynchronously();
+
+    /// Queues graphics_key's translation on a worker. Nothing when an environment can't be
+    /// detached from the 3D engine.
+    std::optional<std::shared_future<void>> QueueGraphicsTranslation();
+
+    /// Waits within the per-pipeline and per-frame budgets. True when the translation is done.
+    bool WaitForGraphicsTranslation(const std::shared_future<void>& done);
+
+    /// Runs a queued translation on the GPU thread unless a worker already started it, then
+    /// waits for it.
+    void FinishGraphicsTranslation(const QueuedGraphicsTranslation& queued);
+
+    /// Runs on a translation worker, or on the GPU thread for a claimed translation.
+    void TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& key,
+                                   GraphicsEnvironmentArray envs, std::promise<void> done,
+                                   std::chrono::steady_clock::time_point queued_at);
+
+    /// Moves the pipelines the workers finished into graphics_cache (GPU thread).
+    void AdoptTranslatedGraphicsPipelines();
+
+    /// Queues a new pipeline's environments for the disk cache (GPU thread).
+    void StoreGraphicsPipeline(const GraphicsPipelineCacheKey& key, GraphicsEnvironmentArray envs,
+                               bool is_mesh);
 
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(
         ShaderPools& pools, const GraphicsPipelineCacheKey& key,
         std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
-        bool build_in_parallel, bool native_turing = false);
+        bool build_in_parallel, bool native_turing = false, bool parallel_stages = false);
+
+    /// Runs task(0..count-1) on the translation workers and this thread; rethrows the first
+    /// exception a task threw.
+    void RunInParallel(size_t count, const std::function<void(size_t)>& task);
 
     [[nodiscard]] bool StaleNullPointerSlot(const ComputePipelineCacheEntry& entry) const;
 
@@ -257,6 +325,7 @@ private:
 
     Shader::Profile profile;
     Shader::HostTranslateInfo host_info;
+    VideoCommon::StageCache stage_cache;
 
     std::filesystem::path pipeline_cache_filename;
     /// Task and mesh pipelines, with the mesh state they are translated with.
@@ -337,6 +406,56 @@ private:
     std::chrono::steady_clock::time_point background_start{};
     /// Last: destroyed (its threads joined) before the state above.
     std::unique_ptr<Common::ThreadWorker> background_workers;
+
+    /// Shader precache ("Pre-compile shaders" in the game list): the compute programs of the
+    /// title's precache file, made from the game files with the reads it lacks guessed, are built
+    /// on background threads once the boot is done, then thrown away. They only fill the driver's
+    /// shader cache, so a dispatch that converts to the same SPIR-V finds the driver's work done.
+    /// A marker skips it after it ran to the end for this driver and device.
+    void StartShaderPrecache(u64 title_id);
+    void StopShaderPrecache();
+    /// Precache builds wait while the game builds pipelines (queued translations or driver
+    /// compiles, or a pipeline built in the last moments): they share the CPU and the driver.
+    bool RuntimeBuildsBusy() const;
+    void WaitForIdleRuntimeBuilds();
+    /// A dispatch needs `key` (GPU thread): a precache build not started yet is dropped, one in
+    /// progress is waited for, briefly, so the dispatch's build finds it in the driver's cache.
+    void ClaimPrecacheProgram(const ComputePipelineCacheKey& key);
+    enum class PrecacheState : u8 { Queued, Building, Done, Claimed };
+    /// Programs the precache queued, by key. Filled before the workers start, then only the
+    /// states change.
+    std::unordered_map<ComputePipelineCacheKey, std::atomic<PrecacheState>> precache_states;
+    std::mutex precache_mutex;
+    std::condition_variable precache_condvar;
+    std::atomic<size_t> precache_claimed{}; ///< Dropped: the game built them first
+    std::atomic<size_t> precache_waited{};  ///< In progress when the game needed them
+    std::atomic<s64> precache_paused_us{};
+    /// steady_clock ticks of the last pipeline the game built or queued.
+    std::atomic<s64> last_runtime_build{};
+    std::atomic_bool precache_stop{};
+    std::atomic<size_t> precache_left{};
+    std::atomic<size_t> precache_built{};
+    std::chrono::steady_clock::time_point precache_start{};
+    /// Key hashes of the precache file's programs (written before the game runs).
+    std::unordered_set<u64> precache_keys;
+    size_t new_compute_pipelines{}; ///< GPU thread
+    size_t precached_compute_pipelines{}; ///< Of those, in the precache file (GPU thread)
+    /// Last: destroyed (its threads joined) before the state above.
+    std::unique_ptr<Common::ThreadWorker> precache_workers;
+
+    std::chrono::microseconds translation_wait{};         ///< Per pipeline
+    std::chrono::microseconds translation_frame_budget{}; ///< Per frame
+    std::chrono::microseconds translation_frame_left{};
+    u64 translation_frame{}; ///< frame_count when translation_frame_left was last reset
+    size_t num_translation_threads{};
+    /// Keys being translated on a worker (GPU thread only).
+    ::Common::unordered_map<GraphicsPipelineCacheKey, QueuedGraphicsTranslation> translating_graphics;
+    std::mutex translated_mutex;
+    std::vector<TranslatedGraphicsPipeline> translated_graphics;
+    std::atomic<size_t> num_translated{};
+    std::atomic<u64> parallel_stage_pipelines{}; ///< Pipelines whose stages translated in parallel
+    /// Null when asynchronous translation is off. Joined first in the destructor.
+    std::unique_ptr<Common::ThreadWorker> translation_workers;
 };
 
 } // namespace Vulkan

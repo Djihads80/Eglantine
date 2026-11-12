@@ -269,6 +269,8 @@ struct MeshInfo {
     boost::container::static_vector<u32, 136> vertex_lines;
     boost::container::static_vector<u32, 136> primitive_lines;
 
+    bool operator==(const MeshInfo&) const = default;
+
     /// Vertex indices per primitive, which is also its byte count in the map region.
     [[nodiscard]] u32 PrimitiveVertices() const noexcept {
         return topology == 0 ? 1 : topology == 1 ? 2 : 3;
@@ -400,6 +402,8 @@ struct Info {
                uses_subgroup_shuffles || uses_subgroup_mask || uses_quad_shuffles ||
                uses_fswzadd || uses_cooperative_matrix;
     }
+
+    bool operator==(const Info&) const = default;
 };
 
 template <typename Descriptors>

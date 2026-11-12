@@ -265,6 +265,7 @@ cmake_dependent_option(ENABLE_OPENGL "Enable OpenGL" ON "NOT (WIN32 AND ARCHITEC
 mark_as_advanced(FORCE ENABLE_OPENGL)
 
 option(ENABLE_WEB_SERVICE "Enable web services (telemetry, etc.)" ON)
+option(ENABLE_MCP_SERVER "Build the built-in MCP server for AI agents (off at runtime by default)" ON)
 option(ENABLE_WIFI_SCAN "Enable WiFi scanning" OFF)
 
 cmake_dependent_option(USE_DISCORD_PRESENCE "Enables Discord Rich Presence" OFF "ENABLE_QT" OFF)

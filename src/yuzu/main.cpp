@@ -9,9 +9,12 @@
 
 #include <QApplication>
 
-#include "common/fs/fs_paths.h"
+#include "common/driver_shader_cache.h"
 #include "common/fs/path_util.h"
+#include "common/settings.h"
+#include "frontend_common/config.h"
 #include "startup_checks.h"
+#include "yuzu/nx2_switches.h"
 
 #if YUZU_ROOM
 #include <cstring>
@@ -32,6 +35,10 @@
 #endif
 
 #include "main_window.h"
+
+#ifdef YUZU_CRASH_DUMPS
+#include "yuzu/breakpad.h"
+#endif
 
 #ifdef _WIN32
 #include <QScreen>
@@ -90,7 +97,8 @@ static Qt::HighDpiScaleFactorRoundingPolicy GetHighDpiRoundingPolicy() {
 // set. nx2_switches.txt holds "NAME=VALUE" lines, one per line, '#' comments. A variable already
 // in the real environment always wins, so a launcher script can still override one run; between
 // files the later one wins, so the copy next to the executable (shipped with the build) can be
-// overridden by %APPDATA%\eglantine\nx2_switches.txt without editing the one that gets replaced.
+// overridden by the user's copy (Nx2Switches::UserFilePath: %APPDATA%\eglantine, or the portable user
+// folder) without editing the one that gets replaced.
 static void ParseSwitchFile(const std::filesystem::path& path,
                             std::map<std::string, std::string>& entries) {
     std::ifstream file{path};
@@ -143,12 +151,7 @@ static void LoadNx2Switches(const char* argv0) {
     if (const auto exe_dir = GetSwitchExeDirectory(argv0); !exe_dir.empty()) {
         ParseSwitchFile(exe_dir / "nx2_switches.txt", entries);
     }
-#ifdef _WIN32
-    const auto config_dir = Common::FS::GetAppDataRoamingDirectory() / EDEN_DIR;
-#else
-    const auto config_dir = Common::FS::GetDataDirectory("XDG_CONFIG_HOME") / EDEN_DIR;
-#endif
-    ParseSwitchFile(config_dir / "nx2_switches.txt", entries);
+    ParseSwitchFile(Nx2Switches::UserFilePath(), entries);
     for (const auto& [name, value] : entries) {
         if (std::getenv(name.c_str()) != nullptr) {
             continue;
@@ -163,6 +166,12 @@ static void LoadNx2Switches(const char* argv0) {
 
 int main(int argc, char* argv[]) {
     LoadNx2Switches(argv[0]);
+    // Before StartupChecks: its Vulkan check is the first thing to load a GPU driver. The config
+    // isn't loaded yet, so the setting is read from the file.
+    Config::ReadGlobalSettingEarly("qt-config", Settings::values.private_driver_shader_cache);
+    Config::ReadGlobalSettingEarly("qt-config", Settings::values.driver_shader_cache_size);
+    Common::ConfigureDriverShaderCache(Settings::values.private_driver_shader_cache.GetValue(),
+                                       Settings::values.driver_shader_cache_size.GetValue());
 #if YUZU_ROOM
     bool launch_room = false;
     for (int i = 1; i < argc; i++) {

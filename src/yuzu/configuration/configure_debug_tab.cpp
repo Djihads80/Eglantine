@@ -6,6 +6,9 @@
 #include "yuzu/configuration/configure_cpu_debug.h"
 #include "yuzu/configuration/configure_debug.h"
 #include "yuzu/configuration/configure_debug_tab.h"
+#ifdef YUZU_ENABLE_MCP
+#include "yuzu/configuration/configure_mcp.h"
+#endif
 
 ConfigureDebugTab::ConfigureDebugTab(const Core::System& system_, QWidget* parent)
     : QWidget(parent), ui{std::make_unique<Ui::ConfigureDebugTab>()},
@@ -15,6 +18,10 @@ ConfigureDebugTab::ConfigureDebugTab(const Core::System& system_, QWidget* paren
 
     ui->tabWidget->addTab(debug_tab.get(), tr("Debug"));
     ui->tabWidget->addTab(cpu_debug_tab.get(), tr("CPU"));
+#ifdef YUZU_ENABLE_MCP
+    mcp_tab = std::make_unique<ConfigureMcp>(this);
+    ui->tabWidget->addTab(mcp_tab.get(), tr("MCP"));
+#endif
 
     SetConfiguration();
 }
@@ -24,6 +31,9 @@ ConfigureDebugTab::~ConfigureDebugTab() = default;
 void ConfigureDebugTab::ApplyConfiguration() {
     debug_tab->ApplyConfiguration();
     cpu_debug_tab->ApplyConfiguration();
+#ifdef YUZU_ENABLE_MCP
+    mcp_tab->ApplyConfiguration();
+#endif
 }
 
 void ConfigureDebugTab::SetCurrentIndex(int index) {

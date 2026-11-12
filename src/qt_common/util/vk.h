@@ -55,15 +55,32 @@ enum class VSyncMode : u32;
 
 namespace VkDeviceInfo {
 // Short class to record Vulkan driver information for configuration purposes
+/// What the configuration UI needs to know about a device's vendor and driver.
+struct Capabilities {
+    u32 vendor_id{};                    ///< VkPhysicalDeviceProperties::vendorID
+    u32 driver_id{};                    ///< VkDriverId, 0 when unknown
+    std::vector<std::string> extensions; ///< Device extension names
+
+    [[nodiscard]] bool HasExtension(std::string_view extension) const {
+        for (const auto& name : extensions) {
+            if (name == extension) {
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
 class Record {
 public:
     explicit Record(std::string_view name, const std::vector<VkPresentModeKHR>& vsync_modes,
-                    bool has_broken_compute);
+                    bool has_broken_compute, Capabilities capabilities = {});
     ~Record();
 
     const std::string name;
     const std::vector<VkPresentModeKHR> vsync_support;
     const bool has_broken_compute;
+    const Capabilities capabilities;
 };
 
 // TODO(crueter): Port some configure_graphics.cpp stuff

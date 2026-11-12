@@ -50,6 +50,7 @@ add_library(core STATIC
     debugger/nx2_debug_server.h
     debugger/nx2_debug_tools.cpp
     debugger/nx2_debug_tools.h
+    debugger/trace_hooks.h
     device_memory.cpp
     device_memory.h
     device_memory_manager.h
@@ -1047,6 +1048,7 @@ add_library(core STATIC
     hle/service/server_manager.h
     hle/service/service.cpp
     hle/service/service.h
+    hle/service/unimplemented_registry.h
     hle/service/nx2_streamplay.h
     hle/service/nx2_stub_interface.h
     hle/service/nx2_gsv.h

@@ -38,6 +38,7 @@
 #include "yuzu/game/game_tree.h"
 #include "yuzu/game/search_field.h"
 #include "yuzu/main_window.h"
+#include "yuzu/shader_warm_dialog.h"
 #include "yuzu/util/controller_navigation.h"
 
 GameList::GameList(FileSys::VirtualFilesystem vfs_, FileSys::ManualContentProvider* provider_,
@@ -476,6 +477,13 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     QAction* open_mod_location = context_menu.addAction(tr("Open Mod Data Location"));
     QAction* open_transferable_shader_cache =
         context_menu.addAction(tr("Open Transferable Pipeline Cache"));
+    const bool has_shader_warm = ShaderWarmFilesExist(program_id);
+    QAction* prepare_shaders = context_menu.addAction(
+        has_shader_warm ? tr("Pre-compile Shaders Again") : tr("Pre-compile Shaders"));
+    QAction* delete_shader_warm = nullptr;
+    if (has_shader_warm) {
+        delete_shader_warm = context_menu.addAction(tr("Delete Pre-compiled Shaders"));
+    }
     QAction* ryujinx = context_menu.addAction(tr("Link to Ryujinx"));
     context_menu.addSeparator();
     QMenu* remove_menu = context_menu.addMenu(tr("Remove"));
@@ -529,6 +537,7 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     open_save_location->setVisible(program_id != 0);
     open_mod_location->setVisible(program_id != 0);
     open_transferable_shader_cache->setVisible(program_id != 0);
+    prepare_shaders->setVisible(program_id != 0);
     remove_update->setVisible(program_id != 0);
     remove_dlc->setVisible(program_id != 0);
     remove_gl_shader_cache->setVisible(program_id != 0);
@@ -550,6 +559,12 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     });
     connect(open_transferable_shader_cache, &QAction::triggered, this,
             [this, program_id]() { emit OpenTransferableShaderCacheRequested(program_id); });
+    connect(prepare_shaders, &QAction::triggered, this,
+            [this, program_id, path]() { emit PrepareShaderWarmRequested(program_id, path); });
+    if (delete_shader_warm) {
+        connect(delete_shader_warm, &QAction::triggered, this,
+                [this, program_id]() { emit DeleteShaderWarmRequested(program_id); });
+    }
     connect(remove_all_content, &QAction::triggered, this, [this, program_id]() {
         emit RemoveInstalledEntryRequested(program_id, QtCommon::Game::InstalledEntryType::Game);
     });

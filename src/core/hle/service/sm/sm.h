@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 #include "common/container/unordered_map.h"
 #include <concepts>
 
@@ -89,6 +90,17 @@ public:
     }
 
     void InvokeControlRequest(HLERequestContext& context);
+
+    /// Names of the registered services (for debugging tools), unsorted.
+    std::vector<std::string> GetRegisteredServiceNames() const {
+        std::scoped_lock l{lock};
+        std::vector<std::string> names;
+        names.reserve(registered_services.size());
+        for (const auto& [name, factory] : registered_services) {
+            names.push_back(name);
+        }
+        return names;
+    }
 
     void SetDeferralEvent(Kernel::KEvent* deferral_event_) {
         deferral_event = deferral_event_;

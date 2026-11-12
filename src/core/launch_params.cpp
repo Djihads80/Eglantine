@@ -20,13 +20,25 @@
 #endif
 
 namespace Core {
+
+/// Parses a whole decimal TCP port (1-65535); nullopt for anything else.
+static std::optional<u16> ParsePort(const char* text) {
+    char* end = nullptr;
+    const unsigned long port = std::strtoul(text, &end, 10);
+    if (end == text || *end != '\0' || port == 0 || port > 65535) {
+        return std::nullopt;
+    }
+    return static_cast<u16>(port);
+}
+
+/// Parses the command line options into a LaunchParams.
 LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wchar_t *argv_w[]) noexcept {
     LaunchParams p{};
 
     int option_index = 0;
     static struct option long_options[] = {
         // clang-format off
-        {"debug", no_argument, 0, 'd'},
+        {"debug", optional_argument, 0, 'd'},
         {"config", required_argument, 0, 'c'},
         {"fullscreen", no_argument, 0, 'f'},
         {"help", no_argument, 0, 'h'},
@@ -35,10 +47,13 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
         {"program", optional_argument, 0, 'p'},
         {"user", required_argument, 0, 'u'},
         {"version", no_argument, 0, 'v'},
-        {"input-profile", no_argument, 0, 'i'},
+        {"input-profile", required_argument, 0, 'i'},
         {"null-render", no_argument, 0, 'n'},
         {"singlecore", no_argument, 0, 's'},
         {"filter", no_argument, 0, 'x'},
+        {"mcp", no_argument, 0, 'M'},
+        {"mcp-port", required_argument, 0, 'P'},
+        {"mcp-allow-writes", no_argument, 0, 'W'},
         {"pack-nup", required_argument, 0, 'N'},
         {"unpack-nup", required_argument, 0, 'U'},
         {"edit-nup", required_argument, 0, 'E'},
@@ -55,10 +70,21 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
     };
 
     while (optind < argc) {
-        if (int arg = getopt_long(argc, argv, "dc:fhg:m:p:u:vinsx", long_options, &option_index); arg != -1) {
-            switch (arg) {
+        // -d takes an optional port (-d1234); -i takes the input profile. Both read optarg but
+        // were declared without arguments, so optarg was null and they crashed.
+        if (int arg = getopt_long(argc, argv, "d::c:fhg:m:p:u:vi:nsx", long_options, &option_index); arg != -1) {
+            switch (char(arg)) {
             case 'd':
-                p.override_gdb_port = uint16_t(atoi(optarg));
+                // Without a port, the configured one is used (the config is not loaded yet).
+                p.enable_gdbstub = true;
+                if (optarg != nullptr) {
+                    if (const auto port = ParsePort(optarg)) {
+                        p.override_gdb_port = *port;
+                    } else {
+                        LOG_ERROR(Frontend, "Invalid --debug port '{}', using the configured port",
+                                  optarg);
+                    }
+                }
                 break;
             case 'c':
                 p.config_path = optarg;
@@ -72,6 +98,21 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
                 break;
             case 'g':
                 p.filepath = std::string(optarg);
+                break;
+            case 'M':
+                p.mcp_enable = true;
+                break;
+            case 'P':
+                p.mcp_enable = true;
+                if (const auto port = ParsePort(optarg)) {
+                    p.mcp_port = *port;
+                } else {
+                    LOG_ERROR(Frontend, "Invalid --mcp-port '{}', using the configured port",
+                              optarg);
+                }
+                break;
+            case 'W':
+                p.mcp_allow_writes = true;
                 break;
             case 'N':
                 p.pack_nup_source = std::string(optarg);
@@ -196,6 +237,7 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
     return p;
 }
 
+/// Applies the parsed command line options to the log filter and settings.
 void ApplyLaunchParams(LaunchParams const& lp) noexcept {
     // apply the log_filter setting
     // the logger was initialized before and doesn't pick up the filter on its own
@@ -213,8 +255,10 @@ void ApplyLaunchParams(LaunchParams const& lp) noexcept {
     if (lp.selected_user.has_value()) {
         Settings::values.current_user = std::clamp(*lp.selected_user, 0, 7);
     }
-    if (lp.override_gdb_port.has_value()) {
+    if (lp.enable_gdbstub) {
         Settings::values.use_gdbstub = true;
+    }
+    if (lp.override_gdb_port.has_value()) {
         Settings::values.gdbstub_port = *lp.override_gdb_port;
     }
     if (lp.force_single_core) {

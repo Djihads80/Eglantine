@@ -7,6 +7,8 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
+#include <string>
 #include <atomic>
 #include <memory>
 #include <numeric>
@@ -22,6 +24,9 @@
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_draw_stats.h"
+#include "video_core/nx2_hazard.h"
+#include "video_core/nx2_knobs.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/texture_cache/util.h"
@@ -106,6 +111,7 @@ void BufferCache<P>::RunGarbageCollector(bool aggressive_gc) {
 
 template <class P>
 void BufferCache<P>::TickFrame() {
+    VideoCommon::g_hot_page_epoch.fetch_add(1, std::memory_order_relaxed);
     // Homebrew console apps don't create or bind any channels, so this will be nullptr.
     if (!channel_state) {
         return;
@@ -203,6 +209,8 @@ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu
     // whether the written range or its surrounding 4 KiB page holds any GPU-modified bytes.
     if (gpu_modified_ranges.Intersects(page_begin, page_end - page_begin)) [[unlikely]] {
         if (IsRegionGpuModified(device_addr, size)) {
+            VideoCommon::Nx2Hazard::NoteGpuModifiedWrite(
+                VideoCommon::Nx2Hazard::Site::WriteGpuModified, device_addr, size);
             ClearDownload(device_addr, size);
             gpu_modified_ranges.Subtract(device_addr, size);
         }
@@ -1153,6 +1161,8 @@ template <class P>
 void BufferCache<P>::ClaimCpuWrites(std::span<const std::pair<DAddr, u64>> ranges) {
     for (const auto& [device_addr, size] : ranges) {
         if (IsRegionGpuModified(device_addr, size)) {
+            VideoCommon::Nx2Hazard::NoteGpuModifiedWrite(
+                VideoCommon::Nx2Hazard::Site::ClaimGpuModified, device_addr, size);
             ClearDownload(device_addr, size);
             gpu_modified_ranges.Subtract(device_addr, size);
         }
@@ -1516,6 +1526,22 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     const Binding& binding = channel_state->uniform_buffers[stage][index];
     const DAddr device_addr = binding.device_addr;
     const u32 size = (std::min)(binding.size, (*channel_state->uniform_buffer_sizes)[stage][index]);
+    // EDEN_NX2_BIND_STATS: bind cost by size class, and whether the bytes equal this slot's
+    // previous bind (what extending the stream reuse to larger buffers could exploit).
+    bool uniform_same = false;
+    if (VideoCommon::Nx2DrawStats::HashContents() && size != 0) [[unlikely]] {
+        static thread_local std::vector<u8> scratch;
+        scratch.resize((std::min)(size, u32{0x10000}));
+        device_memory.ReadBlockUnsafe(device_addr, scratch.data(), scratch.size());
+        const u64 key = (u64{static_cast<u32>(stage)} << 40) ^ (u64{index} << 32) ^ size;
+        uniform_same = VideoCommon::Nx2DrawStats::SameAsLast(
+            key, VideoCommon::Nx2DrawStats::HashBytes(scratch.data(), scratch.size()));
+    }
+    VideoCommon::Nx2DrawStats::Timer uniform_probe{
+        size <= 4096 ? VideoCommon::Nx2DrawStats::Site::UniformSmall
+        : size < 0x10000 ? VideoCommon::Nx2DrawStats::Site::UniformMedium
+                         : VideoCommon::Nx2DrawStats::Site::UniformBank};
+    uniform_probe.hit = uniform_same;
     Buffer& buffer = slot_buffers[binding.buffer_id];
     const bool has_host_buffer = binding.buffer_id != NULL_BUFFER_ID;
     const u32 offset = has_host_buffer ? buffer.Offset(device_addr) : 0;
@@ -1540,6 +1566,45 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         const char* v = std::getenv("EDEN_NX2_BANK_REUPLOAD");
         return v != nullptr ? v[0] : '1';
     }();
+    // EDEN_NX2_HOST_IMPORT: a native 64 KiB bank nothing on the GPU writes is read
+    // by the host GPU from the guest's own pages, with no copy and no re-upload. Debug knob 10
+    // inverts it while the game runs.
+    if constexpr (requires { runtime.TryBindImportedUniformBuffer(static_cast<const u8*>(nullptr), u32{}); }) {
+        // On by default for the NVIDIA proprietary driver on Linux; =1 / =0 force it on / off.
+        static const bool import_start = [this] {
+            const char* const value = std::getenv("EDEN_NX2_HOST_IMPORT");
+            if (value != nullptr) {
+                return value[0] == '1';
+            }
+            if constexpr (requires { runtime.HostImportByDefault(); }) {
+                return runtime.HostImportByDefault();
+            }
+            return false;
+        }();
+        if (has_host_buffer && size != 0 && gpu_memory != nullptr &&
+            gpu_memory->UsesNativeTiling() &&
+            (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000 &&
+            VideoCommon::Nx2Knob::Live(import_start, VideoCommon::Nx2Knob::HostImport) &&
+            !memory_tracker.IsRegionGpuModified(device_addr, size)) {
+            static std::atomic<u64> imported{0}, copied{0}, no_span{0}, no_import{0};
+            const u8* const host_ptr = device_memory.GetSpan(device_addr, size);
+            if (host_ptr != nullptr && runtime.TryBindImportedUniformBuffer(host_ptr, size)) {
+                channel_state->fast_bound_uniform_buffers[stage] &= ~(1u << binding_index);
+                const u64 count = imported.fetch_add(1, std::memory_order_relaxed) + 1;
+                if ((count % 500000) == 0) {
+                    LOG_INFO(HW_GPU,
+                             "nx2: {} banks bound from guest memory, {} copied instead ({} not "
+                             "physically contiguous, {} unaligned or not importable)",
+                             count, copied.load(std::memory_order_relaxed),
+                             no_span.load(std::memory_order_relaxed),
+                             no_import.load(std::memory_order_relaxed));
+                }
+                return;
+            }
+            copied.fetch_add(1, std::memory_order_relaxed);
+            (host_ptr == nullptr ? no_span : no_import).fetch_add(1, std::memory_order_relaxed);
+        }
+    }
     if (bank_mode != '0' && has_host_buffer && size != 0 && gpu_memory != nullptr &&
         gpu_memory->UsesNativeTiling() &&
         (bank_mode == '3' || (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000)) {
@@ -1673,12 +1738,16 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             // stream allocation again instead of allocating and copying (uniform_stream_reuse.h).
             // EDEN_NX2_UBOREUSE=0 turns it off.
             if (VideoCommon::UniformStreamReuseEnabled()) {
+                VideoCommon::Nx2Hazard::CheckRead(VideoCommon::Nx2Hazard::Site::UniformReuse,
+                                                  device_addr, size);
                 streamed = VideoCommon::BindSmallUniformReusing(
                     runtime, device_memory, stage, index, binding_index, device_addr, size);
             }
         }
         if (!streamed) {
             const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
+            VideoCommon::Nx2Hazard::CheckRead(VideoCommon::Nx2Hazard::Site::UniformFast, device_addr,
+                                              size);
             device_memory.ReadBlockUnsafe(device_addr, span.data(), size);
         }
         return;
@@ -1973,6 +2042,8 @@ void BufferCache<P>::BindHostComputeUniformBuffers() {
                 if (!streamed) {
                     const std::span<u8> span =
                         runtime.BindMappedUniformBuffer(0, binding_index, size);
+                    VideoCommon::Nx2Hazard::CheckRead(VideoCommon::Nx2Hazard::Site::UniformCompute,
+                                                      binding.device_addr, size);
                     device_memory.ReadBlockUnsafe(binding.device_addr, span.data(), size);
                 }
                 return;
@@ -2096,6 +2167,7 @@ void BufferCache<P>::DoUpdateComputeBuffers() {
 
 template <class P>
 void BufferCache<P>::UpdateIndexBuffer() {
+    const VideoCommon::Nx2DrawStats::FindCaller find_caller{VideoCommon::Nx2DrawStats::Site::FindBufferIndex};
     // We have to check for the dirty flags and index count
     // The index count is currently changed without updating the dirty flags
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
@@ -2156,6 +2228,7 @@ void BufferCache<P>::UpdateIndexBuffer() {
 
 template <class P>
 void BufferCache<P>::UpdateVertexBuffers() {
+    const VideoCommon::Nx2DrawStats::FindCaller find_caller{VideoCommon::Nx2DrawStats::Site::FindBufferVertex};
     auto& flags = maxwell3d->dirty.flags;
     if (!maxwell3d->dirty.flags[Dirty::VertexBuffers]) {
         return;
@@ -2280,6 +2353,7 @@ void BufferCache<P>::UpdateUniformBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::UpdateStorageBuffers(size_t stage) {
+    const VideoCommon::Nx2DrawStats::FindCaller find_caller{VideoCommon::Nx2DrawStats::Site::FindBufferStorage};
     if (channel_state->enabled_storage_buffers[stage] == 0) [[likely]] {
         return;
     }
@@ -2296,6 +2370,7 @@ void BufferCache<P>::UpdateStorageBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::UpdateTextureBuffers(size_t stage) {
+    const VideoCommon::Nx2DrawStats::FindCaller find_caller{VideoCommon::Nx2DrawStats::Site::FindBufferTexture};
     if (channel_state->enabled_texture_buffers[stage] == 0) [[likely]] {
         return;
     }
@@ -2678,6 +2753,7 @@ void BufferCache<P>::Nx2NoteListHostWrite(DAddr device_addr, u64 size, std::span
 
 template <class P>
 BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible) {
+    VideoCommon::Nx2DrawStats::Timer probe{VideoCommon::Nx2DrawStats::t_find_site};
     const u64 page = device_addr >> CACHING_PAGEBITS;
     if (device_addr == 0 || page >= page_table.size()) {
         return NULL_BUFFER_ID;
@@ -2697,6 +2773,7 @@ BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_com
                 }
             }
             if (usable) {
+                probe.hit = true;
                 return buffer_id;
             }
         }
@@ -3110,6 +3187,8 @@ void BufferCache<P>::ImmediateUploadMemory([[maybe_unused]] Buffer& buffer,
                 device_memory.ReadBlockUnsafe(device_addr, immediate_buffer.data(), copy.size);
                 upload_span = immediate_buffer.subspan(0, copy.size);
             }
+            VideoCommon::Nx2Hazard::CheckRead(VideoCommon::Nx2Hazard::Site::ImmediateUpload,
+                                              device_addr, copy.size);
             buffer.ImmediateUpload(copy.dst_offset, upload_span);
         }
     }
@@ -3125,6 +3204,8 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
         for (BufferCopy& copy : copies) {
             u8* const src_pointer = staging_pointer.data() + copy.src_offset;
             const DAddr device_addr = buffer.CpuAddr() + copy.dst_offset;
+            VideoCommon::Nx2Hazard::CheckRead(VideoCommon::Nx2Hazard::Site::MappedUpload,
+                                              device_addr, copy.size);
             device_memory.ReadBlockUnsafe(device_addr, src_pointer, copy.size);
             // Large uploads are mostly geometry the host GPU now has its own copy of: TickFrame
             // marks their guest memory cold (see TextureCache::RefreshContents).

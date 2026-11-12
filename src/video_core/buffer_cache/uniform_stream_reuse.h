@@ -12,6 +12,7 @@
 #include <type_traits>
 
 #include "common/common_types.h"
+#include "video_core/nx2_draw_stats.h"
 
 namespace VideoCommon {
 
@@ -107,7 +108,18 @@ template <class Runtime, class DeviceMemory>
 
     const bool same_bytes =
         slot.size == size && std::memcmp(slot.bytes.data(), scratch, size) == 0;
-    if (same_bytes && slot.tick == runtime.CurrentTick()) {
+    const bool same_tick = same_bytes && slot.tick == runtime.CurrentTick();
+    if (VideoCommon::Nx2DrawStats::Enabled()) [[unlikely]] {
+        // EDEN_NX2_BIND_STATS: binds through the reuse, how many were reused, and how many had
+        // the same bytes but a command buffer boundary in between.
+        VideoCommon::Nx2DrawStats::Note(VideoCommon::Nx2DrawStats::Site::UniformSmallBinds,
+                                        same_tick);
+        if (same_bytes && !same_tick) {
+            VideoCommon::Nx2DrawStats::Note(VideoCommon::Nx2DrawStats::Site::UniformTickMiss,
+                                            false);
+        }
+    }
+    if (same_tick) {
         runtime.RebindStreamUniform(slot.ref, size);
         return true;
     }

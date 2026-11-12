@@ -424,6 +424,12 @@ void Filter::ParseFilterString(std::string_view filter_view) {
 // Constructor shall NOT depend upon Settings() or whatever
 // it's ran at global static ctor() time... so BE CAREFUL MFER!
 static std::optional<Common::Log::Impl> logging_instance{};
+/// See SetExternalSink. Loaded once per message that passes the filter; nullptr when unset.
+static std::atomic<Common::Log::ExternalSink> external_sink{nullptr};
+
+void SetExternalSink(ExternalSink sink) {
+    external_sink.store(sink, std::memory_order_release);
+}
 
 void Initialize() {
     if (logging_instance) {
@@ -469,6 +475,19 @@ void SetRingCapacity(std::size_t capacity) {
     }
 }
 
+std::size_t RingCapacity() {
+    return logging_instance ? logging_instance->ring_backend.capacity.load(std::memory_order_relaxed)
+                            : 0;
+}
+
+u64 RingNewestSequence() {
+    if (!logging_instance)
+        return 0;
+    auto& ring = logging_instance->ring_backend;
+    std::scoped_lock lock{ring.mutex};
+    return ring.next_sequence - 1;
+}
+
 std::vector<RingLine> ReadRing(u64 after) {
     std::vector<RingLine> result;
     if (!logging_instance)
@@ -487,6 +506,7 @@ bool IsLevelEnabled(Class log_class, Level log_level) {
     return logging_instance && logging_instance->filter.CheckMessage(log_class, log_level);
 }
 
+/// Formats a message that passes the filter and writes it to every backend and the external sink.
 void FmtLogMessageImpl(Class log_class, Level log_level, const char* filename, unsigned int line_num, const char* function, fmt::string_view format, const fmt::format_args& args) {
     if (logging_instance && logging_instance->filter.CheckMessage(log_class, log_level)) {
         auto const flush = ::Settings::values.log_flush_line.GetValue();
@@ -502,6 +522,7 @@ void FmtLogMessageImpl(Class log_class, Level log_level, const char* filename, u
             .function = function,
             .line_num = line_num,
         };
+        const auto sink = external_sink.load(std::memory_order_acquire);
         if (result.size <= sizeof(buffer) - 1) {
             buffer[(std::min)(result.size, sizeof(buffer) - 1)] = '\0';
             e.message = buffer;
@@ -510,6 +531,7 @@ void FmtLogMessageImpl(Class log_class, Level log_level, const char* filename, u
                 backend.Write(e);
                 if (flush) backend.Flush();
             });
+            if (sink) sink(GetLogClassName(log_class), log_level, {e.message, e.message_len});
         } else {
             std::string s = fmt::vformat(format, args);
             e.message = s.c_str();
@@ -518,6 +540,7 @@ void FmtLogMessageImpl(Class log_class, Level log_level, const char* filename, u
                 backend.Write(e);
                 if (flush) backend.Flush();
             });
+            if (sink) sink(GetLogClassName(log_class), log_level, s);
         }
     }
 }

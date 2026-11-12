@@ -23,12 +23,29 @@
 #include "common/unique_function.h"
 #include "shader_recompiler/environment.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/host1x/gpu_device_memory_manager.h"
 
 namespace Tegra {
 class Memorymanager;
 }
 
+namespace Shader::Ampere {
+struct Instruction;
+struct LoweredProgram;
+} // namespace Shader::Ampere
+
 namespace VideoCommon {
+
+/// The shader hash of lowered native code (frame dump "shaders", pipeline cache keys).
+u64 NativeShaderHash(std::span<const u64> code);
+
+/// The code an environment holds for a lowered native program: `header` (the shader header,
+/// zero for compute), the instructions with a Maxwell scheduling word before every fourth word,
+/// a zero word and the native address map. Applies the per-program workarounds to `lowered`
+/// first. The runtime and the shader precache builder must lay programs out the same way.
+std::vector<u64> LayOutLoweredNativeCode(std::span<const u64> header,
+                                         std::span<const Shader::Ampere::Instruction> native,
+                                         Shader::Ampere::LoweredProgram& lowered);
 
 /// A native (Switch 2) program after capture and lowering to Maxwell code. The shader cache keeps
 /// it so the environments built for the program's pipelines don't capture and lower it again.
@@ -182,9 +199,67 @@ public:
 
     std::optional<Shader::ReplaceConstant> GetReplaceConstBuffer(u32 bank, u32 offset) override;
 
+    /// Copies the 3D engine state translation reads and stops using the engine, so the program
+    /// can be translated on a worker thread while the GPU thread moves on. Returns false, leaving
+    /// the environment unchanged, when the texture pool isn't one contiguous device range or the
+    /// GPU has written it.
+    [[nodiscard]] bool Detach(Tegra::MaxwellDeviceMemoryManager& device_memory);
+
+    /// Bytes of constant buffer contents copied by Detach (0 if not detached).
+    [[nodiscard]] size_t SnapshotSizeBytes() const noexcept;
+
+    /// Frees the constant buffers Detach copied, once translation is done: serialization only
+    /// needs the recorded reads. The texture pool location is kept.
+    void ReleaseSnapshotBuffers() noexcept;
+
+    /// Texture pool entries of a detached environment (limit + 1), 0 if not detached.
+    [[nodiscard]] u32 TexturePoolEntries() const noexcept;
+
+    /// The texture reads translation made, read again from the pool (diagnostic for the late
+    /// pool read on translation workers). GPU thread only.
+    struct TexturePoolCheck {
+        u32 reads{};
+        u32 changed{};
+        bool remapped{}; ///< The pool's GPU address no longer maps to the device range read
+        bool dirty{};    ///< The GPU has written the pool since
+    };
+    [[nodiscard]] TexturePoolCheck CheckTextureReads(const Tegra::MemoryManager& current) const;
+
 private:
+    /// The 3D engine state a detached environment reads instead of the engine.
+    struct EngineSnapshot {
+        struct ConstBuffer {
+            bool enabled{};
+            u32 size{};
+            /// One word longer than `size`, so a read at any offset below `size` stays inside.
+            std::vector<u8> bytes;
+        };
+        std::array<ConstBuffer, Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers> const_buffers;
+
+        /// The texture pool is located, not copied (it can hold thousands of entries); its
+        /// entries are read through the device memory manager, which outlives the GPU address
+        /// space.
+        Tegra::MaxwellDeviceMemoryManager* device_memory{};
+        GPUVAddr texture_pool_gpu{};
+        DAddr texture_pool{};
+        u32 texture_pool_limit{};
+        bool via_header_index{};
+        bool native_tiling{};
+
+        u32 viewport_scale_offset_enabled{};
+        ::Common::unordered_map<u64, Tegra::Engines::Maxwell3D::HLEReplacementAttributeType>
+            replace_table;
+    };
+
+    /// Texture descriptor (TIC entry) of a texture handle, from the engine or the snapshot.
+    Tegra::Texture::TICEntry ReadTextureDescriptor(u32 handle);
+
+    /// Texture descriptor of a texture handle from the snapshot's pool.
+    Tegra::Texture::TICEntry ReadSnapshotDescriptor(u32 handle) const;
+
     Tegra::Engines::Maxwell3D* maxwell3d{};
     size_t stage_index{};
+    std::optional<EngineSnapshot> snapshot;
 };
 
 class ComputeEnvironment final : public GenericEnvironment {
@@ -216,9 +291,27 @@ private:
     Tegra::Engines::KeplerCompute* kepler_compute{};
 };
 
+/// Answers for reads a FileEnvironment has no record of (shader precache: programs from the game
+/// files, never run, converted only to fill the driver's cache). Without it a missing read is an
+/// error.
+struct GuessMissing {
+    u32 cbuf_bank0{0x10000000};  ///< Constant buffer 0 (driver constants, descriptor handles)
+    u32 cbuf_other{0};           ///< Other constant buffers (game constants)
+    Shader::TextureType texture_type{Shader::TextureType::ColorArray2D};
+    Shader::TexturePixelFormat pixel_format{static_cast<Shader::TexturePixelFormat>(16)};
+    bool storage_pointer_bank0{true};  ///< Bank 0 always held storage pointers in the test title's records
+    bool storage_pointer_other{false}; ///< Banks 1-4 never did (95% identical SPIR-V offline)
+};
+
 class FileEnvironment final : public Shader::Environment {
 public:
     FileEnvironment() = default;
+
+    /// Missing reads get these answers instead of an error; the guess must outlive the
+    /// environment.
+    void SetGuessMissing(const GuessMissing* guess_) noexcept {
+        guess = guess_;
+    }
     ~FileEnvironment() override = default;
 
     FileEnvironment& operator=(FileEnvironment&&) noexcept = default;
@@ -286,6 +379,7 @@ private:
     u32 read_highest{};
     u32 initial_offset{};
     u32 viewport_transform_state = 1;
+    const GuessMissing* guess{};
 };
 
 void SerializePipeline(std::span<const char> key, std::span<const GenericEnvironment* const> envs,

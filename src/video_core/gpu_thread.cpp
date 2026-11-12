@@ -25,6 +25,9 @@
 #include "video_core/gpu.h"
 #include "video_core/gpu_thread.h"
 #include "video_core/gpu_split.h"
+#include "video_core/nx2_hazard.h"
+#include "video_core/nx2_job_stats.h"
+#include "video_core/nx2_timeline.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
@@ -230,12 +233,24 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 auto* const rasterizer_ptr = renderer.ReadRasterizer();
                 if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
                     Profile::Scope scope{Profile::Zone::Push};
+                    if (VideoCommon::Nx2Hazard::Enabled()) {
+                        split.Defer([epoch = submit_list->epoch] {
+                            VideoCommon::Nx2Hazard::SetListEpoch(epoch);
+                        });
+                    }
+                    const u64 timeline_seq = submit_list->timeline_seq;
                     scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
+                    if (timeline_seq != 0) {
+                        VideoCommon::Nx2Timeline::OnFront(timeline_seq);
+                        split.Defer([timeline_seq] { VideoCommon::Nx2Timeline::OnBack(timeline_seq); });
+                    }
                 } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
                     split.Defer([gpu = &system.GPU()] { gpu->TickWork(); });
                 } else if (auto* run = std::get_if<RunCommand>(&next.data)) {
                     if (run->before_later_reads) {
                         // GPU memory maps unmap caches (UnmapMemory downloads): the back's state.
+                        const VideoCommon::Nx2JobStats::Timer drain_timer{
+                            VideoCommon::Nx2JobStats::Kind::FrontDrain};
                         split.DeferFunction(std::move(run->func));
                         split.Drain(VideoCommon::DrainSite::Map);
                     } else {
@@ -269,7 +284,11 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
             }
             if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
                 Profile::Scope scope{Profile::Zone::Push};
+                VideoCommon::Nx2Hazard::SetListEpoch(submit_list->epoch);
+                const u64 timeline_seq = submit_list->timeline_seq;
                 scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
+                VideoCommon::Nx2Timeline::OnFront(timeline_seq);
+                VideoCommon::Nx2Timeline::OnBack(timeline_seq);
             } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
                 Profile::Scope scope{Profile::Zone::Tick};
                 system.GPU().TickWork();

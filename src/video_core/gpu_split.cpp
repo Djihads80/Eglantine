@@ -33,6 +33,7 @@
 #include "video_core/nx2.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_sampler.h"
 
 namespace VideoCommon {
 
@@ -118,6 +119,7 @@ void GpuSplit::MaybeStart(Core::System& system_) {
         const char* value = std::getenv("EDEN_NX2_SPLIT");
         return value != nullptr ? value[0] : '2';
     }();
+    VideoCommon::Nx2Sampler::Sampler::MaybeStart();
     const bool wanted = mode == '1' || mode == '2';
     if (!wanted || !Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
         return;

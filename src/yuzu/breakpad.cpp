@@ -50,8 +50,8 @@ static void PruneDumpDirectory(const std::filesystem::path& dump_path) {
 }
 
 #if defined(__linux__)
-[[noreturn]] bool DumpCallback(const google_breakpad::MinidumpDescriptor& descriptor, void* context,
-                               bool succeeded) {
+[[noreturn]] static bool DumpCallback(const google_breakpad::MinidumpDescriptor& descriptor,
+                                      void* context, bool succeeded) {
     // Prevent time- and space-consuming core dumps from being generated, as we have
     // already generated a minidump and a core file will not be useful anyway.
     _exit(1);
@@ -69,6 +69,8 @@ void InstallCrashHandler() {
                                                 google_breakpad::ExceptionHandler::HANDLER_ALL};
 #elif defined(__linux__)
     static google_breakpad::MinidumpDescriptor descriptor{dump_path};
+    // Stacks and registers are enough for a backtrace; never let a crash write a huge dump.
+    descriptor.set_size_limit(256 * 1024 * 1024);
     static google_breakpad::ExceptionHandler eh{descriptor, nullptr, DumpCallback,
                                                 nullptr,    true,    -1};
 #endif

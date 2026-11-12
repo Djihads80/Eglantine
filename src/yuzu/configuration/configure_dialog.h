@@ -32,10 +32,16 @@ class ConfigureInput;
 class ConfigureProfileManager;
 class ConfigureSystem;
 class ConfigureNetwork;
+class ConfigurePerformance;
+class ConfigureRam;
 class ConfigureUi;
 class ConfigureWeb;
 
 class HotkeyRegistry;
+
+namespace Performance {
+class State;
+}
 
 namespace InputCommon {
 class InputSubsystem;
@@ -94,6 +100,12 @@ private:
     std::unique_ptr<ConfigureHotkeys> hotkeys_tab;
     std::unique_ptr<ConfigureInput> input_tab;
     std::unique_ptr<ConfigureNetwork> network_tab;
+    std::unique_ptr<Performance::State> performance_state;
+    std::unique_ptr<ConfigurePerformance> performance_nvidia_tab;
+    std::unique_ptr<ConfigurePerformance> performance_amd_tab;
+    std::unique_ptr<ConfigurePerformance> performance_intel_tab;
+    std::unique_ptr<ConfigurePerformance> performance_macos_tab;
+    std::unique_ptr<ConfigureRam> performance_ram_tab;
     std::unique_ptr<ConfigureProfileManager> profile_tab;
     std::unique_ptr<ConfigureSystem> system_tab;
     std::unique_ptr<ConfigureWeb> web_tab;

@@ -22,6 +22,11 @@ struct RingLine {
 /// Keeps the last `capacity` formatted lines in memory; 0 turns the ring off and empties it.
 void SetRingCapacity(std::size_t capacity);
 
+[[nodiscard]] std::size_t RingCapacity();
+
+/// The number of the newest line kept (0 before the first).
+[[nodiscard]] u64 RingNewestSequence();
+
 /// The kept lines numbered above `after`, oldest first.
 [[nodiscard]] std::vector<RingLine> ReadRing(u64 after);
 

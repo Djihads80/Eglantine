@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "eglantine": {
+      "type": "http",
+      "url": "http://127.0.0.1:6544/mcp"
+    },
+    "nx2-debug": {
+      "command": "python3",
+      "args": ["-I", "tools/nx2/debug_mcp.py"],
+      "env": {
+        "EDEN_NX2_DEBUG_SERVER": "127.0.0.1:6545"
+      }
+    }
+  }
+}

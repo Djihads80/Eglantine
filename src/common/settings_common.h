@@ -49,6 +49,7 @@ enum class Category : u32 {
     Services,
     Paths,
     LibraryApplet,
+    RendererMemory,
     MaxEnum,
 };
 

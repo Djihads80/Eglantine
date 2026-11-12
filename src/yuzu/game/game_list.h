@@ -101,6 +101,8 @@ signals:
     void OpenFolderRequested(u64 program_id, GameListOpenTarget target,
                              const std::string& game_path);
     void OpenTransferableShaderCacheRequested(u64 program_id);
+    void PrepareShaderWarmRequested(u64 program_id, const std::string& game_path);
+    void DeleteShaderWarmRequested(u64 program_id);
     void RemoveInstalledEntryRequested(u64 program_id, QtCommon::Game::InstalledEntryType type);
     void RemoveFileRequested(u64 program_id, QtCommon::Game::GameListRemoveTarget target,
                              const std::string& game_path);

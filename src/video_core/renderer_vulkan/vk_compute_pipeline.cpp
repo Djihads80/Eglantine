@@ -15,6 +15,7 @@
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
+#include "video_core/renderer_vulkan/vk_driver_build_report.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_frame_dump.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
@@ -137,7 +138,10 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             .basePipelineIndex = 0,
         };
         try {
+            const auto build_begin = std::chrono::steady_clock::now();
             pipeline = device.GetLogical().CreateComputePipeline(compute_ci, *pipeline_cache);
+            DriverBuildReport::Record(DriverBuildReport::Kind::Compute,
+                                      std::chrono::steady_clock::now() - build_begin);
         } catch (const vk::Exception& exception) {
             LOG_CRITICAL(Render_Vulkan, "Adreno rejected compute shader {:016X}: {}", shader_hash,
                          exception.what());

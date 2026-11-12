@@ -54,6 +54,12 @@
 #include <cstdlib>
 #include <mutex>
 #include <random>
+#include <thread>
+#include <string_view>
+#include <string>
+#include <cstring>
+#include <cstdio>
+#include <chrono>
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -61,6 +67,7 @@
 #include "common/free_region_manager.h"
 #include "common/host_memory.h"
 #include "common/logging.h"
+#include "common/settings.h"
 
 #if defined(__ANDROID__) && __ANDROID_API__ < 30
 #include <sys/syscall.h>
@@ -802,25 +809,167 @@ void HostMemory::Protect(size_t virtual_offset, size_t length, MemoryPermission 
 #endif
 }
 
-void HostMemory::HintCold(size_t physical_offset, size_t length,
-                          std::optional<size_t> virtual_offset) const {
-    if (length == 0 || backing_base == nullptr) {
-        return;
+namespace {
+// -1: follow the setting; otherwise the overriding Settings::ColdHintMode.
+std::atomic<int> g_cold_hint_override{[] {
+    const char* const value = std::getenv("EDEN_NX2_COLD_HINT");
+    if (value == nullptr || value[0] == '\0') {
+        return -1;
     }
-    const auto hint = [length](u8* address) {
+    const std::string_view mode{value};
+    if (mode == "0" || mode == "off") {
+        return static_cast<int>(Settings::ColdHintMode::Off);
+    }
+    if (mode == "low" || mode == "2") {
+        return static_cast<int>(Settings::ColdHintMode::WhenRamIsLow);
+    }
+    return static_cast<int>(Settings::ColdHintMode::Always);
+}()};
+
+const char* ColdHintModeName(Settings::ColdHintMode mode) {
+    switch (mode) {
+    case Settings::ColdHintMode::Off:
+        return "off";
+    case Settings::ColdHintMode::WhenRamIsLow:
+        return "when RAM is low";
+    case Settings::ColdHintMode::Always:
+        return "always";
+    }
+    return "?";
+}
+
+bool ReadMemoryIsLow() {
 #ifdef _WIN32
-        // Unlocking pages that are not locked takes them out of the working set.
-        VirtualUnlock(address, length);
-#elif defined(__linux__) && defined(MADV_PAGEOUT)
-        madvise(address, length, MADV_PAGEOUT);
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (!GlobalMemoryStatusEx(&status)) {
+        return false;
+    }
+    const u64 floor = std::max<u64>(u64{1} << 30, status.ullTotalPhys / 10);
+    return status.ullAvailPhys < floor;
+#elif defined(__linux__)
+    const auto read_file = [](const char* path) {
+        std::string text;
+        if (FILE* const file = std::fopen(path, "r")) {
+            char buffer[4096];
+            const size_t size = std::fread(buffer, 1, sizeof(buffer) - 1, file);
+            std::fclose(file);
+            text.assign(buffer, size);
+        }
+        return text;
+    };
+    // Some task stalled on memory for over 5% of the last 10 s: the kernel is reclaiming. Our
+    // own cgroup first (a memory limit there, as in a container or systemd scope, shows in it
+    // and not system-wide), then the whole system.
+    const auto stalled = [&](const std::string& path) {
+        const std::string pressure = read_file(path.c_str());
+        const size_t at = pressure.find("some avg10=");
+        return at != std::string::npos && std::strtod(pressure.c_str() + at + 11, nullptr) > 5.0;
+    };
+    static const std::string cgroup_pressure = [&] {
+        // cgroup v2: "0::/path".
+        const std::string self = read_file("/proc/self/cgroup");
+        const size_t at = self.find("0::");
+        if (at == std::string::npos) {
+            return std::string{};
+        }
+        const size_t end = self.find('\n', at);
+        return "/sys/fs/cgroup" + self.substr(at + 3, end - at - 3) + "/memory.pressure";
+    }();
+    if ((!cgroup_pressure.empty() && stalled(cgroup_pressure)) ||
+        stalled("/proc/pressure/memory")) {
+        return true;
+    }
+    const std::string meminfo = read_file("/proc/meminfo");
+    const auto field = [&](const char* name) -> u64 {
+        const size_t at = meminfo.find(name);
+        return at == std::string::npos
+                   ? 0
+                   : std::strtoull(meminfo.c_str() + at + std::strlen(name), nullptr, 10) * 1024;
+    };
+    const u64 total = field("MemTotal:");
+    const u64 available = field("MemAvailable:");
+    if (total == 0 || available == 0) {
+        return false;
+    }
+    return available < std::max<u64>(u64{1} << 30, total / 10);
 #else
-        static_cast<void>(address);
+    return false;
 #endif
+}
+} // Anonymous namespace
+
+Settings::ColdHintMode ColdHintModeInEffect() {
+    const int override_value = g_cold_hint_override.load(std::memory_order_relaxed);
+    return override_value < 0 ? Settings::values.cold_hint_mode.GetValue()
+                              : static_cast<Settings::ColdHintMode>(override_value);
+}
+
+void OverrideColdHintMode(Settings::ColdHintMode mode) {
+    g_cold_hint_override.store(static_cast<int>(mode), std::memory_order_relaxed);
+    LOG_INFO(Common_Memory, "Cold hints: {}", ColdHintModeName(mode));
+}
+
+bool MemoryIsLow() {
+    using Clock = std::chrono::steady_clock;
+    static std::atomic<s64> checked_at{};
+    static std::atomic<bool> low{};
+    const s64 now = Clock::now().time_since_epoch().count();
+    const s64 last = checked_at.load(std::memory_order_relaxed);
+    if (last == 0 || now - last >= std::chrono::nanoseconds{std::chrono::seconds{1}}.count()) {
+        checked_at.store(now, std::memory_order_relaxed);
+        const bool is_low = ReadMemoryIsLow();
+        if (is_low != low.exchange(is_low, std::memory_order_relaxed)) {
+            LOG_INFO(Common_Memory, "System memory {}", is_low ? "low" : "no longer low");
+        }
+    }
+    return low.load(std::memory_order_relaxed);
+}
+
+ColdHintAction HostMemory::HintCold(size_t physical_offset, size_t length,
+                                    std::optional<size_t> virtual_offset) const {
+    if (length == 0 || backing_base == nullptr) {
+        return ColdHintAction::None;
+    }
+    const Settings::ColdHintMode mode = ColdHintModeInEffect();
+    if (mode == Settings::ColdHintMode::Off) {
+        return ColdHintAction::None;
+    }
+    const bool page_out = mode == Settings::ColdHintMode::Always || MemoryIsLow();
+#if defined(_WIN32)
+    // Windows has no cheap mark: leave the memory alone until it is short.
+    if (!page_out) {
+        return ColdHintAction::None;
+    }
+#elif !defined(__linux__) || !defined(MADV_COLD) || !defined(MADV_PAGEOUT)
+    return ColdHintAction::None;
+#endif
+    // Paging out reclaims synchronously (compressing into zram, writing swap, unmapping), which
+    // also slows the threads touching nearby memory: work in pieces and pause between them.
+    static constexpr size_t Piece = size_t{8} << 20;
+    static constexpr auto Budget = std::chrono::milliseconds{2};
+    const auto hint = [page_out, length](u8* address) {
+        auto slice_start = std::chrono::steady_clock::now();
+        for (size_t done = 0; done < length;) {
+            const size_t size = std::min(Piece, length - done);
+#ifdef _WIN32
+            // Unlocking pages that are not locked takes them out of the working set.
+            VirtualUnlock(address + done, size);
+#elif defined(__linux__) && defined(MADV_COLD) && defined(MADV_PAGEOUT)
+            madvise(address + done, size, page_out ? MADV_PAGEOUT : MADV_COLD);
+#endif
+            done += size;
+            if (page_out && std::chrono::steady_clock::now() - slice_start >= Budget) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{2});
+                slice_start = std::chrono::steady_clock::now();
+            }
+        }
     };
     hint(backing_base + physical_offset);
     if (virtual_offset && virtual_base != nullptr && *virtual_offset + length <= virtual_size) {
         hint(virtual_base + *virtual_offset);
     }
+    return page_out ? ColdHintAction::PagedOut : ColdHintAction::MarkedCold;
 }
 
 void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 fill_value) {

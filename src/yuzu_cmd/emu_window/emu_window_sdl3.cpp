@@ -23,6 +23,7 @@
 #include "hid_core/hid_core.h"
 #include "input_common/drivers/keyboard.h"
 #include "input_common/drivers/mouse.h"
+#include "input_common/drivers/tas_input.h"
 #include "input_common/drivers/touch_screen.h"
 #include "input_common/main.h"
 #include "yuzu_cmd/emu_window/emu_window_sdl3.h"
@@ -166,6 +167,12 @@ void EmuWindow_SDL3::ApplyPendingTitle() {
 
 bool EmuWindow_SDL3::IsShown() const {
     return is_shown;
+}
+
+/// Called by the renderer on its thread after each presented frame: steps the TAS engine.
+void EmuWindow_SDL3::OnFrameDisplayed() {
+    // Without this TAS scripts never advanced in eden-cli (only the Qt frontend called it).
+    input_subsystem->GetTas()->UpdateThread();
 }
 
 void EmuWindow_SDL3::OnResize() {

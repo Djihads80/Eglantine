@@ -16,17 +16,23 @@
 #include <chrono>
 #include <algorithm>
 #include <cstdlib>
+#include <array>
+#include <cstring>
 #include <fmt/ranges.h>
 #include "common/assert.h"
 #include "common/logging.h"
 #include "common/settings.h"
+#include "core/arm/debug.h"
 #include "core/core.h"
+#include "core/debugger/trace_hooks.h"
 #include "core/hle/ipc.h"
+#include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/k_event.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/kernel_helpers.h"
 #include "core/hle/service/service.h"
+#include "core/hle/service/unimplemented_registry.h"
 #include "core/hle/service/nx2_stub_interface.h"
 #include "core/hle/service/sm/sm.h"
 #include "core/reporter.h"
@@ -140,6 +146,7 @@ void ServiceFrameworkBase::RegisterHandlersBaseTipc(const FunctionInfoBase* func
         handlers_tipc.emplace_hint(handlers_tipc.cend(), functions[i].expected_header, functions[i]);
 }
 
+/// Records and logs a call to an unknown command, replying with a zeroed stub when auto-stubbed.
 void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
                                                        const FunctionInfoBase* info) {
     // EDEN_NX2_AUTO_STUB=1 auto-stubs every unknown command without touching the config. Switch 2
@@ -149,6 +156,17 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
     const bool auto_stub = Settings::values.use_auto_stub || env_auto_stub ||
                            std::string_view{service_name}.starts_with(Nx2StubPrefix) ||
                            (caller != nullptr && caller->IsSwitch2());
+    {
+        // Aggregated for tools (e.g. the MCP server's unimplemented_commands): every call counts.
+        auto words = ctx.CommandBuffer();
+        std::string request = fmt::format("[0]={:#x}", words[0]);
+        for (int i = 1; i <= 8; ++i) {
+            request += fmt::format(", [{}]={:#x}", i, words[i]);
+        }
+        RecordUnimplementedCommand(service_name, ctx.GetCommand(),
+                                   info == nullptr ? std::string{} : std::string{info->name},
+                                   auto_stub, request, &ctx.GetThread());
+    }
     // Auto-stubbed commands are reported once each: title 1 polls nx2:camera 29 every frame
     // (~47 calls a second), and every report wrote a Critical line, which flushes the log file.
     if (auto_stub) {
@@ -262,9 +280,16 @@ void CountRequest(const std::string& service, u32 command, u32 type, u32 result)
 }
 } // Anonymous namespace
 
+/// Handles one IPC request by command type, counting it and reporting it to the trace hook.
 Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
                                                HLERequestContext& ctx) {
     const auto guard = LockService();
+    // Request words for a trace observer, copied before the reply overwrites them.
+    const auto ipc_hook = Core::Trace::g_ipc_hook.load(std::memory_order_relaxed);
+    std::array<u32, 16> request_words{};
+    if (ipc_hook != nullptr) {
+        std::memcpy(request_words.data(), ctx.CommandBuffer(), sizeof(request_words));
+    }
     SCOPE_EXIT {
         const auto* cmd_buf = ctx.CommandBuffer();
         u32 result_word = 0;
@@ -280,6 +305,19 @@ Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
             }
         }
         CountRequest(service_name, ctx.GetCommand(), type, result_word);
+        if (ipc_hook != nullptr) {
+            const auto& table = type >= 16 ? handlers_tipc : handlers;
+            const auto it = table.find(ctx.GetCommand());
+            ipc_hook(Core::Trace::IpcCall{
+                .service = service_name,
+                .function = it != table.end() && it->second.name ? it->second.name : "",
+                .command = ctx.GetCommand(),
+                .type = type,
+                .result = result_word,
+                .thread_id = ctx.GetThread().GetThreadId(),
+                .request = request_words,
+            });
+        }
     };
 
     Result result = ResultSuccess;
@@ -319,6 +357,90 @@ Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
     }
 
     return result;
+}
+
+namespace {
+/// Backing store of RecordUnimplementedCommand. records is guarded by mutex; origin is the time
+/// first_seen_us counts from.
+struct UnimplementedRegistry {
+    std::mutex mutex;
+    std::vector<UnimplementedCommandRecord> records;
+    std::chrono::steady_clock::time_point origin = std::chrono::steady_clock::now();
+};
+/// Process-wide registry, created on first use.
+UnimplementedRegistry& Registry() {
+    static UnimplementedRegistry registry;
+    return registry;
+}
+} // namespace
+
+/// Counts a call to an unimplemented command; the first call is stored and sent to the hook.
+void RecordUnimplementedCommand(const std::string& service, u32 command,
+                                const std::string& function, bool auto_stubbed,
+                                const std::string& request_words, const Kernel::KThread* caller) {
+    auto& registry = Registry();
+    const auto bump = [&] {
+        for (auto& record : registry.records) {
+            if (record.command == command && record.service == service) {
+                ++record.count;
+                return true;
+            }
+        }
+        return false;
+    };
+    {
+        std::scoped_lock lock{registry.mutex};
+        if (bump()) {
+            return;
+        }
+    }
+    // First call: who made it (outside the lock, symbolizing takes a while), only when an
+    // observer (the MCP server) is listening. The caller waits in its sync request, so its saved
+    // context is current.
+    std::string backtrace;
+    if (caller != nullptr && g_unimplemented_hook.load(std::memory_order_acquire) != nullptr) {
+        for (const auto& frame : Core::GetBacktrace(caller)) {
+            backtrace += fmt::format("{}+{:#x} {}\n", frame.module, frame.offset, frame.name);
+            if (std::count(backtrace.begin(), backtrace.end(), '\n') >= 16) {
+                break;
+            }
+        }
+    }
+    UnimplementedCommandRecord record;
+    {
+        std::scoped_lock lock{registry.mutex};
+        if (bump()) {
+            return; // another thread recorded it meanwhile
+        }
+        const auto elapsed = std::chrono::steady_clock::now() - registry.origin;
+        record = UnimplementedCommandRecord{
+            .service = service,
+            .command = command,
+            .function = function,
+            .count = 1,
+            .auto_stubbed = auto_stubbed,
+            .first_seen_us = static_cast<u64>(
+                std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count()),
+            .first_request = request_words,
+            .first_backtrace = std::move(backtrace),
+        };
+        registry.records.push_back(record);
+    }
+    if (const auto hook = g_unimplemented_hook.load(std::memory_order_acquire)) {
+        hook(record);
+    }
+}
+
+std::vector<UnimplementedCommandRecord> GetUnimplementedCommands() {
+    auto& registry = Registry();
+    std::scoped_lock lock{registry.mutex};
+    return registry.records;
+}
+
+void ClearUnimplementedCommands() {
+    auto& registry = Registry();
+    std::scoped_lock lock{registry.mutex};
+    registry.records.clear();
 }
 
 } // namespace Service

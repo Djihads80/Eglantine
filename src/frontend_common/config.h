@@ -47,6 +47,11 @@ public:
 
     [[nodiscard]] bool Exists(const std::string& section, const std::string& key) const;
 
+    /// Reads one global setting from <config dir>/<config_name>.ini, for a setting that must
+    /// apply before the config loads. Leaves it unchanged when the file doesn't set it.
+    static void ReadGlobalSettingEarly(const std::string& config_name,
+                                       Settings::BasicSetting& setting);
+
 protected:
     explicit Config(ConfigType config_type = ConfigType::GlobalConfig);
 
