@@ -616,6 +616,10 @@ struct Values {
         linkage, true, "use_vulkan_driver_pipeline_cache", Category::RendererAdvanced,
         Specialization::Default};
 
+    // Off: task/mesh draws take the compute fallback even when the device has VK_EXT_mesh_shader.
+    SwitchableSetting<bool> use_mesh_shaders{linkage, true, "use_mesh_shaders",
+                                             Category::RendererAdvanced};
+
     // Linux: the GPU driver's shader cache in a folder of our own (ConfigureDriverShaderCache),
     // with its size limit in GiB. Applied at startup, before anything loads a driver.
     Setting<bool> private_driver_shader_cache{linkage, true, "private_driver_shader_cache",

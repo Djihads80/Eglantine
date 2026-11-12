@@ -1,9 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QFontDatabase>
 #include <QGroupBox>
@@ -11,6 +14,9 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
+#include <QStackedWidget>
+#include <QToolButton>
+#include <QHBoxLayout>
 #include <QVBoxLayout>
 #include "common/logging.h"
 #include "common/settings.h"
@@ -436,3 +442,132 @@ void ConfigureRam::ApplyConfiguration() {
 }
 
 void ConfigureRam::SetConfiguration() {}
+
+ConfigureGpu::ConfigureGpu(Performance::State& state,
+                           const std::vector<VkDeviceInfo::Record>& records, QWidget* parent)
+    : QWidget(parent) {
+    using namespace Performance;
+    setAccessibleName(tr("GPU"));
+    const Context context = MakeContext(records);
+
+    constexpr std::array platforms{Platform::Nvidia, Platform::Amd, Platform::Intel,
+                                   Platform::MacOs};
+    // Start on the platform this machine is: macOS, else the primary device's vendor.
+    Platform detected = Platform::Nvidia;
+    bool have_detected = false;
+    if (context.macos) {
+        detected = Platform::MacOs;
+        have_detected = true;
+    } else if (context.device != nullptr) {
+        for (const Platform platform : platforms) {
+            if (PlatformVendor(platform) == context.device->capabilities.vendor_id) {
+                detected = platform;
+                have_detected = true;
+            }
+        }
+    }
+
+    auto* const layout = new QVBoxLayout(this);
+
+    auto* const selector = new QHBoxLayout;
+    selector->setSpacing(0);
+    auto* const selector_label = new QLabel(tr("Show recommendations for:"));
+    selector->addWidget(selector_label);
+    selector->addSpacing(8);
+    vendor_buttons = new QButtonGroup(this);
+    vendor_buttons->setExclusive(true);
+    pages = new QStackedWidget(this);
+    for (size_t i = 0; i < platforms.size(); ++i) {
+        const Platform platform = platforms[i];
+        auto* const button = new QToolButton(this);
+        QString text = PlatformName(platform);
+        if (have_detected && platform == detected) {
+            text = tr("%1 (your GPU)").arg(text);
+            button->setToolTip(context.device != nullptr
+                                   ? QString::fromStdString(context.device->name)
+                                   : QString{});
+        }
+        button->setText(text);
+        button->setCheckable(true);
+        button->setAutoRaise(false);
+        button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        button->setMinimumHeight(30);
+        vendor_buttons->addButton(button, static_cast<int>(i));
+        selector->addWidget(button, 1);
+        pages->addWidget(new ConfigurePerformance(platform, state, records, pages));
+    }
+    layout->addLayout(selector);
+
+    auto* const hint = new QLabel(tr("Switch vendors to compare their flags. Ticked flags of every "
+                                     "vendor are saved together."));
+    hint->setWordWrap(true);
+    hint->setEnabled(false);
+    layout->addWidget(hint);
+    layout->addWidget(pages, 1);
+
+    connect(vendor_buttons, &QButtonGroup::idClicked, pages, &QStackedWidget::setCurrentIndex);
+    const int start = static_cast<int>(
+        std::find(platforms.begin(), platforms.end(), detected) - platforms.begin());
+    vendor_buttons->button(start)->setChecked(true);
+    pages->setCurrentIndex(start);
+}
+
+ConfigureGpu::~ConfigureGpu() = default;
+
+ConfigureShaders::ConfigureShaders(const Core::System& system_,
+                                   const ConfigurationShared::Builder& builder, QWidget* parent)
+    : Tab(nullptr, parent), system{system_} {
+    setAccessibleName(tr("Shaders"));
+    auto* const layout = new QVBoxLayout(this);
+
+    auto& values = Settings::values;
+    const auto add_group = [&](const QString& title,
+                               std::initializer_list<Settings::BasicSetting*> settings) {
+        auto* const group = new QGroupBox(title);
+        auto* const group_layout = new QVBoxLayout(group);
+        for (Settings::BasicSetting* const setting : settings) {
+            ConfigurationShared::Widget* const widget =
+                setting == &values.driver_shader_cache_size
+                    ? builder.BuildWidget(setting, apply_funcs, nullptr,
+                                          ConfigurationShared::RequestType::SpinBox, tr(" GiB"))
+                    : builder.BuildWidget(setting, apply_funcs);
+            if (widget == nullptr) {
+                continue;
+            }
+            if (!widget->Valid()) {
+                widget->deleteLater();
+                continue;
+            }
+            group_layout->addWidget(widget);
+        }
+        if (group_layout->count() == 0) {
+            delete group;
+            return;
+        }
+        layout->addWidget(group);
+    };
+
+    add_group(tr("Compilation"), {&values.use_asynchronous_shaders, &values.use_mesh_shaders});
+    add_group(tr("Caches"), {&values.use_disk_shader_cache, &values.use_vulkan_driver_pipeline_cache,
+                             &values.driver_shader_cache_size});
+    layout->addStretch(1);
+}
+
+ConfigureShaders::~ConfigureShaders() = default;
+
+bool ConfigureShaders::IsShaderSetting(u32 id) {
+    const auto& v = Settings::values;
+    return id == v.use_asynchronous_shaders.Id() || id == v.use_mesh_shaders.Id() ||
+           id == v.use_disk_shader_cache.Id() || id == v.use_vulkan_driver_pipeline_cache.Id() ||
+           id == v.private_driver_shader_cache.Id() || id == v.driver_shader_cache_size.Id();
+}
+
+void ConfigureShaders::ApplyConfiguration() {
+    const bool is_powered_on = system.IsPoweredOn();
+    for (const auto& func : apply_funcs) {
+        func(is_powered_on);
+    }
+}
+
+void ConfigureShaders::SetConfiguration() {}
