@@ -94,7 +94,7 @@ TEST_CASE("Ampere general texel fetch preserves coordinates LOD handles and spli
                             if (register_handle) CHECK(regs[meta] == source(coordinates));
                             if (uniform_handle) CHECK(regs[meta] == 0xabc);
                             CHECK(regs[meta + bindless] == source(coordinates + register_handle));
-                            for (u32 i = 0; i < std::popcount(mask); ++i) regs[(word & 255) + i] = 0xfeed0000 + i;
+                            for (u32 i = 0; i < static_cast<u32>(std::popcount(mask)); ++i) regs[(word & 255) + i] = 0xfeed0000 + i;
                         } else if ((word >> 52) == 0x5c9) {
                             regs[word & 255] = regs[(word >> 20) & 255];
                         }
