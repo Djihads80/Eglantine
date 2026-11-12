@@ -519,6 +519,7 @@ bool TesterBuildRunner::Download(const TesterBuild::ToolDownload& tool, const fs
         return Fail(tr("Could not write %1.").arg(ToQ(archive)));
     case UpdateDownload::Status::Network:
         file.cancelWriting();
+        Log(tr("Download error: %1").arg(Q(outcome.error)));
         return Fail(tr("Could not download %1. Check your internet connection and try again.")
                         .arg(url));
     case UpdateDownload::Status::HttpError:

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <string>
+#include <string_view>
 #include <QByteArray>
 #include <QByteArrayView>
 #include <QCryptographicHash>
@@ -21,17 +23,7 @@ Outcome Download(const Request& request, QSaveFile& file, const Callbacks& callb
 
     // TODO(crueter): Move to net.cpp
     constexpr std::size_t timeout_seconds = 15;
-
-    httplib::Client client(request.url);
-    client.set_connection_timeout(timeout_seconds);
-    client.set_read_timeout(timeout_seconds);
-    client.set_write_timeout(timeout_seconds);
-    // GitHub redirects release downloads to another host.
-    client.set_follow_location(true);
-
-#ifdef YUZU_BUNDLED_OPENSSL
-    client.load_ca_cert_store(kCert, sizeof(kCert));
-#endif
+    constexpr int max_redirects = 5;
 
     bool canceled = false;
     auto progress_callback = [&](size_t processed_size, size_t total_size) {
@@ -82,8 +74,36 @@ Outcome Download(const Request& request, QSaveFile& file, const Callbacks& callb
                 break;
             }
         }
-        body_wanted = false;
-        result = client.Get(request.path, response_handler, content_receiver, progress_callback);
+        // GitHub redirects release downloads to another host. Redirects are followed here, one
+        // client per host, because httplib's own redirect does not carry the bundled CA store over.
+        std::string url = request.url;
+        std::string path = request.path;
+        for (int redirect = 0;; ++redirect) {
+            httplib::Client client(url);
+            client.set_connection_timeout(timeout_seconds);
+            client.set_read_timeout(timeout_seconds);
+            client.set_write_timeout(timeout_seconds);
+#ifdef YUZU_BUNDLED_OPENSSL
+            client.load_ca_cert_store(kCert, sizeof(kCert));
+#endif
+            body_wanted = false;
+            result = client.Get(path, response_handler, content_receiver, progress_callback);
+            if (!result || result->status < 300 || result->status >= 400 ||
+                redirect == max_redirects) {
+                break;
+            }
+            const auto location = result->get_header_value("Location");
+            constexpr std::string_view scheme = "https://";
+            if (location.starts_with('/')) {
+                path = location;
+            } else if (location.starts_with(scheme)) {
+                const auto host_end = location.find('/', scheme.size());
+                url = location.substr(0, host_end);
+                path = host_end == std::string::npos ? "/" : location.substr(host_end);
+            } else {
+                break;
+            }
+        }
         const bool transient = !write_failed && !canceled &&
                                ((!result && result.error() != httplib::Error::Canceled) ||
                                 (result && (result->status >= 500 || result->status == 429)));
