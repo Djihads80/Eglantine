@@ -165,8 +165,21 @@ public:
 
     ~SamplesStreamer() = default;
 
+    /// EDEN_NX2_OCCLUSION=0: no host occlusion queries; every report of the samples passed
+    /// counter reads as 4096 samples ("visible"). A game that culls by them draws what they
+    /// would have hidden, and a count used for more than a visibility test (a flare's
+    /// brightness) is wrong. On the phone's GPU each host query ends in a wait for the whole
+    /// pipeline, and Ocarina of Time reports ~1300 times a frame.
+    [[nodiscard]] static bool OcclusionOff() {
+        static const bool off = [] {
+            const char* const value = std::getenv("EDEN_NX2_OCCLUSION");
+            return value != nullptr && value[0] == '0';
+        }();
+        return off;
+    }
+
     void StartCounter() override {
-        if (has_started) {
+        if (has_started || OcclusionOff()) {
             return;
         }
 
@@ -356,7 +369,7 @@ public:
         auto index = BuildQuery();
         auto* new_query = GetQuery(index);
         new_query->guest_address = address;
-        new_query->value = 0;
+        new_query->value = OcclusionOff() ? 4096 : 0;
         new_query->flags &= ~VideoCommon::QueryFlagBits::IsOrphan;
         if (has_timestamp) {
             new_query->flags |= VideoCommon::QueryFlagBits::HasTimestamp;
