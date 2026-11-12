@@ -13,8 +13,8 @@
 #include "qt_common/util/vk.h"
 #include "yuzu/configuration/configuration_shared.h"
 
-class QButtonGroup;
 class QCheckBox;
+class QComboBox;
 class QLabel;
 class QStackedWidget;
 
@@ -81,8 +81,8 @@ private:
     std::vector<std::string> recommended_lines; ///< Recommended and supported
 };
 
-/// The GPU tab: one page of launch arguments per GPU vendor, with a switch between them that starts
-/// on the vendor of the primary graphics device.
+/// The GPU tab: one page of launch arguments per GPU vendor, picked from a dropdown that starts on
+/// the vendor of the primary graphics device.
 class ConfigureGpu : public QWidget {
     Q_OBJECT
 
@@ -93,7 +93,7 @@ public:
     ~ConfigureGpu() override;
 
 private:
-    QButtonGroup* vendor_buttons{};
+    QComboBox* vendor_combo{};
     QStackedWidget* pages{};
 };
 
