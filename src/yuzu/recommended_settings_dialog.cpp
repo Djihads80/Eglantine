@@ -87,6 +87,106 @@ std::vector<SettingText> DescribeSettings(const Settings::GamePreset& preset) {
 
 } // namespace
 
+RecommendedSettingsList::RecommendedSettingsList(const Settings::GamePreset& preset_,
+                                                 QWidget* parent)
+    : QWidget(parent), preset{preset_} {
+    grid = new QGridLayout(this);
+    grid->setContentsMargins(12, 8, 12, 8);
+    grid->setHorizontalSpacing(16);
+    grid->setVerticalSpacing(6);
+    grid->setColumnStretch(0, 1);
+    Refresh();
+}
+
+RecommendedSettingsList::~RecommendedSettingsList() = default;
+
+void RecommendedSettingsList::Refresh() {
+    while (QLayoutItem* item = grid->takeAt(0)) {
+        delete item->widget();
+        delete item;
+    }
+    rows.clear();
+
+    // Setting | Current | -> | Recommended
+    const auto add_header = [&](int column, const QString& text) {
+        auto* header = new QLabel(text, this);
+        QFont font = header->font();
+        font.setBold(true);
+        header->setFont(font);
+        grid->addWidget(header, 0, column);
+    };
+    add_header(0, tr("Setting"));
+    add_header(1, tr("Current"));
+    add_header(3, tr("Recommended"));
+    auto* rule = new QFrame(this);
+    rule->setFrameShape(QFrame::HLine);
+    rule->setFrameShadow(QFrame::Sunken);
+    grid->addWidget(rule, 1, 0, 1, 4);
+
+    const auto descriptions = DescribeSettings(preset);
+    // List the settings that would change first.
+    std::vector<size_t> order(descriptions.size());
+    std::iota(order.begin(), order.end(), size_t{0});
+    std::ranges::stable_partition(order,
+                                  [&](size_t i) { return !descriptions[i].already_set; });
+    int row = 2;
+    for (const size_t i : order) {
+        const auto& text = descriptions[i];
+        auto* check = new QCheckBox(text.label, this);
+        auto* current = new QLabel(text.current, this);
+        auto* arrow = new QLabel(QStringLiteral("\u2192"), this);
+        auto* recommended = new QLabel(text.recommended, this);
+        if (text.already_set) {
+            check->setChecked(false);
+            check->setEnabled(false);
+            check->setToolTip(tr("Already using the recommended value."));
+            current->setEnabled(false);
+            arrow->setEnabled(false);
+            recommended->setText(tr("Already set"));
+            recommended->setEnabled(false);
+        } else {
+            check->setChecked(true);
+            QFont font = recommended->font();
+            font.setBold(true);
+            recommended->setFont(font);
+            connect(check, &QCheckBox::toggled, this, [this, arrow, recommended](bool on) {
+                arrow->setEnabled(on);
+                recommended->setEnabled(on);
+                emit SelectionChanged();
+            });
+        }
+        grid->addWidget(check, row, 0);
+        grid->addWidget(current, row, 1);
+        grid->addWidget(arrow, row, 2);
+        grid->addWidget(recommended, row, 3);
+        rows.emplace_back(preset.settings[i].key, check);
+        ++row;
+    }
+    emit SelectionChanged();
+}
+
+std::set<std::string> RecommendedSettingsList::SelectedKeys() const {
+    std::set<std::string> keys;
+    for (const auto& [key, check] : rows) {
+        if (check->isEnabled() && check->isChecked()) {
+            keys.insert(key);
+        }
+    }
+    return keys;
+}
+
+bool RecommendedSettingsList::HasChanges() const {
+    return std::ranges::any_of(rows, [](const auto& entry) { return entry.second->isEnabled(); });
+}
+
+void RecommendedSettingsList::SetAllChecked(bool checked) {
+    for (const auto& [key, check] : rows) {
+        if (check->isEnabled()) {
+            check->setChecked(checked);
+        }
+    }
+}
+
 RecommendedSettingsDialog::RecommendedSettingsDialog(const Settings::GamePreset& preset,
                                                      bool can_save, Core::HID::HIDCore& hid_core,
                                                      QWidget* parent)
@@ -112,68 +212,9 @@ RecommendedSettingsDialog::RecommendedSettingsDialog(const Settings::GamePreset&
     intro->setWordWrap(true);
     layout->addWidget(intro);
 
-    // Setting | Current | -> | Recommended
-    auto* table = new QWidget;
-    auto* grid = new QGridLayout(table);
-    grid->setContentsMargins(12, 8, 12, 8);
-    grid->setHorizontalSpacing(16);
-    grid->setVerticalSpacing(6);
-    grid->setColumnStretch(0, 1);
-
-    const auto add_header = [&](int column, const QString& text) {
-        auto* header = new QLabel(text, table);
-        QFont font = header->font();
-        font.setBold(true);
-        header->setFont(font);
-        grid->addWidget(header, 0, column);
-    };
-    add_header(0, tr("Setting"));
-    add_header(1, tr("Current"));
-    add_header(3, tr("Recommended"));
-    auto* rule = new QFrame(table);
-    rule->setFrameShape(QFrame::HLine);
-    rule->setFrameShadow(QFrame::Sunken);
-    grid->addWidget(rule, 1, 0, 1, 4);
-
-    const auto descriptions = DescribeSettings(preset);
-    // List the settings that would change first.
-    std::vector<size_t> order(descriptions.size());
-    std::iota(order.begin(), order.end(), size_t{0});
-    std::ranges::stable_partition(order,
-                                  [&](size_t i) { return !descriptions[i].already_set; });
-    int row = 2;
-    for (const size_t i : order) {
-        const auto& text = descriptions[i];
-        auto* check = new QCheckBox(text.label, table);
-        auto* current = new QLabel(text.current, table);
-        auto* arrow = new QLabel(QStringLiteral("→"), table);
-        auto* recommended = new QLabel(text.recommended, table);
-        if (text.already_set) {
-            check->setChecked(false);
-            check->setEnabled(false);
-            check->setToolTip(tr("Already using the recommended value."));
-            current->setEnabled(false);
-            arrow->setEnabled(false);
-            recommended->setText(tr("Already set"));
-            recommended->setEnabled(false);
-        } else {
-            check->setChecked(true);
-            QFont font = recommended->font();
-            font.setBold(true);
-            recommended->setFont(font);
-            connect(check, &QCheckBox::toggled, this, [this, arrow, recommended](bool on) {
-                arrow->setEnabled(on);
-                recommended->setEnabled(on);
-                UpdateApplyButton();
-            });
-        }
-        grid->addWidget(check, row, 0);
-        grid->addWidget(current, row, 1);
-        grid->addWidget(arrow, row, 2);
-        grid->addWidget(recommended, row, 3);
-        rows.emplace_back(preset.settings[i].key, check);
-        ++row;
-    }
+    table = new RecommendedSettingsList(preset);
+    connect(table, &RecommendedSettingsList::SelectionChanged, this,
+            &RecommendedSettingsDialog::UpdateApplyButton);
 
     auto* scroll = new QScrollArea(this);
     scroll->setWidget(table);
@@ -187,9 +228,7 @@ RecommendedSettingsDialog::RecommendedSettingsDialog(const Settings::GamePreset&
     scroll->setMinimumHeight(std::min(table_size.height() + frame, 420));
     layout->addWidget(scroll, 1);
 
-    const bool any_to_apply =
-        std::ranges::any_of(rows, [](const auto& entry) { return entry.second->isEnabled(); });
-    if (!any_to_apply) {
+    if (!table->HasChanges()) {
         auto* note = new QLabel(tr("All recommended settings are already in use."), this);
         note->setWordWrap(true);
         layout->addWidget(note);
@@ -253,13 +292,7 @@ RecommendedSettingsDialog::RecommendedSettingsDialog(const Settings::GamePreset&
 RecommendedSettingsDialog::~RecommendedSettingsDialog() = default;
 
 std::set<std::string> RecommendedSettingsDialog::SelectedKeys() const {
-    std::set<std::string> keys;
-    for (const auto& [key, check] : rows) {
-        if (check->isEnabled() && check->isChecked()) {
-            keys.insert(key);
-        }
-    }
-    return keys;
+    return table->SelectedKeys();
 }
 
 bool RecommendedSettingsDialog::SaveForGame() const {

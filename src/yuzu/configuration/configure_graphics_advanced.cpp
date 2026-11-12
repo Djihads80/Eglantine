@@ -7,6 +7,7 @@
 #include <vector>
 #include <QLabel>
 #include <qnamespace.h>
+#include "common/game_presets.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "qt_common/config/shared_translation.h"
@@ -41,6 +42,10 @@ void ConfigureGraphicsAdvanced::Setup(const ConfigurationShared::Builder& builde
 
     for (auto setting :
          Settings::values.linkage.by_category[Settings::Category::RendererAdvanced]) {
+        // Per-game configuration shows these in the game's Tweaks tab.
+        if (!Settings::IsConfiguringGlobal() && Settings::IsGameTweak(setting->GetLabel())) {
+            continue;
+        }
         ConfigurationShared::Widget* widget =
             setting->Id() == Settings::values.driver_shader_cache_size.Id()
                 ? builder.BuildWidget(setting, apply_funcs, nullptr,

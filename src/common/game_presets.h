@@ -68,6 +68,27 @@ inline const std::map<u64, GamePreset> game_presets{
        {"anti_aliasing", AntiAliasing::Fxaa}}}},
 };
 
+// Settings that only affect one game. Per-game configuration shows them in that game's Tweaks tab.
+inline const std::map<u64, std::vector<std::string>> game_tweaks{
+    {MarioKartWorldProgramId, {"mkw_30fps", "mkw_dynamic_fps"}},
+};
+
+inline const std::vector<std::string>* FindGameTweaks(u64 program_id) {
+    const auto it = game_tweaks.find(program_id);
+    return it == game_tweaks.end() ? nullptr : &it->second;
+}
+
+inline bool IsGameTweak(const std::string& key) {
+    for (const auto& [program_id, keys] : game_tweaks) {
+        for (const auto& tweak : keys) {
+            if (tweak == key) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 inline const GamePreset* FindGamePreset(u64 program_id) {
     const auto it = game_presets.find(program_id);
     return it == game_presets.end() ? nullptr : &it->second;

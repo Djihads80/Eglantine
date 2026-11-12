@@ -7,6 +7,7 @@
 #pragma once
 
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -32,12 +33,14 @@ class InputSubsystem;
 class ConfigurePerGameAddons;
 class ConfigureAudio;
 class ConfigureCpu;
+class ConfigureFrameGeneration;
 class ConfigureGraphics;
 class ConfigureGraphicsAdvanced;
 class ConfigureGraphicsExtensions;
 class ConfigureInputPerGame;
 class ConfigureSystem;
 class ConfigureNetwork;
+class ConfigurePerGameTweaks;
 class ConfigureApplets;
 
 class QGraphicsScene;
@@ -73,6 +76,13 @@ private:
 
     void LoadConfiguration();
 
+    // Creates the tabs built from settings widgets, and lists every tab in the tab widget.
+    void BuildSettingTabs();
+    void AddTabs();
+    // Moves pending edits into the settings so the Tweaks tab compares against them.
+    void ApplySettingTabs();
+    void ApplyRecommendedSettings(const std::set<std::string>& keys);
+
     std::unique_ptr<Ui::ConfigurePerGame> ui;
     FileSys::VirtualFile file;
     u64 title_id;
@@ -88,6 +98,7 @@ private:
     std::unique_ptr<ConfigurePerGameAddons> addons_tab;
     std::unique_ptr<ConfigureAudio> audio_tab;
     std::unique_ptr<ConfigureCpu> cpu_tab;
+    std::unique_ptr<ConfigureFrameGeneration> frame_gen_tab;
     std::unique_ptr<ConfigureGraphicsAdvanced> graphics_advanced_tab;
     std::unique_ptr<ConfigureGraphicsExtensions> graphics_extensions_tab;
     std::unique_ptr<ConfigureGraphics> graphics_tab;
@@ -95,4 +106,7 @@ private:
     std::unique_ptr<ConfigureSystem> system_tab;
     std::unique_ptr<ConfigureNetwork> network_tab;
     std::unique_ptr<ConfigureApplets> applets_tab;
+    std::unique_ptr<ConfigurePerGameTweaks> tweaks_tab;
+
+    std::vector<VkDeviceInfo::Record>& vk_device_records;
 };
