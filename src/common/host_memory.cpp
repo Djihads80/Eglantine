@@ -834,11 +834,25 @@ void HostMemory::Protect(size_t virtual_offset, size_t length, MemoryPermission 
 
 void HostMemory::HintCold(size_t physical_offset, size_t length,
                           std::optional<size_t> virtual_offset) const {
-    // EDEN_NX2_COLD_HINT=0: leave cold guest memory resident. Paging it out reclaims
-    // synchronously (into zram on a phone) and the memory faults back in when it is next read.
+    // Paging cold guest memory out reclaims synchronously (into zram on a phone) and the memory
+    // faults back in when it is next read. EDEN_NX2_COLD_HINT=0/1 decides; without it the
+    // hints are off on Android devices with 12 GiB of memory or more, where the ~1.2 GB they
+    // save are not needed: Mario Kart World on a 24 GB Odin 3 had 12-13 frames over 100 ms a
+    // minute without them against 16-20 with them.
     static const bool enabled = [] {
         const char* const value = std::getenv("EDEN_NX2_COLD_HINT");
-        return value == nullptr || value[0] != '0';
+        if (value != nullptr) {
+            return value[0] != '0';
+        }
+#ifdef __ANDROID__
+        const long pages = sysconf(_SC_PHYS_PAGES);
+        const long page_size = sysconf(_SC_PAGESIZE);
+        if (pages > 0 && page_size > 0 &&
+            static_cast<u64>(pages) * static_cast<u64>(page_size) >= (u64{11} << 30)) {
+            return false;
+        }
+#endif
+        return true;
     }();
     if (!enabled || length == 0 || backing_base == nullptr) {
         return;
