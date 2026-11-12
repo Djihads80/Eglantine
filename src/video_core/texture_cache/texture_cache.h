@@ -3921,7 +3921,12 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
     Image& image = slot_images[image_id];
     // Nothing aliased was modified after this image: skip walking its (possibly long) alias list
     // for every draw that samples it (~7% of the GPU back thread in DK Bananza's open areas).
-    if (image.newest_alias_tick <= image.modification_tick) {
+    // EDEN_NX2_ALIAS_TICK_SKIP=0: always walk the aliases, for A/B measurements.
+    static const bool skip_by_tick = [] {
+        const char* const value = std::getenv("EDEN_NX2_ALIAS_TICK_SKIP");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (skip_by_tick && image.newest_alias_tick <= image.modification_tick) {
         DEBUG_ASSERT(std::ranges::none_of(image.aliased_images, [&](const AliasedImage& alias) {
             return slot_images[alias.id].modification_tick > image.modification_tick;
         }));

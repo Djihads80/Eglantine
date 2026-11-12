@@ -834,7 +834,13 @@ void HostMemory::Protect(size_t virtual_offset, size_t length, MemoryPermission 
 
 void HostMemory::HintCold(size_t physical_offset, size_t length,
                           std::optional<size_t> virtual_offset) const {
-    if (length == 0 || backing_base == nullptr) {
+    // EDEN_NX2_COLD_HINT=0: leave cold guest memory resident. Paging it out reclaims
+    // synchronously (into zram on a phone) and the memory faults back in when it is next read.
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_COLD_HINT");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (!enabled || length == 0 || backing_base == nullptr) {
         return;
     }
     const auto hint = [length](u8* address) {

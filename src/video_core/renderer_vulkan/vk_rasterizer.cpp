@@ -1769,7 +1769,15 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
     }
     // The GPU's own cached writes (constant buffer data, every draw): most land where no image,
     // query or shader was ever registered, which page_filter tells without the caches' locks.
+    // EDEN_NX2_INVALIDATION_FILTER=0: always tell every cache, for A/B measurements.
+    static const bool use_filter = [] {
+        const char* const value = std::getenv("EDEN_NX2_INVALIDATION_FILTER");
+        return value == nullptr || value[0] != '0';
+    }();
     const auto any = [&](const VideoCommon::PageFilter& filter) {
+        if (!use_filter) {
+            return true;
+        }
         for (const auto& [addr, size] : sequences) {
             if (filter.Any(addr, size)) {
                 return true;

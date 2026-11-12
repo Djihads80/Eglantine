@@ -417,7 +417,13 @@ void Scheduler::RequestRenderpass(const Framebuffer* framebuffer) {
     // clear restart the pass and re-LOAD what was just CLEARed (~118 MB of attachment traffic per
     // world-target turn). The framebuffer handle already fixes the attachment structure and key,
     // so it is the correct identity to compare.
-    if (state.renderpass && framebuffer_handle == state.framebuffer &&
+    // EDEN_NX2_CLEAR_PASS_KEEP=0: the old exact compare, for A/B measurements.
+    static const bool keep_clear_pass = [] {
+        const char* const value = std::getenv("EDEN_NX2_CLEAR_PASS_KEEP");
+        return value == nullptr || value[0] != '0';
+    }();
+    if ((keep_clear_pass ? state.renderpass != VkRenderPass{} : renderpass == state.renderpass) &&
+        framebuffer_handle == state.framebuffer &&
         render_area.width == state.render_area.width &&
         render_area.height == state.render_area.height) {
         return;
