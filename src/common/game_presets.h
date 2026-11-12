@@ -4,6 +4,7 @@
 #pragma once
 
 #include <map>
+#include <set>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -72,27 +73,40 @@ inline const GamePreset* FindGamePreset(u64 program_id) {
     return it == game_presets.end() ? nullptr : &it->second;
 }
 
-inline void SetRecommendedSettings(Values& settings, const GamePreset& preset, bool global) {
+// When `keys` is given, only the recommendations it names are applied.
+inline void SetRecommendedSettings(Values& settings, const GamePreset& preset, bool global,
+                                   const std::set<std::string>* keys = nullptr) {
+    const auto selected = [keys](const std::string& key) {
+        return keys == nullptr || keys->contains(key);
+    };
     for (const auto& recommendation : preset.settings) {
+        if (!selected(recommendation.key)) {
+            continue;
+        }
         auto* setting = settings.linkage.by_key.at(recommendation.key);
         setting->SetGlobal(global);
         setting->LoadString(recommendation.value);
     }
     // DLSS does its own upscaling and anti-aliasing.
     if (settings.nvidia_dlss.GetValue()) {
-        settings.scaling_filter.SetGlobal(global);
-        settings.scaling_filter.SetValue(ScalingFilter::Bilinear);
-        settings.anti_aliasing.SetGlobal(global);
-        settings.anti_aliasing.SetValue(AntiAliasing::None);
+        if (selected("scaling_filter")) {
+            settings.scaling_filter.SetGlobal(global);
+            settings.scaling_filter.SetValue(ScalingFilter::Bilinear);
+        }
+        if (selected("anti_aliasing")) {
+            settings.anti_aliasing.SetGlobal(global);
+            settings.anti_aliasing.SetValue(AntiAliasing::None);
+        }
     }
 }
 
-inline bool ApplyGamePreset(Values& settings, u64 program_id, bool accepted) {
+inline bool ApplyGamePreset(Values& settings, u64 program_id, bool accepted,
+                            const std::set<std::string>* keys = nullptr) {
     const auto* preset = FindGamePreset(program_id);
-    if (!accepted || preset == nullptr) {
+    if (!accepted || preset == nullptr || (keys != nullptr && keys->empty())) {
         return false;
     }
-    SetRecommendedSettings(settings, *preset, false);
+    SetRecommendedSettings(settings, *preset, false, keys);
     return true;
 }
 
