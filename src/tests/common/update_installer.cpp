@@ -345,7 +345,7 @@ TEST_CASE("Installing and restoring never change the user folder", "[updater]") 
     CHECK(Files(install / "user") == before);
     CHECK(Read(install / "user/config/qt-config.ini") == "my settings");
     CHECK(Read(install / "user/nand/save.bin") == saves);
-    CHECK(fs::last_write_time(install / "user/nand/save.bin") == stamp);
+    CHECK((fs::last_write_time(install / "user/nand/save.bin") == stamp));
     CHECK_FALSE(fs::exists(install / ".update-backup/user"));
 }
 

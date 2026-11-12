@@ -60,6 +60,7 @@ void ConfigureGeneral::Setup(const ConfigurationShared::Builder& builder) {
     QLayout& general_layout = *ui->general_widget->layout();
     std::map<u32, QWidget*> general_hold{};
     std::map<u32, QWidget*> linux_hold{};
+    std::vector<QWidget*> update_hold{};
 
     std::vector<Settings::BasicSetting*> settings;
 
@@ -72,12 +73,14 @@ void ConfigureGeneral::Setup(const ConfigurationShared::Builder& builder) {
     push(UISettings::values.linkage.by_category[Settings::Category::UiGeneral]);
     for (const auto setting : settings) {
         const bool is_update_channel = setting->Id() == UISettings::values.update_channel.Id();
+        const bool is_update_setting =
+            is_update_channel || setting->Id() == UISettings::values.check_for_updates.Id();
 #ifdef ENABLE_UPDATE_CHECKER
         if (is_update_channel && !UpdateChecker::BuildChannel()) {
             continue;
         }
 #else
-        if (is_update_channel) {
+        if (is_update_setting) {
             continue;
         }
 #endif
@@ -100,6 +103,11 @@ void ConfigureGeneral::Setup(const ConfigurationShared::Builder& builder) {
         }
 #endif
 
+        if (is_update_setting) {
+            update_hold.push_back(widget);
+            continue;
+        }
+
         switch (setting->GetCategory()) {
         case Settings::Category::UiGeneral:
             general_hold.emplace(setting->Id(), widget);
@@ -112,6 +120,11 @@ void ConfigureGeneral::Setup(const ConfigurationShared::Builder& builder) {
     for (const auto& [id, widget] : general_hold) {
         general_layout.addWidget(widget);
     }
+
+    for (auto* widget : update_hold) {
+        ui->updates_widget->layout()->addWidget(widget);
+    }
+    ui->UpdatesGroupBox->setVisible(!update_hold.empty());
 }
 
 // Called to set the callback when resetting settings to defaults
