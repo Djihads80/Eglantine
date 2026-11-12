@@ -275,7 +275,8 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     // Hyrule Warriors' frame interval (nx2_frame_interval.h). Its only copy into the global is
     //   adrp x9, got; ...; ldr x9, [x9, #got]; ...; adrp x8, global; add x8, x8, #global;
     //   ldr w19, [x9]; str w19, [x8]
-    // Nothing is patched; the present path writes both words when hyrule_dynamic_fps is on.
+    // Nothing is patched; the present path writes both words with hyrule_dynamic_fps or
+    // hyrule_30fps.
     u64 frame_interval_offset = 0;
     u64 frame_interval_source_offset = 0;
     if (name == "main" &&

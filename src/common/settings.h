@@ -659,6 +659,7 @@ struct Values {
                                             Category::RendererAdvanced};
     SwitchableSetting<bool> hyrule_dynamic_fps{linkage, false, "hyrule_dynamic_fps",
                                                Category::RendererAdvanced};
+    SwitchableSetting<bool> hyrule_30fps{linkage, false, "hyrule_30fps", Category::RendererAdvanced};
 
     SwitchableSetting<bool> use_reactive_flushing{linkage,
 #ifdef __ANDROID__

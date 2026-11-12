@@ -326,6 +326,9 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Drops to 30 FPS with the game's split-screen time step while the game runs below "
               "about 50 FPS, so heavy slowdowns don't slow down the game, and tries 60 FPS again "
               "every few seconds."));
+    INSERT(Settings, hyrule_30fps, tr("Hyrule Warriors: Age of Imprisonment: 30 FPS mode"),
+           tr("Always runs at 30 FPS with the game's split-screen time step, at normal game speed. "
+              "Takes precedence over dynamic FPS."));
     INSERT(Settings, barrier_feedback_loops, tr("Barrier feedback loops"),
            tr("Improves rendering of transparency effects in specific games."));
     INSERT(Settings, enable_buffer_history, tr("Enable buffer history"),

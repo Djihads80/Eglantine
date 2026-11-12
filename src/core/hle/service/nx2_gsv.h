@@ -2068,13 +2068,15 @@ private:
     u32 m_swap_word{};
     Nx2OotTime::FrameDelta m_oot_frame_delta;
     Nx2FrameInterval::Controller m_frame_interval;
-    std::optional<u32> m_game_frame_interval; ///< The game's value while hyrule_dynamic_fps owns it
+    std::optional<u32> m_game_frame_interval; ///< The game's value while Eden owns the interval
     u32 m_frame_interval_presents{};
     u32 m_frame_interval_at_two{};
     u32 m_frame_interval_probes{};
+    bool m_frame_interval_locked{};
 
     /// Hyrule Warriors with hyrule_dynamic_fps: 30 fps (the split-screen interval) while 60 can't
-    /// be held, so slowdowns don't slow the game down. Hands the game's own value back when off.
+    /// be held, so slowdowns don't slow the game down; with hyrule_30fps: always 30 fps. Hands the
+    /// game's own value back when both are off.
     void UpdateFrameInterval(const Kernel::KProcess& process,
                              std::chrono::steady_clock::time_point now) {
         const u64 address = process.GetFrameIntervalAddress();
@@ -2083,18 +2085,32 @@ private:
         }
         auto& memory = system.ApplicationMemory();
         const u64 source = process.GetFrameIntervalSourceAddress();
-        if (!Settings::values.hyrule_dynamic_fps.GetValue()) {
+        const bool locked = Settings::values.hyrule_30fps.GetValue();
+        if (!locked && !Settings::values.hyrule_dynamic_fps.GetValue()) {
             if (m_game_frame_interval) {
                 memory.Write32(source, *m_game_frame_interval);
                 memory.Write32(address, *m_game_frame_interval);
                 m_game_frame_interval.reset();
                 m_frame_interval = {};
             }
+            m_frame_interval_locked = false;
             return;
         }
         if (!m_game_frame_interval) {
             m_game_frame_interval = memory.Read32(source);
         }
+        if (locked) {
+            if (!std::exchange(m_frame_interval_locked, true)) {
+                LOG_INFO(Service, "Hyrule Warriors: 30 FPS mode");
+                m_frame_interval = {};
+            }
+            if (memory.Read32(address) != 2 || memory.Read32(source) != 2) {
+                memory.Write32(source, 2);
+                memory.Write32(address, 2);
+            }
+            return;
+        }
+        m_frame_interval_locked = false;
         const u32 speed = Settings::values.use_speed_limit.GetValue() ? Settings::SpeedLimit() : 100;
         const Nx2FrameInterval::Controller::Duration nominal{1000.0 / 60.0 * 100.0 /
                                                              (speed == 0 ? 100 : speed)};
