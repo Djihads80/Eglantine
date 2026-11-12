@@ -127,7 +127,10 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          cmake --build build/release --target yuzu yuzu-cmd --parallel
+          targets="yuzu yuzu-cmd"
+          # The updater helper only exists in release builds, where the update checker is on.
+          if [ "${{ inputs.release }}" = "true" ]; then targets="$targets eglantine-updater"; fi
+          cmake --build build/release --target $targets --parallel
           sccache --show-stats
 
       - name: Package Windows binary
@@ -246,7 +249,10 @@ jobs:
       - name: Build
         shell: msys2 {0}
         run: |
-          cmake --build build/release --target yuzu yuzu-cmd --parallel
+          targets="yuzu yuzu-cmd"
+          # The updater helper only exists in release builds, where the update checker is on.
+          if [ "${{ inputs.release }}" = "true" ]; then targets="$targets eglantine-updater"; fi
+          cmake --build build/release --target $targets --parallel
           ccache --show-stats
 
       # A dynamic MinGW build is not portable on its own: windeployqt6 brings the Qt libraries and
