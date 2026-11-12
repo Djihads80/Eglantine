@@ -273,13 +273,15 @@ void FrameDump::StopWriter() {
     stop_writer = false;
 }
 
-void FrameDump::Arm(std::filesystem::path directory_, bool sampled, bool buffers, u64 id) {
+void FrameDump::Arm(std::filesystem::path directory_, bool sampled, bool buffers, u64 id,
+                    size_t sampled_max_bytes_) {
     if (!schedule.Arm(sampled, buffers, id)) {
         VideoCore::Nx2Debug::FinishCapture(id, {.error = "another capture is in progress"});
         return;
     }
     StopWriter();
     directory = std::move(directory_);
+    sampled_max_bytes = sampled_max_bytes_;
     truncated = false;
     recorded_bytes = 0;
     written_bytes = 0;
@@ -421,6 +423,16 @@ bool FrameDump::RecordSampled(const Sampled& texture, u32 index, std::string nam
                               std::string tags) {
     tags += SamplerJson(texture.sampler);
     if (const auto target = MakeTarget(*texture.view, index)) {
+        const size_t size =
+            size_t{target->width} * target->height * target->depth * TexelBytes(*target);
+        if (sampled_max_bytes != 0 && size > sampled_max_bytes) {
+            Enqueue({.tags = fmt::format(
+                         R"({{"name":"{}",{},"format":"{}","width":{},"height":{},"depth":{},)"
+                         R"("level":{},"layer":{},"gpu_addr":"{:#x}","skipped":"size"}})",
+                         name, tags, target->format, target->width, target->height,
+                         target->depth, target->level, target->layer, target->gpu_addr)});
+            return false;
+        }
         return Record(*target, std::move(name), std::move(tags));
     }
     const Image& image = *texture.view->BackingImage();
