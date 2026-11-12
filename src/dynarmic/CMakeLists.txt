@@ -104,7 +104,7 @@ else()
         # GCC knows that the variable is actually a Reg64.  isMEM() will never return true for a
         # Reg64, but GCC doesn't know that.
         list(APPEND DYNARMIC_CXX_FLAGS -Wno-array-bounds)
-        list(APPEND DYNARMIC_CXX_FLAGS -Wstack-usage=4096)
+        list(APPEND DYNARMIC_CXX_FLAGS -Wstack-usage=16384)
     endif()
     if (CXX_CLANG)
         # Bracket depth determines maximum size of a fold expression in Clang since 9c9974c3ccb6.

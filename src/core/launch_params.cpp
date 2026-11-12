@@ -73,7 +73,7 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
         // -d takes an optional port (-d1234); -i takes the input profile. Both read optarg but
         // were declared without arguments, so optarg was null and they crashed.
         if (int arg = getopt_long(argc, argv, "d::c:fhg:m:p:u:vi:nsx", long_options, &option_index); arg != -1) {
-            switch (char(arg)) {
+            switch (arg) {
             case 'd':
                 // Without a port, the configured one is used (the config is not loaded yet).
                 p.enable_gdbstub = true;
