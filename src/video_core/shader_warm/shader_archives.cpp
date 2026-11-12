@@ -499,6 +499,12 @@ std::vector<Record> ParseBnsh(Bytes data) {
     return result;
 }
 
+/// True when `data` holds the BNSH magic anywhere.
+bool HasEmbeddedBnsh(Bytes data) {
+    static constexpr std::array<u8, 8> magic{'B', 'N', 'S', 'H', 0, 0, 0, 0};
+    return std::search(data.begin(), data.end(), magic.begin(), magic.end()) != data.end();
+}
+
 /// Every BNSH file embedded in `data` with its offset, each one validated. Throws when there is
 /// none.
 std::vector<std::pair<size_t, Bytes>> FindEmbeddedBnsh(Bytes data) {
@@ -816,6 +822,14 @@ struct Walker {
             for (const auto& [offset, bnsh] : FindEmbeddedBnsh(data)) {
                 Walk(bnsh, name + fmt::format("!BNSH@{:x}", offset), depth + 1);
             }
+        } else if (Is(data, 0, "VFXB")) {
+            // Particle effect binaries (Fire Emblem's Effect/Particle/*.ptcl): the GPU particle
+            // programs are embedded BNSH files; most effects have none.
+            if (HasEmbeddedBnsh(data)) {
+                for (const auto& [offset, bnsh] : FindEmbeddedBnsh(data)) {
+                    Walk(bnsh, name + fmt::format("!BNSH@{:x}", offset), depth + 1);
+                }
+            }
         } else if (Is(data, 0, "BNSH")) {
             Emit(ParseBnsh(data));
         } else if (Is(data, 0, "CGSB")) {
@@ -904,6 +918,9 @@ GameFileKind ClassifyGameFile(std::string_view path) {
     }
     if (path.starts_with("Effect/") && path.find('/', 7) == std::string_view::npos &&
         (EndsWith(path, ".vsetb.byml.zs") || EndsWith(path, ".esetb.byml.zs"))) {
+        return GameFileKind::Effect;
+    }
+    if (EndsWith(lower, ".ptcl")) {
         return GameFileKind::Effect;
     }
     return GameFileKind::Other;

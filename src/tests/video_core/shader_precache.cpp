@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 #include <fmt/format.h>
@@ -185,6 +186,8 @@ TEST_CASE("ShaderPrecache: every container the archive walker reads is discovere
     }
     REQUIRE(ClassifyGameFile("Effect/Fx.nin_ounce_nvn2.vsetb.byml.zs") == GameFileKind::Effect);
     REQUIRE(ClassifyGameFile("Effect/static.Nin_Ounce_NVN2.esetb.byml.zs") == GameFileKind::Effect);
+    REQUIRE(ClassifyGameFile("Effect/Particle/Magic.ptcl.zst") == GameFileKind::Effect);
+    REQUIRE(ClassifyGameFile("Effect/Particle/Magic.ptcl") == GameFileKind::Effect);
     REQUIRE(ClassifyGameFile("Pack/ZsDic.pack.zs") == GameFileKind::ZstdDictionaries);
     for (const char* path :
          {"Effect/Sub/Fx.vsetb.byml.zs", "Model/Fx.vsetb.byml.zs", "Effect/Fx.vsetb.byml",
@@ -194,6 +197,19 @@ TEST_CASE("ShaderPrecache: every container the archive walker reads is discovere
         INFO(path);
         REQUIRE(ClassifyGameFile(path) == GameFileKind::Other);
     }
+}
+
+TEST_CASE("ShaderPrecache: a particle effect without shader programs is not an error",
+          "[video_core]") {
+    std::vector<u8> effect(64, 0);
+    std::memcpy(effect.data(), "VFXB", 4);
+    size_t records = 0;
+    size_t errors = 0;
+    REQUIRE_NOTHROW(ShaderWarm::WalkArchive(
+        effect, "Magic.ptcl", nullptr, [&](const ShaderWarm::ShaderRecord&) { ++records; },
+        [&](const std::string&) { ++errors; }, {}));
+    REQUIRE(records == 0);
+    REQUIRE(errors == 0);
 }
 
 TEST_CASE("ShaderPrecache: programs that cannot be lowered are refused", "[video_core]") {
