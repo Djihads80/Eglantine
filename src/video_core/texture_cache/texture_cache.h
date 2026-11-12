@@ -7,6 +7,8 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <numeric>
 #include <cstdlib>
 #include <limits>
@@ -4073,6 +4075,52 @@ void TextureCache<P>::CopyImage(ImageId dst_id, ImageId src_id, std::vector<Imag
     TrimImageCopies(dst.host_level_offset, src.host_level_offset, copies);
     if (copies.empty()) {
         return;
+    }
+    // EDEN_NX2_ALIAS_LOG=1: every 10 s, the copies between aliased images by formats and sizes.
+    if (static const bool log_copies = std::getenv("EDEN_NX2_ALIAS_LOG") != nullptr; log_copies)
+        [[unlikely]] {
+        struct Kind {
+            u64 count{};
+            u64 texels{};
+        };
+        static std::map<std::array<u32, 8>, Kind> kinds;
+        static auto window_start = std::chrono::steady_clock::now();
+        const std::array<u32, 8> key{
+            static_cast<u32>(src.info.format), static_cast<u32>(dst.info.format),
+            src.info.size.width,               src.info.size.height,
+            dst.info.size.width,               dst.info.size.height,
+            static_cast<u32>(src.info.resources.levels),
+            static_cast<u32>(dst.info.resources.levels),
+        };
+        Kind& kind = kinds[key];
+        ++kind.count;
+        for (const ImageCopy& copy : copies) {
+            kind.texels += u64{copy.extent.width} * copy.extent.height;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now - window_start >= std::chrono::seconds{10}) {
+            std::vector<std::pair<std::array<u32, 8>, Kind>> sorted(kinds.begin(), kinds.end());
+            std::ranges::sort(sorted, [](const auto& lhs, const auto& rhs) {
+                return lhs.second.texels > rhs.second.texels;
+            });
+            u64 total_count = 0;
+            u64 total_texels = 0;
+            for (const auto& entry : sorted) {
+                total_count += entry.second.count;
+                total_texels += entry.second.texels;
+            }
+            LOG_INFO(HW_GPU, "Alias copies in 10 s: {} copies, {} MiB of texels, {} kinds",
+                     total_count, total_texels >> 20, sorted.size());
+            for (size_t index = 0; index < sorted.size() && index < 16; ++index) {
+                const auto& [k, v] = sorted[index];
+                LOG_INFO(HW_GPU, "Alias copy {} {}x{} ({} levels) -> {} {}x{} ({} levels): {} copies, {} Mtexels",
+                         static_cast<VideoCore::Surface::PixelFormat>(k[0]), k[2], k[3], k[6],
+                         static_cast<VideoCore::Surface::PixelFormat>(k[1]), k[4], k[5], k[7],
+                         v.count, v.texels / 1'000'000);
+            }
+            kinds.clear();
+            window_start = now;
+        }
     }
     const bool is_rescaled = True(src.flags & ImageFlagBits::Rescaled);
     if (is_rescaled) {
