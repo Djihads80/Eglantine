@@ -181,13 +181,13 @@ void EmuWindow_Android::UpdateFrameRateHint() {
         return;
     }
 
-    // EDEN_ANDROID_FRAME_RATE_HINT=0 sends no preference, =<fps> a fixed one. The observed rate
-    // feeds back: once a game ran its menus at 30 fps, a hint of 30 has the display schedule us
-    // at 30, so nothing above 30 is ever observed again (Mario Kart World stayed at exactly 30.0
-    // in races its GPU ran at 40-45 fps).
+    // No preference is sent by default. EDEN_ANDROID_FRAME_RATE_HINT=<fps> sends a fixed one,
+    // =-1 the observed rate. The observed rate feeds back: once a game ran its menus at 30 fps,
+    // a hint of 30 has the display schedule us at 30, so nothing above 30 is ever observed again
+    // (Mario Kart World stayed at exactly 30.0 in races its GPU ran at 40-45 fps).
     // Read each time: the surface exists before a game's env.txt is applied.
     const char* const forced_value = std::getenv("EDEN_ANDROID_FRAME_RATE_HINT");
-    const float forced_hint = forced_value == nullptr ? -1.0f : std::strtof(forced_value, nullptr);
+    const float forced_hint = forced_value == nullptr ? 0.0f : std::strtof(forced_value, nullptr);
     const auto now = Clock::now();
     const float frame_rate_hint =
         forced_hint >= 0.0f ? QuantizeFrameRateHint(forced_hint) : GetFrameRateHint();

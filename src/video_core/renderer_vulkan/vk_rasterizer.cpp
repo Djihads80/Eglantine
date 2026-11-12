@@ -2303,10 +2303,11 @@ void RasterizerVulkan::LoadDiskResources(u64 title_id, std::stop_token stop_load
 
 void RasterizerVulkan::FlushWork() {
 #ifdef __ANDROID__
-    // Dispatched every 32 draws (was 4): waking the worker cost 5.6% of the GPU back thread in
-    // Mario Kart World. Submitted every 512 still, to keep a phone GPU fed.
+    // Dispatched every 128 draws (was 4, then 32): waking the worker cost 5.6% of the GPU back
+    // thread in Mario Kart World, and 128 is what the Odin 3's numbers were measured with.
+    // Submitted every 512, to keep a phone GPU fed.
     static constexpr u32 DRAWS_TO_DISPATCH = 512;
-    static constexpr u32 CHECK_MASK = 31;
+    static constexpr u32 CHECK_MASK = 127;
 #else
     // Every 32 draws (was 8): each dispatch woke the worker thread, and Switch 2 titles make
     // ~55,000 draws a second. A full chunk is dispatched on its own (Scheduler::Record).
@@ -2333,7 +2334,12 @@ void RasterizerVulkan::FlushWork() {
     const bool dispatch_now = (draw_counter & check_mask) == 0;
     // Keep the host GPU working while native commands are still being recorded.
     static const u32 native_flush_draws = [] {
+#ifdef __ANDROID__
+        // 512 on Android (the Odin 3's numbers were measured with it): fewer submissions.
+        constexpr u32 fallback = 512;
+#else
         constexpr u32 fallback = 128;
+#endif
         const char* value = std::getenv("EDEN_NX2_FLUSH_DRAWS");
         if (value == nullptr || value[0] < '0' || value[0] > '9') {
             return fallback;

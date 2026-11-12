@@ -419,6 +419,40 @@ struct System::Impl {
             Settings::values.use_asynchronous_shaders.SetGlobal(false);
             Settings::values.use_asynchronous_shaders.SetValue(true);
         }
+        // Per-title defaults of this build: the settings its numbers on the Odin 3 were measured
+        // with (2026-11). Each applies for the session, and only where the game has no per-game
+        // value and the global one is still the build's default, so a choice made in the
+        // settings wins either way. EDEN_NX2_TITLE_DEFAULTS=0 turns them off.
+        if (const char* const title_defaults = std::getenv("EDEN_NX2_TITLE_DEFAULTS");
+            title_defaults == nullptr || title_defaults[0] != '0') {
+            u64 title_id = params.program_id;
+            if (title_id == 0 && virtual_filesystem != nullptr) {
+                if (const auto probe = Loader::GetLoader(
+                        system, GetGameFileFromPath(virtual_filesystem, filepath), 0,
+                        params.program_index)) {
+                    probe->ReadProgramId(title_id);
+                }
+            }
+            const auto title_default = [](auto& setting, const auto& value, const char* what) {
+                if (!setting.UsingGlobal() || setting.GetValue(true) != setting.GetDefault()) {
+                    return;
+                }
+                setting.SetGlobal(false);
+                setting.SetValue(value);
+                LOG_INFO(Core, "Title default: {}", what);
+            };
+            constexpr u64 MarioKartWorld = 0x0400C3F00006E000ULL;
+            constexpr u64 OcarinaOfTime = 0x0400486024DEC000ULL;
+            if (title_id == MarioKartWorld) {
+                title_default(Settings::values.mkw_lod_distance, true, "shorter LOD distances");
+                title_default(Settings::values.mkw_shadow_cascades, true, "fewer shadow cascades");
+                title_default(Settings::values.reduce_texture_resolution, true,
+                              "reduced texture resolution");
+            } else if (title_id == OcarinaOfTime) {
+                title_default(Settings::values.scaling_filter, Settings::ScalingFilter::Bilinear,
+                              "bilinear scaling filter");
+            }
+        }
 #endif
         // A gpu_profile file in the user directory turns the GPU threads' profile on: their time
         // per zone every 10 s in the log (EDEN_NX2_GPU_PROFILE without an environment).

@@ -367,9 +367,20 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     // Mario Kart World: reduced detail (see MkwDetailOptions). The environment list, when set,
     // replaces the settings (with both off too, as an opt-in for testing).
     if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {
-        const char* const env = std::getenv("EDEN_NX2_MKW_DETAIL");
+        const char* env = std::getenv("EDEN_NX2_MKW_DETAIL");
         const bool lod_setting = Settings::values.mkw_lod_distance.GetValue();
         const bool cascades_setting = Settings::values.mkw_shadow_cascades.GetValue();
+#ifdef __ANDROID__
+        // On Android the two settings select the set the phone's numbers were measured with
+        // (Odin 3: lod=0.5,cascades=1,emit,elink): the LOD setting the 0.5 ratio and the two
+        // effect keys, the cascades setting one cascade.
+        static std::string android_set;
+        if (env == nullptr && (lod_setting || cascades_setting)) {
+            android_set = fmt::format("{}{}", lod_setting ? "lod=0.5,emit,elink," : "",
+                                      cascades_setting ? "cascades=1" : "");
+            env = android_set.c_str();
+        }
+#endif
         if (lod_setting || cascades_setting || env != nullptr) {
             const MkwDetailOptions options =
                 env != nullptr ? ParseMkwDetail(env)
