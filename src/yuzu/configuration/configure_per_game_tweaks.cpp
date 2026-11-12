@@ -7,6 +7,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QVBoxLayout>
 #include "common/game_presets.h"
 #include "common/settings.h"
@@ -103,6 +104,11 @@ ConfigurePerGameTweaks::ConfigurePerGameTweaks(u64 title_id, const Core::System&
     }
 
     layout->addStretch(1);
+
+    // Only scroll vertically: widen the tab to fit the setting table instead.
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setMinimumWidth(content->minimumSizeHint().width() +
+                            scroll->verticalScrollBar()->sizeHint().width());
 }
 
 ConfigurePerGameTweaks::~ConfigurePerGameTweaks() = default;
