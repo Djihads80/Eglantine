@@ -72,6 +72,17 @@ std::string Lower(std::string_view text) {
     return result;
 }
 
+/// An effect set (.vsetb, or .esetb in Mario Kart World) by its lowercase walk name.
+bool IsEffectSet(std::string_view name) {
+    for (const std::string_view suffix : {".vsetb.byml", ".vsetb.byml.zs!zstd", ".esetb.byml",
+                                          ".esetb.byml.zs!zstd"}) {
+        if (EndsWith(name, suffix)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 struct Record {
     ProgramStage stage;
     Bytes code;
@@ -801,9 +812,7 @@ struct Walker {
             for (const auto& [offset, bnsh] : FindBnsh(data)) {
                 Walk(bnsh, name + fmt::format("!BNSH@{:x}", offset), depth + 1);
             }
-        } else if (Is(data, 0, std::string_view{"YB\x05\0", 4}) &&
-                   (EndsWith(Lower(name), ".vsetb.byml") ||
-                    EndsWith(Lower(name), ".vsetb.byml.zs!zstd"))) {
+        } else if (Is(data, 0, std::string_view{"YB\x05\0", 4}) && IsEffectSet(Lower(name))) {
             for (const auto& [offset, bnsh] : FindEmbeddedBnsh(data)) {
                 Walk(bnsh, name + fmt::format("!BNSH@{:x}", offset), depth + 1);
             }
@@ -894,7 +903,7 @@ GameFileKind ClassifyGameFile(std::string_view path) {
         }
     }
     if (path.starts_with("Effect/") && path.find('/', 7) == std::string_view::npos &&
-        EndsWith(path, ".vsetb.byml.zs")) {
+        (EndsWith(path, ".vsetb.byml.zs") || EndsWith(path, ".esetb.byml.zs"))) {
         return GameFileKind::Effect;
     }
     return GameFileKind::Other;
