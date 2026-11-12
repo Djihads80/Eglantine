@@ -395,6 +395,9 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Hides the mouse after 2.5s of inactivity."));
     INSERT(UISettings, check_for_updates, tr("Check for updates"),
            tr("Whether or not to check for updates upon startup."));
+    INSERT(UISettings, update_channel, tr("Update channel"),
+           tr("Stable only offers finished releases.\nRelease candidate also offers release "
+              "candidates of upcoming versions."));
 
     // Linux
     INSERT(UISettings, enable_gamemode, tr("Enable Gamemode"), QString());
@@ -713,6 +716,11 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
              PAIR(ConfirmStop, Ask_Based_On_Game, tr("Only if game specifies not to stop")),
              PAIR(ConfirmStop, Ask_Never, tr("Never ask")),
          }});
+    translations->insert({Settings::EnumMetadata<Settings::UpdateChannel>::Index(),
+                          {
+                              PAIR(UpdateChannel, Stable, tr("Stable")),
+                              PAIR(UpdateChannel, ReleaseCandidate, tr("Release candidate")),
+                          }});
     translations->insert({Settings::EnumMetadata<Settings::GpuClock>::Index(),
                           {
                               PAIR(GpuClock, Normal, tr("Normal")),

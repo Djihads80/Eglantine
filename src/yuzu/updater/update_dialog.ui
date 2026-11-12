@@ -17,7 +17,7 @@
    <item row="0" column="1">
     <widget class="QLabel" name="url">
      <property name="text">
-      <string>&lt;a href=&quot;%1&quot;&gt;View on Forgejo&lt;/a&gt;</string>
+      <string>&lt;a href=&quot;%1&quot;&gt;View on GitHub&lt;/a&gt;</string>
      </property>
      <property name="alignment">
       <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
@@ -30,7 +30,7 @@
    <item row="3" column="0" colspan="2">
     <widget class="QLabel" name="label_2">
      <property name="text">
-      <string>Would you like to install this update?</string>
+      <string>Would you like to download this update?</string>
      </property>
     </widget>
    </item>
@@ -55,7 +55,7 @@
    <item row="0" column="0">
     <widget class="QLabel" name="version">
      <property name="text">
-      <string>%1 is available for download.</string>
+      <string>%1 is available. You are running %2.</string>
      </property>
     </widget>
    </item>

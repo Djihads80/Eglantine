@@ -462,12 +462,20 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     show();
 
 #ifdef ENABLE_UPDATE_CHECKER
-    if (UISettings::values.check_for_updates) {
-        update_future = QtConcurrent::run(
-            []() -> std::optional<Common::Net::Release> { return UpdateChecker::GetUpdate(); });
-        update_watcher.connect(&update_watcher, &QFutureWatcher<QString>::finished, this,
-                               &MainWindow::OnEmulatorUpdateAvailable);
-        update_watcher.setFuture(update_future);
+    connect(&update_watcher, &QFutureWatcher<UpdateChecker::CheckResult>::finished, this,
+            &MainWindow::OnEmulatorUpdateAvailable);
+    if (const auto build_channel = UpdateChecker::BuildChannel()) {
+        // The first tagged release build to run picks the channel, and it stays until changed.
+        if (UISettings::values.update_channel.GetValue() == Settings::UpdateChannel::Unset) {
+            UISettings::values.update_channel.SetValue(
+                *build_channel == UpdateChecker::Channel::Stable
+                    ? Settings::UpdateChannel::Stable
+                    : Settings::UpdateChannel::ReleaseCandidate);
+            config->SaveAllValues();
+        }
+        if (UISettings::values.check_for_updates) {
+            CheckForUpdates(false);
+        }
     }
 #endif
 
@@ -2068,6 +2076,11 @@ void MainWindow::ConnectMenuEvents() {
     connect_menu(ui->action_Firmware_From_Folder, &MainWindow::OnInstallFirmware);
     connect_menu(ui->action_Firmware_From_ZIP, &MainWindow::OnInstallFirmwareFromZIP);
     connect_menu(ui->action_Install_Keys, &MainWindow::OnInstallDecryptionKeys);
+#ifdef ENABLE_UPDATE_CHECKER
+    connect_menu(ui->action_Check_For_Updates, &MainWindow::OnCheckForUpdates);
+#else
+    ui->action_Check_For_Updates->setVisible(false);
+#endif
     connect_menu(ui->action_About, &MainWindow::OnAbout);
     connect_menu(ui->action_Eden_Dependencies, &MainWindow::OnEdenDependencies);
     connect_menu(ui->action_Data_Manager, &MainWindow::OnDataDialog);
@@ -5044,13 +5057,96 @@ void MainWindow::OnCaptureScreenshot() {
 }
 
 #ifdef ENABLE_UPDATE_CHECKER
-void MainWindow::OnEmulatorUpdateAvailable() {
-    std::optional<Common::Net::Release> version = update_future.result();
-    if (!version)
+void MainWindow::CheckForUpdates(bool manual) {
+    if (update_check_running) {
+        // Report the check that is already in flight instead of starting another one
+        update_check_manual |= manual;
         return;
+    }
 
-    UpdateDialog dialog(version.value(), this);
-    dialog.exec();
+    update_check_channel = UISettings::values.update_channel.GetValue() ==
+                                   Settings::UpdateChannel::ReleaseCandidate
+                               ? UpdateChecker::Channel::ReleaseCandidate
+                               : UpdateChecker::Channel::Stable;
+    update_check_running = true;
+    update_check_manual = manual;
+    update_future = QtConcurrent::run(
+        [channel = update_check_channel]() { return UpdateChecker::Check(channel); });
+    update_watcher.setFuture(update_future);
+}
+
+void MainWindow::OnCheckForUpdates() {
+    if (!UpdateChecker::BuildChannel()) {
+        QMessageBox::information(
+            this, tr("Check for Updates"),
+            tr("This build was not made from a tagged release, so it does not check for "
+               "updates."));
+        return;
+    }
+    CheckForUpdates(true);
+}
+
+void MainWindow::OnEmulatorUpdateAvailable() {
+    const bool manual = std::exchange(update_check_manual, false);
+    update_check_running = false;
+
+    const auto result = update_future.result();
+    const auto channel = update_check_channel;
+    const auto title = tr("Check for Updates");
+
+    if (result.failure != UpdateChecker::Failure::None) {
+        LOG_WARNING(Frontend, "Update check failed: {} (HTTP status {})",
+                    static_cast<int>(result.failure), result.status);
+        if (!manual) {
+            return;
+        }
+        switch (result.failure) {
+        case UpdateChecker::Failure::RateLimited:
+            QMessageBox::warning(this, title,
+                                 tr("GitHub is limiting requests from your network right now. "
+                                    "Please try again later."));
+            break;
+        case UpdateChecker::Failure::Http:
+            QMessageBox::warning(this, title,
+                                 tr("GitHub answered with HTTP error %1. Please try again later.")
+                                     .arg(result.status));
+            break;
+        case UpdateChecker::Failure::NotReleaseBuild:
+            QMessageBox::information(
+                this, title,
+                tr("This build was not made from a tagged release, so it does not check for "
+                   "updates."));
+            break;
+        default:
+            QMessageBox::warning(
+                this, title,
+                tr("Could not reach GitHub. Check your internet connection and try again."));
+            break;
+        }
+        return;
+    }
+
+    if (!result.update) {
+        if (manual) {
+            QMessageBox::information(
+                this, title,
+                tr("You are running the newest version on the %1 channel (%2).")
+                    .arg(UpdateDialog::ChannelName(channel),
+                         QString::fromUtf8(Common::g_build_version)));
+        }
+        return;
+    }
+
+    const auto& release = *result.update;
+    if (!manual && UISettings::values.skipped_update.GetValue() == release.tag) {
+        return;
+    }
+
+    UpdateDialog dialog(release, channel, this);
+    if (dialog.exec() == UpdateDialog::SkipVersion) {
+        UISettings::values.skipped_update.SetValue(release.tag);
+        config->SaveAllValues();
+    }
 }
 #endif
 
