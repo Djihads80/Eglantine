@@ -26,6 +26,14 @@
         "sha256": "5749cbc4e668273514150a80e387a957f933c6ed3f5f11e03fb30955e2bbead6",
         "bin": "."
       }
+    },
+    "glslang": {
+      "version": "16.6.0",
+      "windows-x86_64": {
+        "url": "https://github.com/KhronosGroup/glslang/releases/download/16.6.0/glslang-16.6.0-windows-x86_64-release.zip",
+        "sha256": "82bf434e69b9bb4829de7e2b4bc2c5e7a7861e53d66cf75e5cc70f5f694a8d9b",
+        "bin": "bin"
+      }
     }
   },
   "configure": {
@@ -63,11 +71,6 @@
       {
         "provides": "git",
         "id": "Git.Git"
-      },
-      {
-        "provides": "glslang",
-        "id": "KhronosGroup.VulkanSDK",
-        "override": "--accept-licenses --default-answer --confirm-command install"
       }
     ]
   },

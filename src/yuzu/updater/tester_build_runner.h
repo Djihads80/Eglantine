@@ -144,6 +144,7 @@ private:
     // A Visual Studio is installed, but older than the recipe's minimum.
     bool m_old_vs{};
     std::filesystem::path m_vulkan_sdk;
+    std::filesystem::path m_portable_glslang;
     std::filesystem::path m_installed_exe;
     int m_last_percent{-1};
 };

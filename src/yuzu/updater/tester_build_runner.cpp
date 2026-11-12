@@ -425,6 +425,19 @@ bool TesterBuildRunner::EnsureTool(const TesterBuild::ToolDownload& tool) {
             m_tools.cmake = bin_dir / exe_name;
         } else if (tool.name == "ninja") {
             m_tools.ninja = bin_dir / exe_name;
+        } else if (tool.name == "glslang") {
+            // The build looks for glslangValidator, which the glslang releases no longer ship
+            // under that name.
+            const auto validator = bin_dir / (m_platform == TesterBuild::Platform::Windows
+                                                  ? "glslangValidator.exe"
+                                                  : "glslangValidator");
+            std::error_code copy_ec;
+            if (!fs::exists(validator, copy_ec)) {
+                fs::copy_file(bin_dir / exe_name, validator, copy_ec);
+            }
+            if (fs::is_regular_file(validator, copy_ec)) {
+                m_portable_glslang = validator;
+            }
         }
     };
     std::error_code ec;
@@ -600,7 +613,9 @@ bool TesterBuildRunner::Detect(Missing& missing) {
 
     const auto path = PathEnv(m_base_env);
     m_tools.git = TesterBuild::FindProgram("git", path);
-    m_tools.glslang = TesterBuild::FindProgram("glslangValidator", path);
+    m_tools.glslang = m_portable_glslang.empty()
+                          ? TesterBuild::FindProgram("glslangValidator", path)
+                          : m_portable_glslang;
     m_vulkan_sdk.clear();
     if (m_platform == TesterBuild::Platform::Windows) {
         // This process's PATH is not refreshed by an install it just ran.
