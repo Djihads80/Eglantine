@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <chrono>
 #include <cstddef>
 #include <limits>
 #include <map>
@@ -424,6 +425,32 @@ public:
             });
             query->value = total;
             query->flags |= VideoCommon::QueryFlagBits::IsFinalValueSynced;
+            // EDEN_NX2_QUERY_STATS=1: every 10 s, how many samples passed results came back
+            // and how they spread (to compare two drivers or driver settings).
+            if (static const bool stats = std::getenv("EDEN_NX2_QUERY_STATS") != nullptr;
+                stats) [[unlikely]] {
+                static u64 count{};
+                static u64 zero{};
+                static u64 small{};
+                static u64 sum{};
+                static auto window_start = std::chrono::steady_clock::now();
+                ++count;
+                zero += total == 0 ? 1 : 0;
+                small += total != 0 && total < 64 ? 1 : 0;
+                sum += total;
+                const auto now = std::chrono::steady_clock::now();
+                if (now - window_start >= std::chrono::seconds{10}) {
+                    LOG_INFO(Render_Vulkan,
+                             "Occlusion results in 10 s: {} results, {} zero ({:.1f}%), {} "
+                             "under 64 samples, mean {:.0f} samples",
+                             count, zero, 100.0 * static_cast<double>(zero) /
+                                              static_cast<double>((std::max)(count, u64{1})),
+                             small, static_cast<double>(sum) /
+                                        static_cast<double>((std::max)(count, u64{1})));
+                    count = zero = small = sum = 0;
+                    window_start = now;
+                }
+            }
         }
     }
 
