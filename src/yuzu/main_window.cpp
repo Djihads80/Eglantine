@@ -5746,15 +5746,23 @@ void MainWindow::UpdateUITheme() {
 }
 
 void MainWindow::LoadTranslation() {
-    bool loaded;
+    bool loaded = false;
+    const auto lang = UISettings::values.language.GetValue();
+    const QString lang_str = QString::fromStdString(lang);
 
-    if (UISettings::values.language.GetValue().empty()) {
-        // If the selected language is empty, use system locale
-        loaded = translator.load(QLocale(), {}, {}, QStringLiteral(":/languages/"));
-    } else {
-        // Otherwise load from the specified file
-        loaded = translator.load(QString::fromStdString(UISettings::values.language.GetValue()),
-                                 QStringLiteral(":/languages/"));
+    for (const auto& dir : GetLanguageSearchDirectories()) {
+        const bool is_resource = dir.startsWith(QLatin1Char{':'});
+        if (is_resource || QDir(dir).exists()) {
+            const QString path = dir.endsWith(QLatin1Char{'/'}) ? dir : dir + QLatin1Char{'/'};
+            if (lang.empty()) {
+                loaded = translator.load(QLocale(), {}, {}, path);
+            } else {
+                loaded = translator.load(lang_str, path);
+            }
+            if (loaded) {
+                break;
+            }
+        }
     }
 
     if (loaded)
