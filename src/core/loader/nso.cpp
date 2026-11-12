@@ -24,6 +24,7 @@
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
+#include "core/hle/service/nx2_frame_interval.h"
 #include "core/hle/service/nx2_oot_time.h"
 #include "core/loader/nso.h"
 #include "core/memory.h"
@@ -271,6 +272,62 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         }
     }
 
+    // Hyrule Warriors' frame interval (nx2_frame_interval.h). Its only copy into the global is
+    //   adrp x9, got; ...; ldr x9, [x9, #got]; ...; adrp x8, global; add x8, x8, #global;
+    //   ldr w19, [x9]; str w19, [x8]
+    // Nothing is patched; the present path writes both words when hyrule_dynamic_fps is on.
+    u64 frame_interval_offset = 0;
+    u64 frame_interval_source_offset = 0;
+    if (name == "main" &&
+        process.GetProgramId() == Service::Nx2FrameInterval::HyruleWarriorsProgramId) {
+        const auto& text = nso_header.segments[0];
+        const u8* const image = codeset.memory.data() + module_start;
+        const u64 image_end = codeset.memory.size() - module_start;
+        const auto word = [image](u64 offset) {
+            u32 value;
+            std::memcpy(&value, image + offset, sizeof(value));
+            return value;
+        };
+        const auto adrp_page = [](u64 pc, u32 insn) {
+            s64 pages = static_cast<s64>((((insn >> 5) & 0x7FFFF) << 2) | ((insn >> 29) & 3));
+            if (pages & (s64{1} << 20)) {
+                pages -= s64{1} << 21;
+            }
+            return (pc & ~u64{0xFFF}) + static_cast<u64>(pages * 0x1000);
+        };
+        size_t matches = 0;
+        for (u64 pc = text.location + 32; pc + 8 <= text.location + text.size; pc += 4) {
+            if (word(pc) != 0xB9400133 || word(pc + 4) != 0xB9000113) { // ldr w19, [x9]; str w19, [x8]
+                continue;
+            }
+            const u32 adrp_global = word(pc - 8);
+            const u32 add_global = word(pc - 4);
+            const u32 adrp_got = word(pc - 32);
+            const u32 ldr_got = word(pc - 24);
+            if ((adrp_global & 0x9F00001F) != 0x90000008 || (add_global & 0xFFC003FF) != 0x91000108 ||
+                (adrp_got & 0x9F00001F) != 0x90000009 || (ldr_got & 0xFFC003FF) != 0xF9400129) {
+                continue;
+            }
+            ++matches;
+            frame_interval_offset = adrp_page(pc - 8, adrp_global) + ((add_global >> 10) & 0xFFF);
+            const u64 got = adrp_page(pc - 32, adrp_got) + ((ldr_got >> 10) & 0xFFF) * 8;
+            frame_interval_source_offset = 0;
+            if (got + sizeof(u64) <= image_end) {
+                // Not relocated yet: the entry still holds the module-relative address.
+                std::memcpy(&frame_interval_source_offset, image + got, sizeof(u64));
+            }
+        }
+        if (matches == 1 && frame_interval_offset + sizeof(u32) <= image_end &&
+            frame_interval_source_offset != 0 &&
+            frame_interval_source_offset + sizeof(u32) <= image_end) {
+            LOG_INFO(Loader, "Hyrule Warriors frame interval at main+{:#x} (from main+{:#x})",
+                     frame_interval_offset, frame_interval_source_offset);
+        } else {
+            LOG_WARNING(Loader, "Hyrule Warriors frame interval not found ({} matches)", matches);
+            frame_interval_offset = frame_interval_source_offset = 0;
+        }
+    }
+
 #ifdef HAS_NCE
     // If we are computing the process code layout and using nce backend, patch.
     const auto& code = codeset.CodeSegment();
@@ -352,6 +409,10 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         process.SetOotDeltaAddress(word == Service::Nx2OotTime::HookInstruction
                                        ? load_base + module_start + Service::Nx2OotTime::DeltaOffset
                                        : 0);
+    }
+    if (frame_interval_offset != 0) {
+        process.SetFrameIntervalAddresses(load_base + module_start + frame_interval_offset,
+                                          load_base + module_start + frame_interval_source_offset);
     }
     process.LoadModule(system.Kernel(), std::move(codeset), load_base);
     if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {
