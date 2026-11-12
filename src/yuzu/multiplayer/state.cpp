@@ -242,6 +242,8 @@ void MultiplayerState::OnViewLobby() {
     if (lobby == nullptr) {
         lobby = new Lobby(this, game_list_model, announce_multiplayer_session, system);
         connect(lobby, &Lobby::SaveConfig, this, &MultiplayerState::OnSaveConfig);
+        connect(lobby, &Lobby::RequestProfileConfiguration, this,
+                &MultiplayerState::RequestProfileConfiguration);
     }
     lobby->RefreshLobby();
     BringWidgetToFront(lobby);

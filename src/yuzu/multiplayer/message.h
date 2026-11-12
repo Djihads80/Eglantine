@@ -4,6 +4,10 @@
 #pragma once
 
 #include <utility>
+#include <QObject>
+#include <QString>
+
+class QWidget;
 
 namespace NetworkMessage {
 
@@ -68,5 +72,24 @@ bool WarnCloseRoom();
  * return true if the user wants to disconnect
  */
 bool WarnDisconnect();
+
+/// What the user chose when warned about a default profile name or nickname.
+enum class DefaultNameAction {
+    Continue,    ///< Use the name as it is
+    ChangeName,  ///< Fix the name in the settings the button pointed at
+    UseNickname, ///< Rename the user profile to the current lobby nickname
+    Cancel,      ///< Do not join the room
+};
+
+/**
+ * Show a warning about a default name being visible to other players, and offer to change it.
+ * \param parent Parent widget of the message box.
+ * \param name The default name that was detected.
+ * \param change_button_text Label of the button that sends the user to the settings to fix it.
+ * \param offer_nickname Whether to offer renaming the profile to the lobby nickname.
+ * \return The action chosen by the user.
+ */
+DefaultNameAction WarnDefaultName(QWidget* parent, const QString& name,
+                                  const QString& change_button_text, bool offer_nickname);
 
 } // namespace NetworkMessage

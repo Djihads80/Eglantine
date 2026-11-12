@@ -195,6 +195,19 @@ void ConfigureDialog::PopulateSelectionList() {
     }
 }
 
+void ConfigureDialog::SelectProfilesTab() {
+    for (int row = 0; row < ui->selectorList->count(); ++row) {
+        const auto tabs = qvariant_cast<QList<QWidget*>>(
+            ui->selectorList->item(row)->data(Qt::UserRole));
+        if (tabs.contains(profile_tab.get())) {
+            ui->selectorList->setCurrentRow(row);
+            break;
+        }
+    }
+
+    ui->tabWidget->setCurrentWidget(profile_tab.get());
+}
+
 void ConfigureDialog::OnLanguageChanged(const QString& locale) {
     emit LanguageChanged(locale);
     //  Reloading the game list is needed to force retranslation.

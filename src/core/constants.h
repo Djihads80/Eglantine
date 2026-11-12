@@ -15,6 +15,6 @@
 namespace Core::Constants {
 
 // ACC Service - An Eden Profile Picture JPEG used as user icon in absentia of real one.
-extern const std::array<u8, 5099> ACCOUNT_BACKUP_JPEG;
+extern const std::array<u8, 9894> ACCOUNT_BACKUP_JPEG;
 
 } // namespace Core::Constants

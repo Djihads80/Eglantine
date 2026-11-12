@@ -87,6 +87,8 @@ signals:
     void NetworkError(const Network::RoomMember::Error&);
     void AnnounceFailed(const WebService::WebResult&);
     void SaveConfig();
+    /// Asks the main window to open Configuration > System > Profiles.
+    void RequestProfileConfiguration();
 
 private:
     Lobby* lobby = nullptr;

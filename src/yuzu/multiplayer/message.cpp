@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <QMessageBox>
+#include <QPushButton>
 #include <QString>
 
 #include "yuzu/multiplayer/message.h"
@@ -80,6 +81,41 @@ bool WarnDisconnect() {
     return WarnMessage(
         QT_TR_NOOP("Disconnect"),
         QT_TR_NOOP("You are about to leave the room. Any network connections will be closed."));
+}
+
+DefaultNameAction WarnDefaultName(QWidget* parent, const QString& name,
+                                  const QString& change_button_text, bool offer_nickname) {
+    QMessageBox message_box(parent);
+    message_box.setIcon(QMessageBox::Warning);
+    message_box.setWindowTitle(QObject::tr("Default Name Detected"));
+    message_box.setText(QObject::tr("A default user profile name \"%1\" has been detected, to not "
+                                    "cause confusion and allow other players to recognize you, "
+                                    "please change your user profile name")
+                            .arg(name));
+
+    QPushButton* change_name = message_box.addButton(change_button_text, QMessageBox::AcceptRole);
+    QPushButton* use_nickname = offer_nickname
+                                    ? message_box.addButton(QObject::tr("Use My Nickname"),
+                                                            QMessageBox::ActionRole)
+                                    : nullptr;
+    QPushButton* proceed = message_box.addButton(
+        QObject::tr("Continue Anyway"), QMessageBox::AcceptRole);
+    QPushButton* cancel = message_box.addButton(QObject::tr("Cancel"), QMessageBox::RejectRole);
+
+    message_box.setDefaultButton(change_name);
+    message_box.setEscapeButton(cancel);
+    message_box.exec();
+
+    if (message_box.clickedButton() == change_name) {
+        return DefaultNameAction::ChangeName;
+    }
+    if (use_nickname != nullptr && message_box.clickedButton() == use_nickname) {
+        return DefaultNameAction::UseNickname;
+    }
+    if (message_box.clickedButton() == proceed) {
+        return DefaultNameAction::Continue;
+    }
+    return DefaultNameAction::Cancel;
 }
 
 } // namespace NetworkMessage

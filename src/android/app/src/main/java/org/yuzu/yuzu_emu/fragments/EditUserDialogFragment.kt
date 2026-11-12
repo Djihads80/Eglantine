@@ -263,7 +263,7 @@ class EditUserDialogFragment : Fragment() {
 
     private fun validateInput() {
         val username = binding.editUsername.text.toString()
-        val isValid = username.isNotEmpty() && username.length <= 32
+        val isValid = username.isNotEmpty() && username.length <= 20
         binding.buttonSave.isEnabled = isValid
     }
 

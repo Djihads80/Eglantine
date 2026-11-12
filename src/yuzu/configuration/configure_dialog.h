@@ -57,6 +57,9 @@ public:
 
     void ApplyConfiguration();
 
+    /// Selects the Profiles tab of the System category.
+    void SelectProfilesTab();
+
 private slots:
     void OnLanguageChanged(const QString& locale);
 

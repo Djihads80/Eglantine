@@ -58,7 +58,7 @@ NewUserDialog::NewUserDialog(Common::UUID uuid, const std::string& username, con
 }
 
 NewUserDialog::NewUserDialog(QWidget* parent) : QDialog(parent) {
-    setup(Common::UUID::MakeRandom(), "Eden", tr("New User"));
+    setup(Common::UUID::MakeRandom(), "Eglantine", tr("New User"));
 }
 
 void NewUserDialog::setup(Common::UUID uuid, const std::string& username, const QString& title) {
@@ -89,19 +89,21 @@ void NewUserDialog::setup(Common::UUID uuid, const std::string& username, const 
     ui->generate->setDisabled(m_editing);
 
     ui->username->setText(QString::fromStdString(username));
-    verifyUser();
 
     setImage(GetIcon(uuid));
     updateRevertButton();
 
     // Validators
+    // Capped at the 20 characters a lobby nickname allows, so the name can always be copied over
     QRegularExpressionValidator* username_validator =
-        new QRegularExpressionValidator(QRegularExpression(QStringLiteral(".{1,32}")), this);
+        new QRegularExpressionValidator(QRegularExpression(QStringLiteral(".{1,20}")), this);
     ui->username->setValidator(username_validator);
 
     QRegularExpressionValidator* uuid_validator = new QRegularExpressionValidator(
         QRegularExpression(QStringLiteral("[0-9a-fA-F]{32}")), this);
     ui->uuid->setValidator(uuid_validator);
+
+    verifyUser();
 
     // Connections
     connect(ui->uuid, &QLineEdit::textEdited, this, &::NewUserDialog::verifyUser);
@@ -346,7 +348,7 @@ void NewUserDialog::verifyUser() {
         ui->usernameVerified->setToolTip(tr("All Good", "Tooltip"));
     } else {
         ui->usernameVerified->setPixmap(failed);
-        ui->usernameVerified->setToolTip(tr("Must be between 1 and 32 characters", "Tooltip"));
+        ui->usernameVerified->setToolTip(tr("Must be between 1 and 20 characters", "Tooltip"));
     }
 }
 

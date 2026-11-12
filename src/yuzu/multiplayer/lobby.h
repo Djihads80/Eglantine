@@ -78,9 +78,29 @@ private slots:
 signals:
     void StateChanged(const Network::RoomMember::State&);
     void SaveConfig();
+    /// Asks the main window to open Configuration > System > Profiles.
+    void RequestProfileConfiguration();
 
 private:
     std::string GetProfileUsername();
+
+    /**
+     * Warns about a default profile name or nickname before joining a room and applies the fix the
+     * user picked.
+     *
+     * Returns false if the user chose to cancel joining, true if the room may be joined.
+     */
+    bool ConfirmDisplayName();
+
+    /**
+     * Renames the current user profile, returns false if the profile could not be written.
+     */
+    bool RenameCurrentProfile(const QString& new_name);
+
+    /**
+     * Whether the given name is allowed as a lobby nickname.
+     */
+    bool IsNicknameAcceptable(const QString& nickname);
 
     /**
      * Removes all entries in the Lobby before refreshing.
