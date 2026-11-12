@@ -9,6 +9,7 @@
 #include <vector>
 #include <QApplication>
 #include <QCoreApplication>
+#include <QFile>
 #include <QMessageBox>
 #include <QProcess>
 #include <QProcessEnvironment>
@@ -76,9 +77,9 @@ QStringList Arguments(int argc, [[maybe_unused]] char** argv) {
     return args;
 }
 
+#ifndef _WIN32
 QProcessEnvironment ChildEnvironment() {
     auto environment = QProcessEnvironment::systemEnvironment();
-#ifndef _WIN32
     const auto app_dir = environment.value(QStringLiteral("APPDIR"));
     if (!app_dir.isEmpty()) {
         for (const auto& key : environment.keys()) {
@@ -98,9 +99,9 @@ QProcessEnvironment ChildEnvironment() {
     for (const auto& key : {"APPDIR", "APPIMAGE", "ARGV0", "OWD"}) {
         environment.remove(QString::fromLatin1(key));
     }
-#endif
     return environment;
 }
+#endif
 
 bool ShiftHeld() {
 #ifdef _WIN32
@@ -210,6 +211,21 @@ fs::path StateFile() {
 QString SelfExe() {
     const auto image = qEnvironmentVariable("APPIMAGE");
     return image.isEmpty() ? ToQ(SelfPath()) : image;
+}
+
+bool IsTesterBuild() {
+    const auto root = TesterBuild::DefaultRoot();
+    return !root.empty() && TesterBuild::IsTesterInstall(SelfPath(), root);
+}
+
+QString BuilderExe(const TesterBuild::State& state) {
+    if (IsTesterBuild()) {
+        const auto release = QString::fromUtf8(state.release_exe);
+        if (!release.isEmpty() && QFile::exists(release)) {
+            return release;
+        }
+    }
+    return SelfExe();
 }
 
 RemoteResult FetchRemote(const TesterBuild::Source& source) {

@@ -38,6 +38,7 @@
 #include "main_window.h"
 
 #ifdef ENABLE_UPDATE_CHECKER
+#include "updater/tester_build_launcher.h"
 #include "updater/tester_build_main.h"
 #endif
 
@@ -204,6 +205,13 @@ int main(int argc, char* argv[]) {
     if (CheckEnvVars(&is_child)) {
         return 0;
     }
+
+#ifdef ENABLE_UPDATE_CHECKER
+    // After the helper-process checks above, so those are never handed off.
+    if (const auto handled = TesterLauncher::Run(argc, argv)) {
+        return *handled;
+    }
+#endif
 
     if (StartupChecks(argv[0], &has_broken_vulkan,
                       Settings::values.perform_vulkan_check.GetValue())) {

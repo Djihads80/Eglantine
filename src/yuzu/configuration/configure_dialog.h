@@ -65,6 +65,7 @@ public:
     ~ConfigureDialog() override;
 
     void ApplyConfiguration();
+    void accept() override;
 
 private slots:
     void OnLanguageChanged(const QString& locale);
@@ -78,6 +79,7 @@ private:
     void RetranslateUI();
 
     void HandleApplyButtonClicked();
+    bool ConfirmSettings();
 
     void SetConfiguration();
     void UpdateVisibleTabs();

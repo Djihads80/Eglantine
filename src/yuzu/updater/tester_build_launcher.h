@@ -19,6 +19,13 @@ std::filesystem::path StateFile();
 // The exe to start for a plain relaunch of this build: $APPIMAGE inside an AppImage.
 QString SelfExe();
 
+// Whether this exe lies in the tester install folder.
+bool IsTesterBuild();
+
+// The exe that runs the builder: always the release build, as the followed branch may be older than
+// the builder. Inside a tester build that is the one the state remembers.
+QString BuilderExe(const TesterBuild::State& state);
+
 struct RemoteResult {
     // Empty when the check failed; `status` is then the HTTP status, or 0 without a response.
     std::optional<TesterBuild::RemoteInfo> info;

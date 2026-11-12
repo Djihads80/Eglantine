@@ -465,7 +465,13 @@ MainWindow::MainWindow(bool has_broken_vulkan)
 #ifdef ENABLE_UPDATE_CHECKER
     connect(&update_watcher, &QFutureWatcher<UpdateChecker::CheckResult>::finished, this,
             &MainWindow::OnEmulatorUpdateAvailable);
-    if (const auto build_channel = UpdateChecker::BuildChannel()) {
+    if (TesterLauncher::IsTesterBuild()) {
+        tester_monitor = std::make_unique<TesterBuildMonitor>(
+            [this] { return emulation_running; }, this);
+        if (UISettings::values.check_for_updates) {
+            tester_monitor->Start();
+        }
+    } else if (const auto build_channel = UpdateChecker::BuildChannel()) {
         // The first tagged release build to run picks the channel, and it stays until changed.
         if (UISettings::values.update_channel.GetValue() == Settings::UpdateChannel::Unset) {
             UISettings::values.update_channel.SetValue(
@@ -5138,6 +5144,10 @@ void MainWindow::CheckForUpdates(bool manual) {
 }
 
 void MainWindow::OnCheckForUpdates() {
+    if (tester_monitor) {
+        tester_monitor->CheckNow();
+        return;
+    }
     if (!UpdateChecker::BuildChannel()) {
         QMessageBox::information(
             this, tr("Check for Updates"),

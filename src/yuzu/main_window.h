@@ -43,6 +43,7 @@
 #include <QFuture>
 #include <QFutureWatcher>
 #include "frontend_common/update_checker.h"
+#include "updater/tester_build_monitor.h"
 #endif
 
 class QtConfig;
@@ -523,6 +524,8 @@ private:
     bool update_check_running{};
     // Set when the user asked for the check, so the result is always reported
     bool update_check_manual{};
+    // Only inside a tester build, which follows a branch or pull request instead of releases
+    std::unique_ptr<TesterBuildMonitor> tester_monitor;
 #endif
 
     MultiplayerState* multiplayer_state = nullptr;

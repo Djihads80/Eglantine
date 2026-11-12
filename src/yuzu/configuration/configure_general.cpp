@@ -21,6 +21,7 @@
 #include "yuzu/configuration/shared_widget.h"
 #ifdef ENABLE_UPDATE_CHECKER
 #include "frontend_common/update_checker.h"
+#include "yuzu/configuration/tester_build_settings.h"
 #endif
 
 ConfigureGeneral::ConfigureGeneral(const Core::System& system_,
@@ -124,7 +125,13 @@ void ConfigureGeneral::Setup(const ConfigurationShared::Builder& builder) {
     for (auto* widget : update_hold) {
         ui->updates_widget->layout()->addWidget(widget);
     }
+#ifdef ENABLE_UPDATE_CHECKER
+    tester_settings = new TesterBuildSettings(this);
+    ui->updates_widget->layout()->addWidget(tester_settings);
+    ui->UpdatesGroupBox->setVisible(true);
+#else
     ui->UpdatesGroupBox->setVisible(!update_hold.empty());
+#endif
 }
 
 // Called to set the callback when resetting settings to defaults
@@ -146,6 +153,14 @@ void ConfigureGeneral::ResetDefaults() {
     reset_callback();
 }
 
+bool ConfigureGeneral::ConfirmApply() {
+#ifdef ENABLE_UPDATE_CHECKER
+    return tester_settings == nullptr || tester_settings->ConfirmChanges();
+#else
+    return true;
+#endif
+}
+
 void ConfigureGeneral::ApplyConfiguration() {
     bool powered_on = system.IsPoweredOn();
     const auto previous_channel = UISettings::values.update_channel.GetValue();
@@ -155,6 +170,11 @@ void ConfigureGeneral::ApplyConfiguration() {
     if (UISettings::values.update_channel.GetValue() != previous_channel) {
         UISettings::values.skipped_update.SetValue({});
     }
+#ifdef ENABLE_UPDATE_CHECKER
+    if (tester_settings != nullptr) {
+        tester_settings->Apply();
+    }
+#endif
 
     std::vector<std::string> new_dirs;
     new_dirs.reserve(ui->external_content_list->count());
