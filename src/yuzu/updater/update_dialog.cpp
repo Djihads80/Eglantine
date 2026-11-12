@@ -1,11 +1,15 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <filesystem>
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSaveFile>
@@ -16,6 +20,12 @@
 #include "common/scm_rev.h"
 #include "qt_common/abstract/frontend.h"
 #include "qt_common/abstract/progress.h"
+#ifdef ENABLE_UPDATE_CHECKER
+#include "frontend_common/update_installer.h"
+#ifdef _WIN32
+#include "qt_common/util/compress.h"
+#endif
+#endif
 #include "ui_update_dialog.h"
 #include "update_dialog.h"
 
@@ -96,7 +106,106 @@ UpdateDialog::~UpdateDialog() {
     delete ui;
 }
 
+#if defined(ENABLE_UPDATE_CHECKER) && (defined(__linux__) || defined(_WIN32))
+void UpdateDialog::Restart(QWidget* window, const QString& target) {
+    auto environment = QProcessEnvironment::systemEnvironment();
+    const auto app_dir = environment.value(QStringLiteral("APPDIR"));
+    if (!app_dir.isEmpty()) {
+        for (const auto& key : environment.keys()) {
+            const auto value = environment.value(key);
+            if (!value.contains(app_dir)) {
+                continue;
+            }
+            const auto stripped = UpdateInstaller::StripPathListEntries(value.toStdString(),
+                                                                        app_dir.toStdString());
+            if (stripped.empty()) {
+                environment.remove(key);
+            } else {
+                environment.insert(key, QString::fromStdString(stripped));
+            }
+        }
+    }
+    for (const auto& key : {"APPDIR", "APPIMAGE", "ARGV0", "OWD"}) {
+        environment.remove(QString::fromLatin1(key));
+    }
+
+    // Wait for this process to exit, so the new one reads the settings this one writes on close.
+    QProcess process;
+    process.setProgram(QStringLiteral("/bin/sh"));
+    process.setArguments(
+        {QStringLiteral("-c"),
+         QStringLiteral("i=0; while kill -0 \"$1\" 2>/dev/null && [ \"$i\" -lt 1500 ]; do "
+                        "sleep 0.2; i=$((i+1)); done; kill -0 \"$1\" 2>/dev/null && exit 0; "
+                        "exec \"$2\""),
+         QStringLiteral("sh"), QString::number(QCoreApplication::applicationPid()), target});
+    process.setProcessEnvironment(environment);
+    if (!process.startDetached()) {
+        LOG_ERROR(Frontend, "Could not start the restart helper for {}", target.toStdString());
+        QtCommon::Frontend::Critical(tr("Failed to restart"),
+                                     tr("Please start %1 again yourself.").arg(target));
+        return;
+    }
+    if (window) {
+        QMetaObject::invokeMethod(window, &QWidget::close, Qt::QueuedConnection);
+    }
+}
+#endif
+
+#if defined(ENABLE_UPDATE_CHECKER) && defined(_WIN32)
+bool UpdateDialog::LaunchInstaller(QWidget* window, const QString& staging) {
+    // The helper runs from a copy, because the installed one is replaced along with everything else.
+    const QString helper =
+        QCoreApplication::applicationDirPath() + QStringLiteral("/eglantine-updater.exe");
+    const QString copy = QDir::temp().filePath(
+        QStringLiteral("eglantine-updater-%1.exe").arg(QCoreApplication::applicationPid()));
+    QFile::remove(copy);
+    if (!QFile::copy(helper, copy)) {
+        LOG_ERROR(Frontend, "Could not copy the installer helper {}", helper.toStdString());
+        QtCommon::Frontend::Critical(tr("Failed to install the update"),
+                                     tr("Could not start the update installer."));
+        return false;
+    }
+
+    const auto install_dir = QCoreApplication::applicationDirPath();
+    const auto native = [](const QString& path) { return QDir::toNativeSeparators(path); };
+    if (!QProcess::startDetached(
+            copy, {QString::number(QCoreApplication::applicationPid()), native(staging),
+                   native(install_dir), native(QCoreApplication::applicationFilePath())})) {
+        LOG_ERROR(Frontend, "Could not start the installer helper {}", copy.toStdString());
+        QtCommon::Frontend::Critical(tr("Failed to install the update"),
+                                     tr("Could not start the update installer."));
+        return false;
+    }
+    if (window) {
+        QMetaObject::invokeMethod(window, &QWidget::close, Qt::QueuedConnection);
+    }
+    return true;
+}
+#endif
+
 void UpdateDialog::Download() {
+#if defined(ENABLE_UPDATE_CHECKER) && defined(_WIN32)
+    if (m_asset.filename.ends_with(".zip")) {
+        const std::filesystem::path exe{QCoreApplication::applicationFilePath().toStdWString()};
+        if (UpdateInstaller::CanReplace(exe) &&
+            QFile::exists(QCoreApplication::applicationDirPath() +
+                          QStringLiteral("/eglantine-updater.exe"))) {
+            InstallOnRestart(exe);
+            return;
+        }
+    }
+#endif
+#if defined(ENABLE_UPDATE_CHECKER) && defined(__linux__)
+    if (Common::Net::CurrentLinuxPackage() == Common::Net::LinuxPackage::AppImage &&
+        m_asset.filename.ends_with(".AppImage")) {
+        const std::filesystem::path target{qEnvironmentVariable("APPIMAGE").toStdString()};
+        if (UpdateInstaller::CanReplace(target)) {
+            InstallInPlace(target);
+            return;
+        }
+    }
+#endif
+
     // The application folder is read-only inside an AppImage and is the app bundle on macOS.
     auto default_dir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     if (default_dir.isEmpty()) {
@@ -129,6 +238,116 @@ void UpdateDialog::Download() {
         QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(filename).absolutePath()));
     }
 }
+
+#if defined(ENABLE_UPDATE_CHECKER) && defined(__linux__)
+void UpdateDialog::InstallInPlace(const std::filesystem::path& target) {
+    const UpdateInstaller::Lock lock{UpdateInstaller::LockPath(target)};
+    if (!lock.Held()) {
+        QtCommon::Frontend::Critical(tr("Failed to install the update"),
+                                     tr("Another Eglantine window is already updating this "
+                                        "installation."));
+        return;
+    }
+
+    const auto staged = UpdateInstaller::StagedPath(target);
+    if (!DownloadTo(QString::fromStdString(staged.string()))) {
+        return;
+    }
+
+    std::error_code ec;
+    if (!UpdateInstaller::Swap(staged, target, ec)) {
+        LOG_ERROR(Frontend, "Could not replace {}: {}", target.string(), ec.message());
+        std::filesystem::remove(staged, ec);
+        QtCommon::Frontend::Critical(
+            tr("Failed to install the update"),
+            tr("Could not replace %1. Your installation was not changed.")
+                .arg(QString::fromStdString(target.string())));
+        return;
+    }
+
+    LOG_INFO(Frontend, "Installed {} over {}", m_asset.filename, target.string());
+    const auto button = QtCommon::Frontend::Question(
+        tr("Update Installed"),
+        tr("The new version is installed. The previous version is kept as %1.\n\nRestart now?")
+            .arg(QString::fromStdString(UpdateInstaller::PreviousPath(target).string())),
+        QtCommon::Frontend::Yes | QtCommon::Frontend::No);
+    if (button == QtCommon::Frontend::Yes) {
+        Restart(parentWidget(), QString::fromStdString(target.string()));
+    }
+}
+#endif
+
+#if defined(ENABLE_UPDATE_CHECKER) && defined(_WIN32)
+void UpdateDialog::InstallOnRestart(const std::filesystem::path& exe) {
+    const auto install_dir = exe.parent_path();
+    const UpdateInstaller::Lock lock{UpdateInstaller::LockPath(exe)};
+    if (!lock.Held()) {
+        QtCommon::Frontend::Critical(tr("Failed to install the update"),
+                                     tr("Another Eglantine window is already updating this "
+                                        "installation."));
+        return;
+    }
+
+    const auto staging = install_dir / ".update-staging";
+    const auto archive = install_dir / ".update-download.zip";
+    const auto cleanup = [&] {
+        std::error_code ec;
+        std::filesystem::remove_all(staging, ec);
+        std::filesystem::remove(archive, ec);
+    };
+    const auto fail = [&](const QString& text) {
+        cleanup();
+        QtCommon::Frontend::Critical(tr("Failed to install the update"), text);
+    };
+
+    cleanup();
+    std::error_code ec;
+    std::filesystem::create_directories(staging, ec);
+    if (ec) {
+        fail(tr("Could not create a folder for the update."));
+        return;
+    }
+    if (!DownloadTo(QString::fromStdWString(archive.wstring()))) {
+        cleanup();
+        return;
+    }
+
+    auto progress = QtCommon::Frontend::newProgressDialog(tr("Unpacking..."), tr("Cancel"), 0, 100);
+    progress->show();
+    const auto unpacked = QtCommon::Compress::extractDir(
+        QString::fromStdWString(archive.wstring()), QString::fromStdWString(staging.wstring()),
+        [&](std::size_t total, std::size_t done) {
+            QGuiApplication::processEvents();
+            if (total != 0) {
+                progress->setValue(static_cast<int>((done * 100) / total));
+            }
+            return !progress->wasCanceled();
+        });
+    const bool canceled = progress->wasCanceled();
+    progress->close();
+    if (canceled) {
+        cleanup();
+        QtCommon::Frontend::Information(tr("Update Canceled"),
+                                        tr("The update was canceled and nothing was changed."));
+        return;
+    }
+    if (unpacked.isEmpty() || !std::filesystem::exists(staging / exe.filename(), ec)) {
+        fail(tr("The downloaded update could not be unpacked."));
+        return;
+    }
+    std::filesystem::remove(archive, ec);
+
+    const auto button = QtCommon::Frontend::Question(
+        tr("Update Ready"),
+        tr("Eglantine will close, install the update and start again. The previous version is "
+           "kept, and your settings and data are not changed.\n\nRestart now?"),
+        QtCommon::Frontend::Yes | QtCommon::Frontend::No);
+    if (button != QtCommon::Frontend::Yes ||
+        !LaunchInstaller(parentWidget(), QString::fromStdWString(staging.wstring()))) {
+        cleanup();
+    }
+}
+#endif
 
 // TODO: migrate to a net.cpp wrapper
 bool UpdateDialog::DownloadTo(const QString& filename) {

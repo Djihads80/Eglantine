@@ -287,6 +287,7 @@ file(GLOB_RECURSE THEMES ${PROJECT_SOURCE_DIR}/dist/qt_themes/*)
 
 if (ENABLE_UPDATE_CHECKER)
     target_compile_definitions(yuzu PUBLIC ENABLE_UPDATE_CHECKER)
+    target_link_libraries(yuzu PRIVATE QuaZip::QuaZip)
 endif()
 
 if (ENABLE_QT_TRANSLATION)
