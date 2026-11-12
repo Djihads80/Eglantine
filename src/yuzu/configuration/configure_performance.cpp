@@ -1,16 +1,22 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <QCheckBox>
-#include <QFontDatabase>
+#include <QComboBox>
+#include <QFrame>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QLabel>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
+#include <QStackedWidget>
+#include <QHBoxLayout>
 #include <QVBoxLayout>
 #include "common/logging.h"
 #include "common/settings.h"
@@ -269,119 +275,163 @@ ConfigurePerformance::ConfigurePerformance(Performance::Platform platform_,
     setAccessibleName(PlatformName(platform));
     const Context context = MakeContext(records);
 
-    auto* const outer = new QVBoxLayout(this);
-    auto* const scroll = new QScrollArea(this);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    outer->addWidget(scroll);
-    auto* const content = new QWidget(scroll);
-    scroll->setWidget(content);
-    auto* const layout = new QVBoxLayout(content);
+    auto* const layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(8);
 
-    auto* const title = new QLabel(tr("Recommended launch arguments for %1").arg(PlatformName(platform)));
-    QFont title_font = title->font();
-    title_font.setBold(true);
-    title->setFont(title_font);
-    layout->addWidget(title);
-
-    // The primary graphics device against this platform.
+    // Whether this platform's arguments fit the primary graphics device.
     const QString device_name =
         context.device != nullptr ? QString::fromStdString(context.device->name) : QString{};
-    auto* const device_label = new QLabel(
-        context.device != nullptr ? tr("Primary graphics device: %1").arg(device_name)
-                                  : tr("Primary graphics device: not detected"));
-    device_label->setWordWrap(true);
-    layout->addWidget(device_label);
-
     QString device_warning;
+    QString device_warning_detail;
     if (platform == Platform::MacOs) {
         if (!context.macos) {
-            device_warning = tr("This is not macOS. These arguments are meant for macOS "
-                                "(MoltenVK) and may have no effect or slow the game down here.");
+            device_warning = tr("These flags are meant for macOS.");
+            device_warning_detail = tr("This is not macOS. These arguments are meant for macOS "
+                                       "(MoltenVK) and may have no effect or slow the game down "
+                                       "here.");
         }
     } else if (context.device == nullptr) {
-        device_warning = tr("No primary graphics device was detected, so it is unknown whether "
-                            "these arguments fit it. They may have no effect or slow the game "
-                            "down.");
+        device_warning = tr("No graphics device was detected.");
+        device_warning_detail = tr("No primary graphics device was detected, so it is unknown "
+                                   "whether these arguments fit it. They may have no effect or "
+                                   "slow the game down.");
     } else if (context.device->capabilities.vendor_id != PlatformVendor(platform)) {
-        device_warning =
-            tr("Your primary graphics device (%1) is not a %2 GPU. These arguments were chosen "
-               "for %2 hardware and may have no effect or a negative effect on your gameplay.")
-                .arg(device_name, PlatformName(platform));
+        device_warning = tr("Your primary GPU (%1) is not a %2 GPU.")
+                             .arg(device_name, PlatformName(platform));
+        device_warning_detail =
+            tr("These arguments were chosen for %1 hardware and may have no effect or a negative "
+               "effect on your gameplay.")
+                .arg(PlatformName(platform));
     }
     if (!device_warning.isEmpty()) {
         auto* const warning = new QLabel(QStringLiteral("⚠ ") + device_warning);
         warning->setWordWrap(true);
-        warning->setStyleSheet(QStringLiteral("QLabel { %1 border: 1px solid #d98e00; "
-                                              "border-radius: 4px; padding: 6px; }")
-                                   .arg(WarningStyle()));
+        warning->setToolTip(device_warning_detail);
+        warning->setStyleSheet(QStringLiteral("QLabel { %1 }").arg(WarningStyle()));
         layout->addWidget(warning);
     }
 
-    auto* const group = new QGroupBox(tr("Launch arguments"));
-    auto* const group_layout = new QVBoxLayout(group);
-    const QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    // Launch argument | Status, one row per argument; the flag and details are in the tooltips.
+    auto* const frame = new QFrame(this);
+    frame->setFrameShape(QFrame::StyledPanel);
+    auto* const grid = new QGridLayout(frame);
+    grid->setContentsMargins(12, 8, 12, 8);
+    grid->setHorizontalSpacing(16);
+    grid->setVerticalSpacing(6);
+    grid->setColumnStretch(0, 1);
+
+    const auto add_header = [&](int column, const QString& text) {
+        auto* const header = new QLabel(text, frame);
+        QFont font = header->font();
+        font.setBold(true);
+        header->setFont(font);
+        grid->addWidget(header, 0, column);
+    };
+    add_header(0, tr("Launch argument"));
+    add_header(1, tr("Status"));
+    auto* const rule = new QFrame(frame);
+    rule->setFrameShape(QFrame::HLine);
+    rule->setFrameShadow(QFrame::Sunken);
+    grid->addWidget(rule, 1, 0, 1, 2);
+
+    int grid_row = 2;
     for (const Feature& feature : FeaturesFor(platform)) {
         const Verdict verdict = feature.check(context);
+        const bool unsupported = !verdict.unsupported.isEmpty();
+        const bool from_environment = std::getenv(feature.name) != nullptr;
         Row row;
         row.line = Line(feature);
-        row.box = new QCheckBox(tr(feature.title));
-        if (!verdict.unsupported.isEmpty()) {
-            row.box->setText(row.box->text() + QStringLiteral("  ⚠"));
-        }
-        group_layout->addWidget(row.box);
 
-        auto* const argument = new QLabel(QString::fromStdString(row.line));
-        argument->setFont(mono);
-        argument->setContentsMargins(24, 0, 0, 0);
-        argument->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        group_layout->addWidget(argument);
-
-        auto* const description = new QLabel(tr(feature.description));
-        description->setWordWrap(true);
-        description->setContentsMargins(24, 0, 0, 0);
-        group_layout->addWidget(description);
-
-        const auto add_message = [&](const QString& text, const QString& icon) {
-            auto* const label = new QLabel(icon + text);
-            label->setWordWrap(true);
-            label->setContentsMargins(24, 0, 0, 0);
-            label->setStyleSheet(QStringLiteral("QLabel { %1 }").arg(WarningStyle()));
-            group_layout->addWidget(label);
-        };
-        if (!verdict.unsupported.isEmpty()) {
-            add_message(tr("Not supported with this configuration: %1").arg(verdict.unsupported),
-                        QStringLiteral("⚠ "));
+        QStringList details{tr(feature.description)};
+        if (unsupported) {
+            details.append(tr("⚠ Not supported with this configuration: %1")
+                               .arg(verdict.unsupported));
         } else if (!verdict.note.isEmpty()) {
-            add_message(verdict.note, QStringLiteral("ⓘ "));
+            details.append(QStringLiteral("ⓘ ") + verdict.note);
         }
-        if (std::getenv(feature.name) != nullptr) {
-            add_message(tr("%1 is already set in the environment, which overrides this file.")
-                            .arg(QString::fromLatin1(feature.name)),
-                        QStringLiteral("ⓘ "));
+        if (from_environment) {
+            details.append(tr("ⓘ %1 is already set in the environment, which overrides "
+                              "this file.")
+                               .arg(QString::fromLatin1(feature.name)));
         }
-        if (feature.recommended && verdict.unsupported.isEmpty()) {
+        const QString tooltip =
+            QStringLiteral("<p><b>%1</b><br><code>%2</code></p><p>%3</p>")
+                .arg(tr(feature.title).toHtmlEscaped(),
+                     QString::fromStdString(row.line).toHtmlEscaped(),
+                     details.join(QStringLiteral("\n")).toHtmlEscaped().replace(
+                         QStringLiteral("\n"), QStringLiteral("</p><p>")));
+
+        row.box = new QCheckBox(tr(feature.title), frame);
+        row.box->setToolTip(tooltip);
+
+        QString status_text;
+        bool warn = false;
+        if (unsupported) {
+            status_text = tr("⚠ Unsupported");
+            warn = true;
+        } else if (from_environment) {
+            status_text = tr("ⓘ Set by environment");
+            warn = true;
+        } else if (feature.recommended) {
+            status_text = tr("Recommended");
+        } else {
+            status_text = tr("Optional");
+        }
+        if (!unsupported && !from_environment && !verdict.note.isEmpty()) {
+            status_text += QStringLiteral(" ⓘ");
+        }
+        auto* const status = new QLabel(status_text, frame);
+        status->setToolTip(tooltip);
+        if (warn) {
+            status->setStyleSheet(QStringLiteral("QLabel { %1 }").arg(WarningStyle()));
+        } else if (feature.recommended) {
+            QFont font = status->font();
+            font.setBold(true);
+            status->setFont(font);
+        } else {
+            status->setEnabled(false);
+        }
+
+        grid->addWidget(row.box, grid_row, 0);
+        grid->addWidget(status, grid_row, 1);
+        ++grid_row;
+
+        if (feature.recommended && !unsupported) {
             recommended_lines.push_back(row.line);
         }
         connect(row.box, &QCheckBox::toggled, this,
                 [this, line = row.line](bool on) { state.SetEnabled(line, on); });
         rows.push_back(std::move(row));
-        group_layout->addSpacing(6);
     }
-    layout->addWidget(group);
+    layout->addWidget(frame);
 
-    auto* const defaults = new QPushButton(tr("Add platform recommended defaults"));
+    auto* const buttons = new QHBoxLayout;
+    auto* const defaults = new QPushButton(tr("Select Recommended"));
+    defaults->setToolTip(tr("Ticks every recommended flag that works with this configuration."));
     connect(defaults, &QPushButton::clicked, this, &ConfigurePerformance::AddDefaults);
-    layout->addWidget(defaults, 0, Qt::AlignLeft);
+    auto* const none = new QPushButton(tr("Select None"));
+    none->setToolTip(tr("Unticks every flag on this page."));
+    connect(none, &QPushButton::clicked, this, [this] {
+        for (const Row& row : rows) {
+            state.SetEnabled(row.line, false);
+        }
+    });
+    buttons->addWidget(defaults);
+    buttons->addWidget(none);
+    buttons->addStretch(1);
+    layout->addLayout(buttons);
 
-    auto* const footer = new QLabel(
-        tr("Saved to %1 when you press OK or Apply, and read when the emulator starts: restart "
-           "it for changes to take effect. The recommendations come from measurements on "
-           "NVIDIA hardware on Linux; other platforms have not been measured.")
-            .arg(QString::fromStdString(State::SwitchFilePath().string())));
+    auto* const footer = new QLabel(tr("Hover a flag for details. Saved with OK or Apply; "
+                                       "restart the emulator for changes to take effect."));
     footer->setWordWrap(true);
+    footer->setEnabled(false);
+    footer->setToolTip(
+        tr("Written to %1, which the emulator reads when it starts. The recommendations come from "
+           "measurements on NVIDIA hardware on Linux; other platforms have not been measured.")
+            .arg(QString::fromStdString(State::SwitchFilePath().string())));
     layout->addWidget(footer);
-    layout->addStretch();
+    layout->addStretch(1);
 
     connect(&state, &State::Changed, this, &ConfigurePerformance::Refresh);
     Refresh();
@@ -436,3 +486,128 @@ void ConfigureRam::ApplyConfiguration() {
 }
 
 void ConfigureRam::SetConfiguration() {}
+
+ConfigureGpu::ConfigureGpu(Performance::State& state,
+                           const std::vector<VkDeviceInfo::Record>& records, QWidget* parent)
+    : QWidget(parent) {
+    using namespace Performance;
+    setAccessibleName(tr("GPU"));
+    const Context context = MakeContext(records);
+
+    constexpr std::array platforms{Platform::Nvidia, Platform::Amd, Platform::Intel,
+                                   Platform::MacOs};
+    // Start on the platform this machine is: macOS, else the primary device's vendor.
+    Platform detected = Platform::Nvidia;
+    bool have_detected = false;
+    if (context.macos) {
+        detected = Platform::MacOs;
+        have_detected = true;
+    } else if (context.device != nullptr) {
+        for (const Platform platform : platforms) {
+            if (PlatformVendor(platform) == context.device->capabilities.vendor_id) {
+                detected = platform;
+                have_detected = true;
+            }
+        }
+    }
+
+    auto* const layout = new QVBoxLayout(this);
+
+    auto* const selector_box = new QGroupBox(tr("GPU Vendor"), this);
+    auto* const selector = new QHBoxLayout(selector_box);
+    auto* const selector_label = new QLabel(tr("Show recommendations for:"));
+    selector->addWidget(selector_label);
+    selector->addStretch(1);
+    vendor_combo = new QComboBox(this);
+    vendor_combo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    vendor_combo->setToolTip(tr("Pick another vendor to compare its flags. Ticked flags of every "
+                                "vendor are saved together."));
+    selector_label->setBuddy(vendor_combo);
+    pages = new QStackedWidget;
+    for (const Platform platform : platforms) {
+        QString text = PlatformName(platform);
+        if (have_detected && platform == detected) {
+            text = context.device != nullptr
+                       ? tr("%1: %2 (primary GPU)")
+                             .arg(text, QString::fromStdString(context.device->name))
+                       : tr("%1 (this system)").arg(text);
+        }
+        vendor_combo->addItem(text);
+        pages->addWidget(new ConfigurePerformance(platform, state, records, pages));
+    }
+    selector->addWidget(vendor_combo);
+    layout->addWidget(selector_box);
+
+    auto* const scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setWidget(pages);
+    layout->addWidget(scroll, 1);
+
+    connect(vendor_combo, &QComboBox::currentIndexChanged, pages,
+            &QStackedWidget::setCurrentIndex);
+    const int start = static_cast<int>(
+        std::find(platforms.begin(), platforms.end(), detected) - platforms.begin());
+    vendor_combo->setCurrentIndex(start);
+    pages->setCurrentIndex(start);
+}
+
+ConfigureGpu::~ConfigureGpu() = default;
+
+ConfigureShaders::ConfigureShaders(const Core::System& system_,
+                                   const ConfigurationShared::Builder& builder, QWidget* parent)
+    : Tab(nullptr, parent), system{system_} {
+    setAccessibleName(tr("Shaders"));
+    auto* const layout = new QVBoxLayout(this);
+
+    auto& values = Settings::values;
+    const auto add_group = [&](const QString& title,
+                               std::initializer_list<Settings::BasicSetting*> settings) {
+        auto* const group = new QGroupBox(title);
+        auto* const group_layout = new QVBoxLayout(group);
+        for (Settings::BasicSetting* const setting : settings) {
+            ConfigurationShared::Widget* const widget =
+                setting == &values.driver_shader_cache_size
+                    ? builder.BuildWidget(setting, apply_funcs, nullptr,
+                                          ConfigurationShared::RequestType::SpinBox, tr(" GiB"))
+                    : builder.BuildWidget(setting, apply_funcs);
+            if (widget == nullptr) {
+                continue;
+            }
+            if (!widget->Valid()) {
+                widget->deleteLater();
+                continue;
+            }
+            group_layout->addWidget(widget);
+        }
+        if (group_layout->count() == 0) {
+            delete group;
+            return;
+        }
+        layout->addWidget(group);
+    };
+
+    add_group(tr("Compilation"), {&values.use_asynchronous_shaders, &values.use_mesh_shaders});
+    add_group(tr("Caches"), {&values.use_disk_shader_cache, &values.use_vulkan_driver_pipeline_cache,
+                             &values.driver_shader_cache_size});
+    layout->addStretch(1);
+}
+
+ConfigureShaders::~ConfigureShaders() = default;
+
+bool ConfigureShaders::IsShaderSetting(u32 id) {
+    const auto& v = Settings::values;
+    return id == v.use_asynchronous_shaders.Id() || id == v.use_mesh_shaders.Id() ||
+           id == v.use_disk_shader_cache.Id() || id == v.use_vulkan_driver_pipeline_cache.Id() ||
+           id == v.private_driver_shader_cache.Id() || id == v.driver_shader_cache_size.Id();
+}
+
+void ConfigureShaders::ApplyConfiguration() {
+    const bool is_powered_on = system.IsPoweredOn();
+    for (const auto& func : apply_funcs) {
+        func(is_powered_on);
+    }
+}
+
+void ConfigureShaders::SetConfiguration() {}

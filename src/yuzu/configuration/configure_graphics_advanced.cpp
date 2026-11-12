@@ -7,11 +7,13 @@
 #include <vector>
 #include <QLabel>
 #include <qnamespace.h>
+#include "common/game_presets.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "qt_common/config/shared_translation.h"
 #include "ui_configure_graphics_advanced.h"
 #include "yuzu/configuration/configuration_shared.h"
+#include "yuzu/configuration/configure_performance.h"
 #include "yuzu/configuration/configure_graphics_advanced.h"
 #include "yuzu/configuration/shared_widget.h"
 
@@ -41,6 +43,15 @@ void ConfigureGraphicsAdvanced::Setup(const ConfigurationShared::Builder& builde
 
     for (auto setting :
          Settings::values.linkage.by_category[Settings::Category::RendererAdvanced]) {
+        // The global configuration shows these under Performance > Shaders.
+        if (Settings::IsConfiguringGlobal() &&
+            ConfigureShaders::IsShaderSetting(setting->Id())) {
+            continue;
+        }
+        // Only the game's Tweaks tab in its properties shows these.
+        if (Settings::IsGameTweak(setting->GetLabel())) {
+            continue;
+        }
         ConfigurationShared::Widget* widget =
             setting->Id() == Settings::values.driver_shader_cache_size.Id()
                 ? builder.BuildWidget(setting, apply_funcs, nullptr,

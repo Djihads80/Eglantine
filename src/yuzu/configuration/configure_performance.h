@@ -14,7 +14,9 @@
 #include "yuzu/configuration/configuration_shared.h"
 
 class QCheckBox;
+class QComboBox;
 class QLabel;
+class QStackedWidget;
 
 namespace Core {
 class System;
@@ -77,6 +79,43 @@ private:
     Performance::State& state;
     std::vector<Row> rows;
     std::vector<std::string> recommended_lines; ///< Recommended and supported
+};
+
+/// The GPU tab: one page of launch arguments per GPU vendor, picked from a dropdown that starts on
+/// the vendor of the primary graphics device.
+class ConfigureGpu : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit ConfigureGpu(Performance::State& state,
+                          const std::vector<VkDeviceInfo::Record>& records,
+                          QWidget* parent = nullptr);
+    ~ConfigureGpu() override;
+
+private:
+    QComboBox* vendor_combo{};
+    QStackedWidget* pages{};
+};
+
+/// The Shaders tab: shader compilation, caches and mesh shaders.
+class ConfigureShaders : public ConfigurationShared::Tab {
+    Q_OBJECT
+
+public:
+    explicit ConfigureShaders(const Core::System& system_,
+                              const ConfigurationShared::Builder& builder,
+                              QWidget* parent = nullptr);
+    ~ConfigureShaders() override;
+
+    void ApplyConfiguration() override;
+    void SetConfiguration() override;
+
+    /// Settings the global configuration shows here rather than on the graphics tabs.
+    static bool IsShaderSetting(u32 id);
+
+private:
+    const Core::System& system;
+    std::vector<std::function<void(bool)>> apply_funcs;
 };
 
 /// The RAM tab: settings that trade memory use for smoothness (Category::RendererMemory).

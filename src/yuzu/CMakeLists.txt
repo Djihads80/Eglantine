@@ -77,6 +77,8 @@ add_executable(yuzu
     configuration/nvidia_dlss_panel.cpp
     configuration/nvidia_dlss_panel.h
     configuration/configure_graphics.ui
+    configuration/configure_frame_generation.cpp
+    configuration/configure_frame_generation.h
     configuration/configure_graphics_advanced.cpp
     configuration/configure_graphics_advanced.h
     configuration/configure_graphics_advanced.ui
@@ -114,6 +116,8 @@ add_executable(yuzu
     configuration/configure_per_game.cpp
     configuration/configure_per_game.h
     configuration/configure_per_game.ui
+    configuration/configure_per_game_tweaks.cpp
+    configuration/configure_per_game_tweaks.h
     configuration/configure_per_game_addons.cpp
     configuration/configure_per_game_addons.h
     configuration/configure_per_game_addons.ui
@@ -237,6 +241,7 @@ add_executable(yuzu
     data_widget.ui
     ryujinx_dialog.h ryujinx_dialog.cpp ryujinx_dialog.ui
     main_window.h main_window.cpp main.ui
+    recommended_settings_dialog.h recommended_settings_dialog.cpp
 
     configuration/system/new_user_dialog.h configuration/system/new_user_dialog.cpp configuration/system/new_user_dialog.ui
     configuration/system/profile_avatar_dialog.h configuration/system/profile_avatar_dialog.cpp

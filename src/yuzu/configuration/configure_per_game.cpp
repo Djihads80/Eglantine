@@ -16,10 +16,12 @@
 #include <QAbstractButton>
 #include <QCheckBox>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QString>
 #include <QTimer>
 
 #include "common/fs/fs_util.h"
+#include "common/game_presets.h"
 #include "common/settings_enums.h"
 #include "common/settings_input.h"
 #include "configuration/shared_widget.h"
@@ -37,6 +39,7 @@
 #include "yuzu/configuration/configure_applets.h"
 #include "yuzu/configuration/configure_audio.h"
 #include "yuzu/configuration/configure_cpu.h"
+#include "yuzu/configuration/configure_frame_generation.h"
 #include "yuzu/configuration/configure_graphics.h"
 #include "yuzu/configuration/configure_graphics_advanced.h"
 #include "yuzu/configuration/configure_graphics_extensions.h"
@@ -44,47 +47,43 @@
 #include "yuzu/configuration/configure_network.h"
 #include "yuzu/configuration/configure_per_game.h"
 #include "yuzu/configuration/configure_per_game_addons.h"
+#include "yuzu/configuration/configure_per_game_tweaks.h"
 #include "yuzu/configuration/configure_system.h"
 #include "yuzu/util/util.h"
 
 ConfigurePerGame::ConfigurePerGame(QWidget* parent, u64 title_id_, const std::string& file_name,
-                                   std::vector<VkDeviceInfo::Record>& vk_device_records,
+                                   std::vector<VkDeviceInfo::Record>& vk_device_records_,
                                    Core::System& system_)
     : QDialog(parent), ui(std::make_unique<Ui::ConfigurePerGame>()), title_id{title_id_},
       system{system_},
       builder{std::make_unique<ConfigurationShared::Builder>(this, !system_.IsPoweredOn())},
-      tab_group{std::make_shared<std::vector<ConfigurationShared::Tab*>>()} {
+      tab_group{std::make_shared<std::vector<ConfigurationShared::Tab*>>()},
+      vk_device_records{vk_device_records_} {
     const auto file_path = std::filesystem::path(Common::FS::ToU8String(file_name));
     const auto config_file_name = title_id == 0 ? Common::FS::PathToUTF8String(file_path.filename())
                                                 : fmt::format("{:016X}", title_id);
     game_config = std::make_unique<QtConfig>(config_file_name, Config::ConfigType::PerGameConfig);
     addons_tab = std::make_unique<ConfigurePerGameAddons>(system_, this);
-    audio_tab = std::make_unique<ConfigureAudio>(system_, tab_group, *builder, this);
-    cpu_tab = std::make_unique<ConfigureCpu>(system_, tab_group, *builder, this);
-    graphics_advanced_tab =
-        std::make_unique<ConfigureGraphicsAdvanced>(system_, tab_group, *builder, this);
-    graphics_extensions_tab =
-        std::make_unique<ConfigureGraphicsExtensions>(system_, tab_group, *builder, this);
-    graphics_tab = std::make_unique<ConfigureGraphics>(
-        system_, vk_device_records, [&]() { graphics_advanced_tab->ExposeComputeOption(); },
-        [](Settings::AspectRatio, Settings::ResolutionSetup) {}, tab_group, *builder, this);
     input_tab = std::make_unique<ConfigureInputPerGame>(system_, game_config.get(), this);
-    system_tab = std::make_unique<ConfigureSystem>(system_, tab_group, *builder, this);
     network_tab = std::make_unique<ConfigureNetwork>(system_, this);
-    applets_tab = std::make_unique<ConfigureApplets>(system_, tab_group, *builder, this);
+    BuildSettingTabs();
+    if (ConfigurePerGameTweaks::HasContent(title_id)) {
+        tweaks_tab = std::make_unique<ConfigurePerGameTweaks>(title_id, system_, *builder, this);
+        connect(tweaks_tab.get(), &ConfigurePerGameTweaks::ApplyRecommendedRequested, this,
+                &ConfigurePerGame::ApplyRecommendedSettings);
+    }
 
     ui->setupUi(this);
+    AddTabs();
 
-    ui->tabWidget->addTab(addons_tab.get(), tr("Add-Ons"));
-    ui->tabWidget->addTab(system_tab.get(), tr("System"));
-    ui->tabWidget->addTab(cpu_tab.get(), tr("CPU"));
-    ui->tabWidget->addTab(graphics_tab.get(), tr("Graphics"));
-    ui->tabWidget->addTab(graphics_advanced_tab.get(), tr("Adv. Graphics"));
-    ui->tabWidget->addTab(graphics_extensions_tab.get(), tr("Ext. Graphics"));
-    ui->tabWidget->addTab(audio_tab.get(), tr("Audio"));
-    ui->tabWidget->addTab(input_tab.get(), tr("Input Profiles"));
-    ui->tabWidget->addTab(network_tab.get(), tr("Network"));
-    ui->tabWidget->addTab(applets_tab.get(), tr("Applets"));
+    if (tweaks_tab != nullptr) {
+        connect(ui->tabWidget, &QTabWidget::currentChanged, this, [this](int index) {
+            if (ui->tabWidget->widget(index) == tweaks_tab.get() && !system.IsPoweredOn()) {
+                ApplySettingTabs();
+                tweaks_tab->RefreshRecommendations();
+            }
+        });
+    }
 
     setFocusPolicy(Qt::ClickFocus);
     setWindowTitle(tr("Properties"));
@@ -105,9 +104,70 @@ ConfigurePerGame::ConfigurePerGame(QWidget* parent, u64 title_id_, const std::st
 
 ConfigurePerGame::~ConfigurePerGame() = default;
 
-void ConfigurePerGame::ApplyConfiguration() {
+void ConfigurePerGame::BuildSettingTabs() {
+    tab_group->clear();
+    audio_tab = std::make_unique<ConfigureAudio>(system, tab_group, *builder, this);
+    cpu_tab = std::make_unique<ConfigureCpu>(system, tab_group, *builder, this);
+    graphics_advanced_tab =
+        std::make_unique<ConfigureGraphicsAdvanced>(system, tab_group, *builder, this);
+    graphics_extensions_tab =
+        std::make_unique<ConfigureGraphicsExtensions>(system, tab_group, *builder, this);
+    graphics_tab = std::make_unique<ConfigureGraphics>(
+        system, vk_device_records, [&]() { graphics_advanced_tab->ExposeComputeOption(); },
+        [](Settings::AspectRatio, Settings::ResolutionSetup) {}, tab_group, *builder, this);
+    frame_gen_tab = std::make_unique<ConfigureFrameGeneration>(system, tab_group, *builder, this);
+    system_tab = std::make_unique<ConfigureSystem>(system, tab_group, *builder, this);
+    applets_tab = std::make_unique<ConfigureApplets>(system, tab_group, *builder, this);
+}
+
+void ConfigurePerGame::AddTabs() {
+    ui->tabWidget->clear();
+    ui->tabWidget->addTab(addons_tab.get(), tr("Add-Ons"));
+    if (tweaks_tab != nullptr) {
+        ui->tabWidget->addTab(tweaks_tab.get(), tr("Tweaks"));
+    }
+    ui->tabWidget->addTab(system_tab.get(), tr("System"));
+    ui->tabWidget->addTab(cpu_tab.get(), tr("CPU"));
+    ui->tabWidget->addTab(graphics_tab.get(), tr("Graphics"));
+    ui->tabWidget->addTab(graphics_advanced_tab.get(), tr("Adv. Graphics"));
+    ui->tabWidget->addTab(graphics_extensions_tab.get(), tr("Ext. Graphics"));
+    ui->tabWidget->addTab(frame_gen_tab.get(), tr("Frame Gen."));
+    ui->tabWidget->addTab(audio_tab.get(), tr("Audio"));
+    ui->tabWidget->addTab(input_tab.get(), tr("Input Profiles"));
+    ui->tabWidget->addTab(network_tab.get(), tr("Network"));
+    ui->tabWidget->addTab(applets_tab.get(), tr("Applets"));
+}
+
+void ConfigurePerGame::ApplySettingTabs() {
     for (const auto tab : *tab_group) {
         tab->ApplyConfiguration();
+    }
+}
+
+void ConfigurePerGame::ApplyRecommendedSettings(const std::set<std::string>& keys) {
+    const auto* preset = Settings::FindGamePreset(title_id);
+    if (preset == nullptr || keys.empty() || system.IsPoweredOn()) {
+        return;
+    }
+    // Keep the edits made in the other tabs, then rebuild them to show the new values.
+    ApplySettingTabs();
+    Settings::SetRecommendedSettings(Settings::values, *preset, false, &keys);
+
+    QWidget* const current = ui->tabWidget->currentWidget();
+    {
+        [[maybe_unused]] const QSignalBlocker blocker(ui->tabWidget);
+        ui->tabWidget->clear();
+        BuildSettingTabs();
+        AddTabs();
+        ui->tabWidget->setCurrentWidget(current);
+    }
+    tweaks_tab->RefreshRecommendations();
+}
+
+void ConfigurePerGame::ApplyConfiguration() {
+    ApplySettingTabs();
+    if (tweaks_tab != nullptr) {
+        tweaks_tab->ApplyConfiguration();
     }
     addons_tab->ApplyConfiguration();
     input_tab->ApplyConfiguration();

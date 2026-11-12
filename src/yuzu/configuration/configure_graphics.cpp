@@ -34,6 +34,7 @@
 #include "qt_common/util/vk.h"
 #include "ui_configure_graphics.h"
 #include "yuzu/configuration/configuration_shared.h"
+#include "yuzu/configuration/configure_frame_generation.h"
 #include "yuzu/configuration/configure_graphics.h"
 #include "yuzu/configuration/nvidia_dlss_panel.h"
 #include "yuzu/configuration/shared_widget.h"
@@ -219,13 +220,15 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
 
     std::map<u32, QWidget*> hold_graphics;
     std::vector<QWidget*> hold_api;
-    QCheckBox* frame_gen_checkbox = nullptr;
     QCheckBox* dlss_checkbox = nullptr;
     ConfigurationShared::Widget* dlss_quality_widget = nullptr;
     ConfigurationShared::Widget* scaling_filter_widget = nullptr;
     ConfigurationShared::Widget* anti_aliasing_widget = nullptr;
 
     for (const auto setting : Settings::values.linkage.by_category[Settings::Category::Renderer]) {
+        if (ConfigureFrameGeneration::IsFrameGenerationSetting(setting->Id())) {
+            continue;
+        }
 #ifndef HAS_RESHADE
         if (setting->Id() == Settings::values.post_shader_enabled.Id()) {
             continue;
@@ -359,9 +362,6 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
         } else if (setting->Id() == Settings::values.anti_aliasing.Id()) {
             anti_aliasing_widget = widget;
             hold_graphics.emplace(setting->Id(), widget);
-        } else if (setting->Id() == Settings::values.frame_gen.Id()) {
-            frame_gen_checkbox = widget->checkbox;
-            hold_graphics.emplace(setting->Id(), widget);
         } else {
             hold_graphics.emplace(setting->Id(), widget);
         }
@@ -410,21 +410,6 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
         };
         apply_dlss_lock(dlss_checkbox->isChecked());
         connect(dlss_checkbox, &QCheckBox::toggled, this, apply_dlss_lock);
-    }
-
-    // Hide rather than disable, a disabled widget would read as using the global value
-    if (frame_gen_checkbox != nullptr) {
-        for (const u32 id : {Settings::values.frame_gen_type.Id(),
-                             Settings::values.frame_gen_multiplier.Id(),
-                             Settings::values.frame_gen_target_rate.Id(),
-                             Settings::values.frame_gen_flow_scale_auto.Id(),
-                             Settings::values.frame_gen_flow_scale.Id(),
-                             Settings::values.frame_gen_queue_target.Id()}) {
-            if (const auto it = hold_graphics.find(id); it != hold_graphics.end()) {
-                it->second->setVisible(frame_gen_checkbox->isChecked());
-                connect(frame_gen_checkbox, &QCheckBox::toggled, it->second, &QWidget::setVisible);
-            }
-        }
     }
 
     for (auto widget : hold_api) {
