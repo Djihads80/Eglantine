@@ -26,10 +26,7 @@ extern const bool g_is_nightly_build;
 
 extern const char g_build_auto_update_website[];
 extern const char g_build_auto_update_api[];
-extern const char g_build_auto_update_api_path[];
 extern const char g_build_auto_update_repo[];
-extern const char g_build_auto_update_stable_api[];
-extern const char g_build_auto_update_stable_api_path[];
-extern const char g_build_auto_update_stable_repo[];
+extern const char g_build_release_platform[];
 
 } // namespace Common

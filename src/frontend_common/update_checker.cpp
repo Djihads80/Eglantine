@@ -18,8 +18,9 @@
 #include "common/logging.h"
 
 std::optional<Common::Net::Release> UpdateChecker::GetUpdate() {
-    const auto latest = Common::Net::GetLatestRelease();
-    if (!latest) return std::nullopt;
+    const auto list = Common::Net::GetReleases();
+    if (list.releases.empty()) return std::nullopt;
+    const std::optional<Common::Net::Release> latest = list.releases.front();
 
     LOG_INFO(Frontend, "Received update {}", latest->title);
 
