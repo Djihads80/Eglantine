@@ -112,6 +112,14 @@ TEST_CASE("NX2 frame interval follows whether 60 fps holds", "[core][nx2_frame_i
         REQUIRE(spiky(600) == 1);
     }
 
+    SECTION("A pause during a try forgets the frames before it") {
+        REQUIRE(Run(controller, now, 22ms, 60) == 2);
+        Until(controller, now, 33'333'333ns, 1);
+        REQUIRE(Run(controller, now, 35ms, 5) == 1); // 2 skipped + 3 slow measured
+        REQUIRE(Run(controller, now, 2s, 1) == 1);
+        REQUIRE(Run(controller, now, 16'666'666ns, 40) == 1);
+    }
+
     SECTION("A try at 50 fps goes back to 2 after half a second") {
         REQUIRE(Run(controller, now, 22ms, 60) == 2);
         Until(controller, now, 33'333'333ns, 1);

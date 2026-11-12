@@ -3842,14 +3842,16 @@ private:
     bool UpdateSyncptValues() {
         auto& manager = system.Host1x().GetSyncpointManager();
         bool changed = false;
-        for (u32 id = 0; id < std::min(m_syncpt_count, HostSyncpoints); ++id) {
-            const u64 value = manager.GetGuestSyncpointValue(id);
-            const u64 address = m_syncpt_ro + SyncptValuesOffset + id * 8;
-            if (m_syncpt_memory->Read64(address) != value) {
-                m_syncpt_memory->Write64(address, value);
-                changed = true;
+        manager.WithGuestValuesStable([&] {
+            for (u32 id = 0; id < std::min(m_syncpt_count, HostSyncpoints); ++id) {
+                const u64 value = manager.GetGuestSyncpointValue(id);
+                const u64 address = m_syncpt_ro + SyncptValuesOffset + id * 8;
+                if (m_syncpt_memory->Read64(address) != value) {
+                    m_syncpt_memory->Write64(address, value);
+                    changed = true;
+                }
             }
-        }
+        });
         return changed;
     }
 

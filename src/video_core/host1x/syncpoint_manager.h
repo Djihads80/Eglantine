@@ -55,11 +55,19 @@ public:
 
     void IncrementGuest(u32 syncpoint_id);
 
-    /// Called with a syncpoint's guest value after every guest increment, before the actions
-    /// it meets run (empty to stop). Switch 2 clients read syncpoint values from a page the
+    /// Called with a syncpoint's new guest value on every guest increment, before the value is
+    /// published and the actions it meets run (empty to stop). Switch 2 clients read syncpoint values from a page the
     /// gsv service fills, and an action may wake a client that reads it right away.
     using GuestMirror = std::function<void(u32 syncpoint_id, u32 value)>;
     void SetGuestMirror(GuestMirror mirror);
+
+    /// Runs func with guest increments held off, so a copy of the guest values it makes can't
+    /// overwrite a newer value the mirror wrote.
+    template <typename Func>
+    void WithGuestValuesStable(Func&& func) {
+        std::scoped_lock lk(guard);
+        func();
+    }
 
     void IncrementHost(u32 syncpoint_id);
 

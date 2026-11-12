@@ -289,7 +289,10 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
             std::memcpy(&value, image + offset, sizeof(value));
             return value;
         };
-        const auto adrp_page = [](u64 pc, u32 insn) {
+        const auto fits = [image_end](u64 offset, u64 size) {
+            return image_end >= size && offset <= image_end - size;
+        };
+        const auto adrp_page =[](u64 pc, u32 insn) {
             s64 pages = static_cast<s64>((((insn >> 5) & 0x7FFFF) << 2) | ((insn >> 29) & 3));
             if (pages & (s64{1} << 20)) {
                 pages -= s64{1} << 21;
@@ -313,14 +316,13 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
             frame_interval_offset = adrp_page(pc - 8, adrp_global) + ((add_global >> 10) & 0xFFF);
             const u64 got = adrp_page(pc - 32, adrp_got) + ((ldr_got >> 10) & 0xFFF) * 8;
             frame_interval_source_offset = 0;
-            if (got + sizeof(u64) <= image_end) {
+            if (fits(got, sizeof(u64))) {
                 // Not relocated yet: the entry still holds the module-relative address.
                 std::memcpy(&frame_interval_source_offset, image + got, sizeof(u64));
             }
         }
-        if (matches == 1 && frame_interval_offset + sizeof(u32) <= image_end &&
-            frame_interval_source_offset != 0 &&
-            frame_interval_source_offset + sizeof(u32) <= image_end) {
+        if (matches == 1 && fits(frame_interval_offset, sizeof(u32)) &&
+            frame_interval_source_offset != 0 && fits(frame_interval_source_offset, sizeof(u32))) {
             LOG_INFO(Loader, "Hyrule Warriors frame interval at main+{:#x} (from main+{:#x})",
                      frame_interval_offset, frame_interval_source_offset);
         } else {

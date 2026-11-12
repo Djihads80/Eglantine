@@ -37,6 +37,7 @@ public:
             // Loading or a pause: not a frame rate to react to.
             ResetWindow();
             probe_frames = 0;
+            probe_sum = {};
             return interval;
         }
         if (probing) {
