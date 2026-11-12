@@ -4076,6 +4076,17 @@ void TextureCache<P>::CopyImage(ImageId dst_id, ImageId src_id, std::vector<Imag
     if (copies.empty()) {
         return;
     }
+    // EDEN_NX2_ALIAS_SKIP_TEST=1 (measurement only, the picture is wrong): no copy between two
+    // images of one format and height whose widths differ by less than a block-linear tile, to
+    // tell what those copies cost.
+    if (static const bool skip_test = std::getenv("EDEN_NX2_ALIAS_SKIP_TEST") != nullptr;
+        skip_test && dst.info.format == src.info.format &&
+        dst.info.size.height == src.info.size.height &&
+        dst.info.size.width != src.info.size.width &&
+        (std::max)(dst.info.size.width, src.info.size.width) -
+                (std::min)(dst.info.size.width, src.info.size.width) < 64) [[unlikely]] {
+        return;
+    }
     // EDEN_NX2_ALIAS_LOG=1: every 10 s, the copies between aliased images by formats and sizes.
     if (static const bool log_copies = std::getenv("EDEN_NX2_ALIAS_LOG") != nullptr; log_copies)
         [[unlikely]] {
