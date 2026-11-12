@@ -20,6 +20,11 @@ namespace VideoCommon::ShaderWarm {
 /// matches, so the two must move together (vk_pipeline_cache.cpp checks it).
 constexpr u32 WarmCacheVersion = 33;
 
+/// What the builder finds in the game files, recorded in the precache's count file. A file built by
+/// an older builder is rebuilt at boot (RefreshWarmFiles). 2: Mario Kart World's .esetb effects.
+/// 3: .ptcl particle effects (Fire Emblem).
+constexpr u32 WarmBuilderVersion = 3;
+
 using ComputeKey = std::array<u8, 24>;
 
 /// A compute program lowered and laid out like GenericEnvironment::LowerNativeCode.

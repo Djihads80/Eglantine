@@ -49,6 +49,7 @@
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/nx2_draw_stats.h"
+#include "video_core/nx2_spikes.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
@@ -2204,22 +2205,45 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
 
 bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
     DEBUG_ASSERT(addr != 0 || size != 0);
+    namespace Spikes = VideoCommon::Nx2Spikes;
+    using SpikeClock = Spikes::Clock;
+    const bool spikes = Spikes::Counting();
+    const auto started = spikes ? SpikeClock::now() : SpikeClock::time_point{};
+    SpikeClock::duration lock_wait{};
+    const auto finish = [&] {
+        if (spikes) {
+            Spikes::Note(Spikes::Event::CpuWriteInvalidate, SpikeClock::now() - started, size);
+            if (lock_wait > std::chrono::microseconds{2}) {
+                Spikes::Note(Spikes::Event::CpuWriteLockWait, lock_wait);
+            }
+        }
+    };
     {
         VideoCommon::Nx2DrawStats::LockTimer lock_probe{VideoCommon::Nx2DrawStats::Site::LockCpuWrite};
+        const auto lock_start = spikes ? SpikeClock::now() : SpikeClock::time_point{};
         std::scoped_lock lock{buffer_cache.mutex};
+        if (spikes) {
+            lock_wait += SpikeClock::now() - lock_start;
+        }
         lock_probe.Acquired();
         if (buffer_cache.OnCPUWrite(addr, size)) {
             // The shader cache sees this write later (InvalidateGPUCache): proofs of programs
             // there must stop now, before the guest submits work that uses the new code.
             Tegra::Nx2NoteDeferredCodeWrite(addr, size);
+            finish();
             return true;
         }
     }
     {
+        const auto lock_start = spikes ? SpikeClock::now() : SpikeClock::time_point{};
         std::scoped_lock lock{texture_cache.mutex};
+        if (spikes) {
+            lock_wait += SpikeClock::now() - lock_start;
+        }
         texture_cache.WriteMemory(addr, size);
     }
     pipeline_cache.InvalidateRegion(addr, size);
+    finish();
     return false;
 }
 

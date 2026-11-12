@@ -49,16 +49,156 @@ constexpr std::array<const char*, NumCounters> counter_names{
     "method_writes",   "same_value_writes", "acquire_checks",   "acquire_waits",
     "dma_reads_drained", "dma_reads_skipped"};
 constexpr std::array<const char*, NumEvents> event_names{
-    "driver pipeline builds", "driver compiles (over 10 ms)", "pipelines built on the GPU thread",
-    "draws skipped for translation"};
+    "driver pipeline builds",
+    "driver compiles (over 10 ms)",
+    "pipelines built on the GPU thread",
+    "draws skipped for translation",
+    "CPU writes to GPU-cached pages",
+    "CPU writes reaching the GPU caches",
+    "CPU write waits for a GPU cache lock",
+    "page protection changes",
+    "read traps hit",
+    "JIT blocks compiled",
+    "JIT fastmem recompiles",
+    "JIT invalidations",
+    "JIT cache clears",
+    "SVCs",
+    "SVC sleep/yield",
+    "SVC WaitSynchronization",
+    "SVC mutex/condvar",
+    "SVC address arbiter",
+    "SVC IPC"};
+constexpr std::array<const char*, NumEvents> event_units{
+    nullptr, nullptr, nullptr, nullptr, "bytes", "bytes", nullptr, "pages", nullptr, nullptr,
+    nullptr, "bytes", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+constexpr size_t GuestThreadsPerSpike = 8;
 
 double Ms(Clock::duration d) {
     return std::chrono::duration<double, std::milli>(d).count();
 }
 
 std::atomic<bool> g_enabled{};
-std::array<std::atomic<u64>, NumEvents> g_event_count{};
-std::array<std::atomic<u64>, NumEvents> g_event_ns{};
+/// The recorder and open Windows: events are counted while above zero.
+std::atomic<int> g_counting{};
+
+// Events are counted in per-thread shards: CPU write events come from every guest core at once.
+struct alignas(64) Shard {
+    std::array<std::atomic<u64>, NumEvents> count{};
+    std::array<std::atomic<u64>, NumEvents> ns{};
+    std::array<std::atomic<u64>, NumEvents> amount{};
+};
+constexpr size_t NumShards = 16;
+std::array<Shard, NumShards> g_shards{};
+
+Shard& ThisThreadShard() {
+    static std::atomic<u32> next{};
+    thread_local const u32 index = next.fetch_add(1, std::memory_order_relaxed) % NumShards;
+    return g_shards[index];
+}
+
+struct Polled {
+    std::atomic<u64 (*)()> count{};
+    std::atomic<u64 (*)()> ns{};
+};
+std::array<Polled, NumEvents> g_polled{};
+
+struct EventTotals {
+    std::array<u64, NumEvents> count{};
+    std::array<u64, NumEvents> ns{};
+    std::array<u64, NumEvents> amount{};
+};
+
+EventTotals ReadEvents() {
+    EventTotals totals;
+    for (const Shard& shard : g_shards) {
+        for (size_t i = 0; i < NumEvents; ++i) {
+            totals.count[i] += shard.count[i].load(std::memory_order_relaxed);
+            totals.ns[i] += shard.ns[i].load(std::memory_order_relaxed);
+            totals.amount[i] += shard.amount[i].load(std::memory_order_relaxed);
+        }
+    }
+    for (size_t i = 0; i < NumEvents; ++i) {
+        if (const auto count = g_polled[i].count.load(std::memory_order_relaxed)) {
+            totals.count[i] += count();
+        }
+        if (const auto ns = g_polled[i].ns.load(std::memory_order_relaxed)) {
+            totals.ns[i] += ns();
+        }
+    }
+    return totals;
+}
+
+std::vector<EventTimes> EventDifference(const EventTotals& before, const EventTotals& after) {
+    std::vector<EventTimes> result;
+    for (size_t i = 0; i < NumEvents; ++i) {
+        const u64 count = after.count[i] - before.count[i];
+        if (count != 0) {
+            result.push_back({event_names[i], count,
+                              static_cast<double>(after.ns[i] - before.ns[i]) / 1e6,
+                              after.amount[i] - before.amount[i], event_units[i]});
+        }
+    }
+    return result;
+}
+
+// Guest thread CPU times, read from the core's source.
+std::mutex g_guest_mutex;
+GuestThreadSource g_guest_source{};
+
+struct GuestSnapshot {
+    bool valid{};
+    Clock::time_point when;
+    u64 clock{};
+    std::vector<GuestThreadTicks> threads;
+};
+
+GuestSnapshot TakeGuestSnapshot() {
+    GuestSnapshot snap;
+    std::scoped_lock lock{g_guest_mutex};
+    if (g_guest_source.read == nullptr) {
+        return snap;
+    }
+    snap.when = Clock::now();
+    snap.valid = g_guest_source.read(g_guest_source.user, snap.threads, snap.clock);
+    return snap;
+}
+
+/// The busiest guest threads between two snapshots, in host ms (the guest clock is scaled by
+/// how far it moved against wall time).
+std::vector<GuestThreadTimes> GuestDifference(const GuestSnapshot& before,
+                                              const GuestSnapshot& after, size_t limit) {
+    std::vector<GuestThreadTimes> result;
+    if (!before.valid || !after.valid || after.clock <= before.clock || after.when <= before.when) {
+        return result;
+    }
+    const double ms_per_tick =
+        Ms(after.when - before.when) / static_cast<double>(after.clock - before.clock);
+    std::vector<std::pair<u64, const GuestThreadTicks*>> busy;
+    for (const GuestThreadTicks& now : after.threads) {
+        const auto it = std::find_if(before.threads.begin(), before.threads.end(),
+                                     [&](const GuestThreadTicks& t) { return t.id == now.id; });
+        const u64 old = it != before.threads.end() ? it->ticks : 0;
+        if (now.ticks > old) {
+            busy.emplace_back(now.ticks - old, &now);
+        }
+    }
+    std::sort(busy.begin(), busy.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    if (busy.size() > limit) {
+        busy.resize(limit);
+    }
+    std::scoped_lock lock{g_guest_mutex};
+    for (const auto& [ticks, thread] : busy) {
+        const double ms = static_cast<double>(ticks) * ms_per_tick;
+        if (ms < 0.05) {
+            continue;
+        }
+        std::string name = g_guest_source.name != nullptr
+                               ? g_guest_source.name(g_guest_source.user, thread->id)
+                               : std::string{};
+        result.push_back({thread->id, std::move(name), thread->core, ms});
+    }
+    return result;
+}
 
 struct GpuSnapshot {
     std::string thread;
@@ -228,8 +368,8 @@ struct State {
     double median_ms{};
     u64 presents{};
     std::vector<GpuSnapshot> last_gpu;
-    std::array<u64, NumEvents> last_event_count{};
-    std::array<u64, NumEvents> last_event_ns{};
+    EventTotals last_events;
+    GuestSnapshot last_guest;
     u64 last_log_sequence{};
     std::vector<PendingSpike> pending;
     std::deque<Spike> recent;
@@ -258,6 +398,44 @@ Sampler& GetSampler() {
     return sampler;
 }
 
+#ifdef __linux__
+/// Host thread times between two samples: the busiest `limit` threads, plus any that waited long
+/// for a CPU. `names` caches thread names by tid.
+std::vector<HostThreadTimes> HostDifference(const HostSample& before, const HostSample& after,
+                                            std::unordered_map<int, std::string>& names,
+                                            size_t limit) {
+    std::vector<HostThreadTimes> host;
+    for (const TaskTimes& task : after.tasks) {
+        const auto it = std::find_if(before.tasks.begin(), before.tasks.end(),
+                                     [&](const TaskTimes& t) { return t.tid == task.tid; });
+        const u64 run = task.run_ns - (it != before.tasks.end() ? it->run_ns : 0);
+        const u64 wait = task.wait_ns - (it != before.tasks.end() ? it->wait_ns : 0);
+        if (run < 500'000 && wait < 500'000) {
+            continue;
+        }
+        auto [name, inserted] = names.try_emplace(task.tid);
+        if (inserted) {
+            name->second = ThreadName(task.tid);
+        }
+        host.push_back({name->second, task.tid, static_cast<double>(run) / 1e6,
+                        static_cast<double>(wait) / 1e6});
+    }
+    std::sort(host.begin(), host.end(),
+              [](const HostThreadTimes& a, const HostThreadTimes& b) { return a.cpu_ms > b.cpu_ms; });
+    if (host.size() > limit) {
+        // Keep the threads that waited long for a CPU even when they ran little.
+        const double long_wait = 5.0 * std::max(1.0, Ms(after.when - before.when) / 100.0);
+        std::stable_partition(host.begin() + limit, host.end(),
+                              [&](const HostThreadTimes& t) { return t.run_queue_ms >= long_wait; });
+        const auto waited_end =
+            std::find_if(host.begin() + limit, host.end(),
+                         [&](const HostThreadTimes& t) { return t.run_queue_ms < long_wait; });
+        host.erase(waited_end, host.end());
+    }
+    return host;
+}
+#endif
+
 void FillHost(Spike& spike, Clock::time_point start, Clock::time_point end) {
 #ifdef __linux__
     auto& sampler = GetSampler();
@@ -279,33 +457,7 @@ void FillHost(Spike& spike, Clock::time_point start, Clock::time_point end) {
     spike.minor_faults = after->minor_faults - before->minor_faults;
     spike.major_faults = after->major_faults - before->major_faults;
     spike.read_kib = (after->read_bytes - before->read_bytes) / 1024;
-    for (const TaskTimes& task : after->tasks) {
-        const auto it = std::find_if(before->tasks.begin(), before->tasks.end(),
-                                     [&](const TaskTimes& t) { return t.tid == task.tid; });
-        const u64 run = task.run_ns - (it != before->tasks.end() ? it->run_ns : 0);
-        const u64 wait = task.wait_ns - (it != before->tasks.end() ? it->wait_ns : 0);
-        if (run < 500'000 && wait < 500'000) {
-            continue;
-        }
-        auto [name, inserted] = sampler.names.try_emplace(task.tid);
-        if (inserted) {
-            name->second = ThreadName(task.tid);
-        }
-        spike.host.push_back({name->second, task.tid, static_cast<double>(run) / 1e6,
-                              static_cast<double>(wait) / 1e6});
-    }
-    std::sort(spike.host.begin(), spike.host.end(),
-              [](const HostThreadTimes& a, const HostThreadTimes& b) { return a.cpu_ms > b.cpu_ms; });
-    if (spike.host.size() > HostThreadsPerSpike) {
-        // Keep the threads that waited long for a CPU even when they ran little.
-        std::stable_partition(spike.host.begin() + HostThreadsPerSpike, spike.host.end(),
-                              [](const HostThreadTimes& t) { return t.run_queue_ms >= 5.0; });
-        const auto waited_end = std::find_if(spike.host.begin() + HostThreadsPerSpike,
-                                             spike.host.end(), [](const HostThreadTimes& t) {
-                                                 return t.run_queue_ms < 5.0;
-                                             });
-        spike.host.erase(waited_end, spike.host.end());
-    }
+    spike.host = HostDifference(*before, *after, sampler.names, HostThreadsPerSpike);
 #else
     static_cast<void>(spike);
     static_cast<void>(start);
@@ -416,6 +568,7 @@ void SetEnabled(bool enabled) {
             Profile::SetEnabled(true);
         }
         Profile::g_publish.store(true, std::memory_order_relaxed);
+        g_counting.fetch_add(1, std::memory_order_relaxed);
         state.turned_ring_on = Common::Log::RingCapacity() == 0;
         if (state.turned_ring_on) {
             Common::Log::SetRingCapacity(RingLines);
@@ -429,6 +582,7 @@ void SetEnabled(bool enabled) {
         return;
     }
     g_enabled.store(false, std::memory_order_relaxed);
+    g_counting.fetch_sub(1, std::memory_order_relaxed);
     FinishPending(state, std::nullopt, true);
     lock.unlock();
     // Joined without the state mutex: the sampler takes it.
@@ -452,14 +606,35 @@ void Configure(double min_ms, double ratio) {
     state.ratio = ratio;
 }
 
-void Note(Event event, Clock::duration time) {
-    if (!Enabled()) {
+bool Counting() {
+    return g_counting.load(std::memory_order_relaxed) > 0;
+}
+
+void Note(Event event, Clock::duration time, u64 amount) {
+    if (!Counting()) {
         return;
     }
     const auto index = static_cast<size_t>(event);
-    g_event_count[index].fetch_add(1, std::memory_order_relaxed);
-    g_event_ns[index].fetch_add(static_cast<u64>(std::chrono::nanoseconds{time}.count()),
-                                std::memory_order_relaxed);
+    Shard& shard = ThisThreadShard();
+    shard.count[index].fetch_add(1, std::memory_order_relaxed);
+    if (time != Clock::duration{}) {
+        shard.ns[index].fetch_add(static_cast<u64>(std::chrono::nanoseconds{time}.count()),
+                                  std::memory_order_relaxed);
+    }
+    if (amount != 0) {
+        shard.amount[index].fetch_add(amount, std::memory_order_relaxed);
+    }
+}
+
+void SetPolled(Event event, u64 (*count)(), u64 (*ns)()) {
+    const auto index = static_cast<size_t>(event);
+    g_polled[index].count.store(count, std::memory_order_relaxed);
+    g_polled[index].ns.store(ns, std::memory_order_relaxed);
+}
+
+void SetGuestThreadSource(GuestThreadSource source) {
+    std::scoped_lock lock{g_guest_mutex};
+    g_guest_source = source;
 }
 
 void OnPresent(Clock::time_point entered, Clock::time_point waited, Clock::time_point composited,
@@ -469,12 +644,8 @@ void OnPresent(Clock::time_point entered, Clock::time_point waited, Clock::time_
         return;
     }
     auto gpu = TakeGpuSnapshot();
-    std::array<u64, NumEvents> event_count;
-    std::array<u64, NumEvents> event_ns;
-    for (size_t i = 0; i < NumEvents; ++i) {
-        event_count[i] = g_event_count[i].load(std::memory_order_relaxed);
-        event_ns[i] = g_event_ns[i].load(std::memory_order_relaxed);
-    }
+    const EventTotals events = ReadEvents();
+    GuestSnapshot guest = TakeGuestSnapshot();
     const u64 log_sequence = Common::Log::RingNewestSequence();
 
     auto& state = GetState();
@@ -498,14 +669,8 @@ void OnPresent(Clock::time_point entered, Clock::time_point waited, Clock::time_
             s.composite_ms = Ms(state.last_composite);
             s.pace_ms = Ms(state.last_pace);
             s.gpu = GpuDifference(state.last_gpu, gpu, frame);
-            for (size_t i = 0; i < NumEvents; ++i) {
-                const u64 count = event_count[i] - state.last_event_count[i];
-                if (count != 0) {
-                    s.events.push_back({event_names[i], count,
-                                        static_cast<double>(event_ns[i] - state.last_event_ns[i]) /
-                                            1e6});
-                }
-            }
+            s.events = EventDifference(state.last_events, events);
+            s.guest = GuestDifference(state.last_guest, guest, GuestThreadsPerSpike);
             if (log_sequence > state.last_log_sequence) {
                 const auto lines = Common::Log::ReadRing(state.last_log_sequence);
                 const size_t first = lines.size() > LogLinesPerSpike ? lines.size() - LogLinesPerSpike : 0;
@@ -545,8 +710,8 @@ void OnPresent(Clock::time_point entered, Clock::time_point waited, Clock::time_
     state.last_composite = composited - waited;
     state.last_pace = paced - composited;
     state.last_gpu = std::move(gpu);
-    state.last_event_count = event_count;
-    state.last_event_ns = event_ns;
+    state.last_events = events;
+    state.last_guest = std::move(guest);
     state.last_log_sequence = log_sequence;
 }
 
@@ -599,10 +764,69 @@ std::string Summary(const Spike& s) {
         line += fmt::format(" | page faults {} minor {} major, read {} KiB", s.minor_faults,
                             s.major_faults, s.read_kib);
     }
+    if (!s.guest.empty()) {
+        line += " | guest threads:";
+        for (size_t i = 0; i < s.guest.size() && i < 4; ++i) {
+            line += fmt::format(" {} ({}) {:.1f}", s.guest[i].name, s.guest[i].id, s.guest[i].cpu_ms);
+        }
+    }
     for (const EventTimes& event : s.events) {
-        line += fmt::format(" | {} {} ({:.1f} ms)", event.count, event.event, event.ms);
+        line += fmt::format(" | {} {} ({:.1f} ms", event.count, event.event, event.ms);
+        if (event.unit != nullptr) {
+            line += fmt::format(", {} {}", event.amount, event.unit);
+        }
+        line += ")";
     }
     return line;
+}
+
+struct Window::Impl {
+    Clock::time_point started;
+    EventTotals events;
+    GuestSnapshot guest;
+    bool finished{};
+#ifdef __linux__
+    HostSample host;
+#endif
+};
+
+Window::Window() : impl{std::make_unique<Impl>()} {
+    g_counting.fetch_add(1, std::memory_order_relaxed);
+    impl->started = Clock::now();
+    impl->events = ReadEvents();
+    impl->guest = TakeGuestSnapshot();
+#ifdef __linux__
+    impl->host = TakeHostSample();
+#endif
+}
+
+Window::~Window() {
+    if (!impl->finished) {
+        g_counting.fetch_sub(1, std::memory_order_relaxed);
+    }
+}
+
+WindowReport Window::Finish(size_t max_threads) {
+    WindowReport report;
+    const EventTotals events = ReadEvents();
+    const GuestSnapshot guest = TakeGuestSnapshot();
+    report.seconds = std::chrono::duration<double>(Clock::now() - impl->started).count();
+    report.events = EventDifference(impl->events, events);
+    report.guest = GuestDifference(impl->guest, guest, max_threads);
+#ifdef __linux__
+    const HostSample host = TakeHostSample();
+    std::unordered_map<int, std::string> names;
+    report.host_sampled = true;
+    report.host = HostDifference(impl->host, host, names, max_threads);
+    report.minor_faults = host.minor_faults - impl->host.minor_faults;
+    report.major_faults = host.major_faults - impl->host.major_faults;
+    report.read_kib = (host.read_bytes - impl->host.read_bytes) / 1024;
+#endif
+    if (!impl->finished) {
+        impl->finished = true;
+        g_counting.fetch_sub(1, std::memory_order_relaxed);
+    }
+    return report;
 }
 
 } // namespace VideoCommon::Nx2Spikes

@@ -139,6 +139,32 @@ ToolResult GpuProfile(ToolContext& ctx, const json& args) {
     return ToolResult::Structured(std::move(out));
 }
 
+json EventsJson(const std::vector<VideoCommon::Nx2Spikes::EventTimes>& events) {
+    json out = json::array();
+    for (const auto& event : events) {
+        json e{{"event", event.event}, {"count", event.count}};
+        if (event.ms != 0.0) {
+            e["ms"] = std::round(event.ms * 100) / 100;
+        }
+        if (event.unit != nullptr) {
+            e[event.unit] = event.amount;
+        }
+        out.push_back(std::move(e));
+    }
+    return out;
+}
+
+json GuestThreadsJson(const std::vector<VideoCommon::Nx2Spikes::GuestThreadTimes>& threads) {
+    json out = json::array();
+    for (const auto& thread : threads) {
+        out.push_back({{"id", thread.id},
+                       {"name", thread.name},
+                       {"core", thread.core},
+                       {"cpu_ms", std::round(thread.cpu_ms * 100) / 100}});
+    }
+    return out;
+}
+
 #ifdef _WIN32
 /// CPU time (100 ns units) and name of every thread of this process.
 std::map<u32, std::pair<std::string, u64>> SampleHostThreads() {
@@ -202,6 +228,7 @@ ToolResult PerfSample(ToolContext& ctx, const json& args) {
 #ifdef _WIN32
     const auto threads_before = SampleHostThreads();
 #endif
+    VideoCommon::Nx2Spikes::Window window;
     const auto started = steady_clock::now();
     const u64 profile_from = Profile::Now();
     std::vector<double> intervals_ms;
@@ -227,6 +254,7 @@ ToolResult PerfSample(ToolContext& ctx, const json& args) {
 #ifdef _WIN32
     const auto threads_after = SampleHostThreads();
 #endif
+    const VideoCommon::Nx2Spikes::WindowReport window_report = window.Finish(12);
 
     json out;
     out["seconds"] = std::round(wall_s * 10) / 10;
@@ -267,7 +295,34 @@ ToolResult PerfSample(ToolContext& ctx, const json& args) {
         threads.push_back(std::move(rows[i].second));
     }
     out["host_threads"] = std::move(threads);
+#else
+    if (window_report.host_sampled) {
+        json threads = json::array();
+        for (const auto& thread : window_report.host) {
+            const double pct = thread.cpu_ms / (window_report.seconds * 10.0);
+            json row{{"thread", thread.name}, {"cpu_pct", std::round(pct)}};
+            if (thread.run_queue_ms >= 1.0) {
+                row["waited_for_cpu_pct"] =
+                    std::round(thread.run_queue_ms / (window_report.seconds * 10.0) * 10) / 10;
+            }
+            threads.push_back(std::move(row));
+        }
+        out["host_threads"] = std::move(threads);
+        out["page_faults"] = {{"minor", window_report.minor_faults},
+                              {"major", window_report.major_faults},
+                              {"read_kib", window_report.read_kib}};
+    }
 #endif
+    {
+        // Per second of the window, so windows of different lengths compare.
+        json guest = GuestThreadsJson(window_report.guest);
+        for (auto& thread : guest) {
+            thread["cpu_pct"] =
+                std::round(thread["cpu_ms"].get<double>() / (window_report.seconds * 10.0));
+        }
+        out["guest_threads"] = std::move(guest);
+        out["events"] = EventsJson(window_report.events);
+    }
 
     if (profile) {
         const auto deadline = steady_clock::now() + milliseconds{3000};
@@ -356,10 +411,7 @@ json SpikeJson(const VideoCommon::Nx2Spikes::Spike& s) {
                         {"cpu_ms", thread.cpu_ms},
                         {"run_queue_ms", thread.run_queue_ms}});
     }
-    json events = json::array();
-    for (const auto& event : s.events) {
-        events.push_back({{"event", event.event}, {"count", event.count}, {"ms", event.ms}});
-    }
+    json events = EventsJson(s.events);
     json out{{"number", s.number},
              {"present", s.present},
              {"at_s", s.at_s},
@@ -372,6 +424,7 @@ json SpikeJson(const VideoCommon::Nx2Spikes::Spike& s) {
                {"vblank_pacing_ms", s.pace_ms}}},
              {"gpu_threads", std::move(gpu)},
              {"events", std::move(events)},
+             {"guest_threads", GuestThreadsJson(s.guest)},
              {"log", s.log}};
     if (s.host_sampled) {
         out["host"] = {{"span_ms", s.host_span_ms},
@@ -420,7 +473,10 @@ ToolResult FrameSpikes(ToolContext&, const json& args) {
         "again: its CPU work and GPU submits). gpu_threads: profiler zones during the frame "
         "('split drain' on the front = waiting for the back, 'idle'/'split wait' = nothing to "
         "do, 'other (no zone)' = no zone or one still running at the present). host: CPU time and time runnable but waiting for a CPU, per host thread, over "
-        "samples bracketing the frame (Linux).";
+        "samples bracketing the frame (Linux). guest_threads: the game's busiest threads by guest CPU "
+        "time in the frame. events: what the frame counted (CPU writes to GPU-cached pages and "
+        "their GPU cache lock waits, page protection changes, read traps, JIT compiles and "
+        "invalidations, SVCs by kind with the time inside them, blocked time included).";
     return ToolResult::Structured(std::move(out));
 }
 
@@ -481,7 +537,8 @@ void RegisterPerfTools(ToolRegistry& registry) {
         .description =
             "Measure for `seconds` (default 10): frame pacing (average fps, median/p95/p99/worst "
             "frame time, 1% low), a GPU-thread profile covering exactly that window, host CPU per "
-            "emulator thread, and either a baseline check (baseline: name -> similarity score + "
+            "emulator thread (with run-queue wait and page faults on Linux), guest CPU per game "
+            "thread, event totals (CPU writes to GPU-cached pages, lock waits, JIT, SVCs by kind), and either a baseline check (baseline: name -> similarity score + "
             "current image) or a screenshot. The before/after measurement for performance work: "
             "run it at the same route checkpoint before and after a change.",
         .input_schema = {{"type", "object"},
@@ -552,7 +609,8 @@ void RegisterPerfTools(ToolRegistry& registry) {
             "file reads, pipeline builds, skipped draws and the log lines of that frame. enable "
             "turns the recorder on/off live (it turns the GPU profiler on too); a spike is a "
             "frame over min_ms (default 50) and over ratio (default 2) times the median of the "
-            "last 120 frames. Returns the newest `limit` spikes in full and the worst 8 as one "
+            "last 120 frames. Also the game's busiest guest threads, CPU writes to GPU-cached "
+            "pages and lock waits, JIT compiles and SVCs by kind. Returns the newest `limit` spikes in full and the worst 8 as one "
             "line each.",
         .input_schema = {{"type", "object"},
                          {"properties",

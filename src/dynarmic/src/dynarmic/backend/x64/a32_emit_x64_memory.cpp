@@ -23,6 +23,7 @@
 #include "dynarmic/backend/x64/exclusive_monitor_friend.h"
 #include "dynarmic/backend/x64/perf_map.h"
 #include "dynarmic/interface/exclusive_monitor.h"
+#include "dynarmic/interface/jit_stats.h"
 
 namespace Dynarmic::Backend::X64 {
 

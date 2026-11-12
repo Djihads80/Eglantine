@@ -22,6 +22,7 @@
 #include "common/fs/fs_util.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
+#include "common/settings.h"
 #include "common/thread.h"
 #include "core/core.h"
 #include "core/file_sys/nup_container.h"
@@ -292,7 +293,7 @@ void WriteWarmCount(const fs::path& warm_file, u64 entries) {
         return;
     }
     std::ofstream out(WarmCountPath(warm_file), std::ios::trunc);
-    out << entries << ' ' << size << '\n';
+    out << entries << ' ' << size << ' ' << WarmBuilderVersion << '\n';
 }
 
 } // Anonymous namespace
@@ -380,6 +381,54 @@ bool DeleteWarmFiles(u64 title_id, std::string* error) {
         }
     }
     return ok;
+}
+
+std::optional<std::string> WarmFilesStale(const fs::path& warm_file) {
+    std::error_code ec;
+    if (!fs::exists(warm_file, ec)) {
+        return "none built yet";
+    }
+    {
+        std::ifstream in(warm_file, std::ios::binary);
+        std::array<char, 8> magic{};
+        u32 version{};
+        in.read(magic.data(), magic.size()).read(reinterpret_cast<char*>(&version), sizeof(version));
+        if (!in || version != WarmCacheVersion) {
+            return "built for another cache version";
+        }
+    }
+    std::ifstream in(WarmCountPath(warm_file));
+    u64 entries{};
+    u64 size{};
+    u32 builder{};
+    if (!(in >> entries >> size >> builder) || builder != WarmBuilderVersion) {
+        return "built by an older version";
+    }
+    if (fs::file_size(warm_file, ec) != size || ec) {
+        return "changed since it was built";
+    }
+    return std::nullopt;
+}
+
+bool RefreshWarmFiles(Core::System& system, u64 title_id, std::stop_token stop) {
+    if (title_id == 0 || !Settings::CurrentProgramIsSwitch2()) {
+        return false;
+    }
+    const auto reason = WarmFilesStale(ComputeWarmPath(title_id));
+    if (!reason) {
+        return false;
+    }
+    const std::string& file_path = system.GetCurrentApplicationFilePath();
+    if (file_path.empty()) {
+        return false;
+    }
+    fs::path game_path = Common::FS::ToU8String(file_path);
+    // Loose dumps run from their exefs folder; the loader opens its main.
+    if (std::error_code ec; fs::is_directory(game_path, ec)) {
+        game_path /= "main";
+    }
+    LOG_INFO(Render_Vulkan, "Shader precache for {:016x}: {}, building it", title_id, *reason);
+    return BuildWarmFiles(system, game_path, title_id, {}, std::move(stop)).ok;
 }
 
 Result BuildWarmFiles(Core::System& system, const fs::path& game_path, u64 title_id,
