@@ -86,4 +86,40 @@ ReleaseList GetReleases();
 // Get the latest releases as text.
 std::optional<std::string> GetReleasesBody();
 
+// Newest commit of a branch or pull request.
+struct RemoteHead {
+    // Lowercase 40-character commit hash.
+    std::string sha;
+    // Pull requests only.
+    std::string title;
+    std::string author;
+    bool open{true};
+    bool merged{};
+
+    // From GET /repos/{repo}/branches/{branch}
+    static std::optional<RemoteHead> FromBranchJson(const std::string_view& json);
+    // From GET /repos/{repo}/pulls/{number}
+    static std::optional<RemoteHead> FromPullJson(const std::string_view& json);
+};
+
+struct RemoteHeadResult {
+    std::optional<RemoteHead> head;
+    // HTTP status, or 0 when no response arrived.
+    int status{};
+};
+
+RemoteHeadResult GetBranchHead(const std::string& branch);
+RemoteHeadResult GetPullRequestHead(u64 number);
+
+// Branch names from GET /repos/{repo}/branches
+std::vector<std::string> BranchNamesFromJson(const std::string_view& json);
+
+struct BranchList {
+    std::vector<std::string> names;
+    bool ok{};
+    int status{};
+};
+
+BranchList GetBranches();
+
 }

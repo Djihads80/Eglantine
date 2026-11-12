@@ -292,4 +292,150 @@ std::optional<std::string> GetReleasesBody() {
     return MakeRequest(url, ReleasesPath());
 }
 
+static std::string StringAt(const nlohmann::json& json, const char* key) {
+    return json.contains(key) && json[key].is_string() ? json[key].get<std::string>()
+                                                       : std::string{};
+}
+
+// The commit hash in an object with a "sha" key, lowercased, when it is 40 hex characters.
+static std::optional<std::string> CommitSha(const nlohmann::json& commit) {
+    if (!commit.contains("sha") || !commit["sha"].is_string())
+        return std::nullopt;
+
+    auto sha = commit["sha"].get<std::string>();
+    if (sha.size() != 40 ||
+        !std::ranges::all_of(sha, [](unsigned char ch) { return std::isxdigit(ch); })) {
+        return std::nullopt;
+    }
+    std::ranges::transform(sha, sha.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return sha;
+}
+
+std::optional<RemoteHead> RemoteHead::FromBranchJson(const std::string_view& json) {
+    try {
+        const auto parsed = nlohmann::json::parse(json);
+        if (!parsed.contains("commit"))
+            return std::nullopt;
+
+        const auto sha = CommitSha(parsed["commit"]);
+        if (!sha)
+            return std::nullopt;
+
+        return RemoteHead{.sha = *sha};
+    } catch (std::exception& e) {
+        LOG_WARNING(Common, "Failed to parse JSON: {}", e.what());
+    }
+
+    return std::nullopt;
+}
+
+std::optional<RemoteHead> RemoteHead::FromPullJson(const std::string_view& json) {
+    try {
+        const auto parsed = nlohmann::json::parse(json);
+        if (!parsed.contains("head"))
+            return std::nullopt;
+
+        const auto sha = CommitSha(parsed["head"]);
+        if (!sha)
+            return std::nullopt;
+
+        RemoteHead head{.sha = *sha};
+        head.title = StringAt(parsed, "title");
+        head.author = parsed.contains("user") ? StringAt(parsed["user"], "login") : std::string{};
+        head.open = StringAt(parsed, "state") == "open";
+        head.merged = parsed.contains("merged") && parsed["merged"].is_boolean() &&
+                      parsed["merged"].get<bool>();
+        return head;
+    } catch (std::exception& e) {
+        LOG_WARNING(Common, "Failed to parse JSON: {}", e.what());
+    }
+
+    return std::nullopt;
+}
+
+static bool IsUnreserved(unsigned char ch) {
+    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+           ch == '-' || ch == '_' || ch == '.' || ch == '~';
+}
+
+// Percent-encode a branch name for a URL path, keeping the slashes between its segments.
+static std::string EncodeBranch(const std::string& branch) {
+    std::string encoded;
+    for (const auto ch : branch) {
+        const auto uch = static_cast<unsigned char>(ch);
+        if (IsUnreserved(uch) || ch == '/') {
+            encoded.push_back(ch);
+        } else {
+            encoded += fmt::format("%{:02X}", uch);
+        }
+    }
+    return encoded;
+}
+
+RemoteHeadResult GetBranchHead(const std::string& branch) {
+    const auto url = fmt::format("https://{}", Common::g_build_auto_update_api);
+    const auto path = fmt::format("/repos/{}/branches/{}", Common::g_build_auto_update_repo,
+                                  EncodeBranch(branch));
+    const auto response = Fetch(url, path);
+
+    if (!response.body) {
+        return {.status = response.status};
+    }
+
+    return {.head = RemoteHead::FromBranchJson(std::string_view{*response.body}),
+            .status = response.status};
+}
+
+RemoteHeadResult GetPullRequestHead(u64 number) {
+    const auto url = fmt::format("https://{}", Common::g_build_auto_update_api);
+    const auto path =
+        fmt::format("/repos/{}/pulls/{}", Common::g_build_auto_update_repo, number);
+    const auto response = Fetch(url, path);
+
+    if (!response.body) {
+        return {.status = response.status};
+    }
+
+    return {.head = RemoteHead::FromPullJson(std::string_view{*response.body}),
+            .status = response.status};
+}
+
+std::vector<std::string> BranchNamesFromJson(const std::string_view& json) {
+    std::vector<std::string> names;
+    try {
+        const auto parsed = nlohmann::json::parse(json);
+        if (!parsed.is_array())
+            return {};
+
+        for (const auto& branch : parsed) {
+            if (branch.contains("name") && branch["name"].is_string()) {
+                names.push_back(branch["name"].get<std::string>());
+            }
+        }
+    } catch (std::exception& e) {
+        LOG_WARNING(Common, "Failed to parse JSON: {}", e.what());
+        return {};
+    }
+
+    return names;
+}
+
+BranchList GetBranches() {
+    const auto url = fmt::format("https://{}", Common::g_build_auto_update_api);
+    const auto path =
+        fmt::format("/repos/{}/branches?per_page=100", Common::g_build_auto_update_repo);
+    const auto response = Fetch(url, path);
+
+    if (!response.body) {
+        LOG_WARNING(Common, "Failed to get branches");
+        return {.status = response.status};
+    }
+
+    return {.names = BranchNamesFromJson(std::string_view{*response.body}),
+            .ok = true,
+            .status = response.status};
+}
+
 } // namespace Common::Net

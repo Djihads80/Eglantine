@@ -103,6 +103,7 @@ create_target_directory_groups(tests)
 if (ENABLE_UPDATE_CHECKER)
     target_sources(tests PRIVATE
         common/update_checker.cpp
+        common/net_heads.cpp
         common/update_installer.cpp
         ../frontend_common/update_checker.cpp
         ../frontend_common/update_installer.cpp)
