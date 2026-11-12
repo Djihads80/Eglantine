@@ -1175,9 +1175,11 @@ void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
             return;
         }
         if (True(image.flags & ImageFlagBits::SparseTiles)) {
+            image.cpu_modification_tick = ++modification_tick;
             MarkRangeWritten(image, image_id, cpu_addr, size);
             return;
         }
+        image.cpu_modification_tick = ++modification_tick;
         if (UploadsByLayer(image)) {
             MarkLayersWritten(image, image_id, cpu_addr, size);
             return;
@@ -1320,6 +1322,7 @@ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t siz
             MarkLayersRemapped(image, gpu_addr, size);
             continue;
         }
+        image.cpu_modification_tick = ++modification_tick;
         if (False(image.flags & ImageFlagBits::CpuModified)) {
             image.flags |= ImageFlagBits::CpuModified;
             if (True(image.flags & ImageFlagBits::Tracked)) {
@@ -2096,7 +2099,9 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
 
     image.flags &= ~ImageFlagBits::CpuModified;
     image.flags &= ~ImageFlagBits::GpuModified;
-    image.modification_tick = ++modification_tick;
+    // Aliases the GPU wrote after this data was written stay newer, so they are copied over it.
+    image.modification_tick =
+        image.cpu_modification_tick != 0 ? image.cpu_modification_tick : ++modification_tick;
 
     // Images uploaded by layer stay tracked while some of their layers are dirty.
     if (False(image.flags & ImageFlagBits::Tracked)) {
