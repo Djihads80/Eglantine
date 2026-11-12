@@ -36,10 +36,10 @@ else
   publish=true
 fi
 
-# A manual daily is allowed only from nx2 and bypasses the unchanged-commit check.
+daily_branch="${DAILY_BRANCH:-nx2-experimental}"
 if [[ "$mode" == workflow_dispatch && "${INPUT_KIND:-branch}" == daily ]]; then
-  [[ "${GITHUB_REF_NAME:-}" == nx2 ]] || {
-    echo "A manual daily build can only run from nx2" >&2
+  [[ "${GITHUB_REF_NAME:-}" == "$daily_branch" ]] || {
+    echo "A manual daily build can only run from $daily_branch" >&2
     exit 1
   }
   mode=schedule
