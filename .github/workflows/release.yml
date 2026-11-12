@@ -94,10 +94,16 @@ jobs:
             name=$(basename "$artifact")
             appimages=("$artifact"*.AppImage)
             mac_zips=("$artifact"*.zip)
+            apks=("$artifact"*.apk)
             if ((${#appimages[@]} > 0)); then
               # Linux: ship the AppImage and tar.gz as they are.
               for file in "${appimages[@]}" "$artifact"*.tar.gz; do
                 [[ -f "$file" ]] || continue
+                cp "$file" "release-assets/$(strip_sha "$(basename "$file")")"
+              done
+            elif ((${#apks[@]} > 0)); then
+              # Android: one APK per package name, shipped as they are.
+              for file in "${apks[@]}"; do
                 cp "$file" "release-assets/$(strip_sha "$(basename "$file")")"
               done
             elif ((${#mac_zips[@]} > 0)); then
