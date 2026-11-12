@@ -1582,6 +1582,26 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         Shader::IR::Program& program{programs[index]};
         const size_t stage_index{index - 1};
         infos[stage_index] = &program.info;
+        // EDEN_NX2_PIPELINE_INFO=1: what each stage of a new pipeline reads besides its constant
+        // buffers and textures (buffers through pointers cost the phone's GPU memory loads).
+        if (static const bool log_info = std::getenv("EDEN_NX2_PIPELINE_INFO") != nullptr;
+            log_info) {
+            const Shader::Info& info{program.info};
+            u32 written{};
+            u32 indirect{};
+            for (const auto& desc : info.storage_buffers_descriptors) {
+                written += desc.is_written ? 1 : 0;
+                indirect += desc.indirect_offset != ~0U ? 1 : 0;
+            }
+            LOG_INFO(Render_Vulkan,
+                     "Pipeline stage info: shader {:016x} stage {}: {} storage buffers ({} written, "
+                     "{} indirect), global memory {} (stores {}), indirect constant buffers {}, {} "
+                     "constant buffers, {} textures, {} images",
+                     key.unique_hashes[index], index, info.storage_buffers_descriptors.size(),
+                     written, indirect, info.uses_global_memory, info.stores_global_memory,
+                     info.uses_cbuf_indirect, info.constant_buffer_descriptors.size(),
+                     info.texture_descriptors.size(), info.image_descriptors.size());
+        }
 
         auto runtime_info{MakeRuntimeInfo(programs, key, program, previous_stage, device)};
         const bool emulated_stage{emulation && (program.info.is_task || program.info.is_mesh)};
