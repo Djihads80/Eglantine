@@ -171,6 +171,7 @@ jobs:
             -DYUZU_USE_BUNDLED_QT=OFF
             "-DCMAKE_PREFIX_PATH=$QT_ROOT_DIR"
             -DYUZU_USE_BUNDLED_SDL3=ON
+            -DYUZU_USE_BUNDLED_OPENSSL=ON
             -DVulkanHeaders_FORCE_BUNDLED=ON
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON
             -DENABLE_QT_TRANSLATION=ON

@@ -31,9 +31,7 @@
 
 #include "common/httplib.h"
 
-#ifdef YUZU_BUNDLED_OPENSSL
-#include <openssl/cert.h>
-#endif
+#include "common/net/ca_store.h"
 
 #include <QDesktopServices>
 
@@ -369,9 +367,7 @@ bool UpdateDialog::DownloadTo(const QString& filename) {
     // GitHub redirects release downloads to another host.
     client.set_follow_location(true);
 
-#ifdef YUZU_BUNDLED_OPENSSL
-    client.load_ca_cert_store(kCert, sizeof(kCert));
-#endif
+    Common::Net::ConfigureCaStore(client);
 
     auto progress =
         QtCommon::Frontend::newProgressDialog(tr("Downloading..."), tr("Cancel"), 0, 100);

@@ -15,9 +15,7 @@
 
 #include "common/httplib.h"
 
-#ifdef YUZU_BUNDLED_OPENSSL
-#include <openssl/cert.h>
-#endif
+#include "common/net/ca_store.h"
 
 namespace Common::Net {
 
@@ -223,9 +221,7 @@ RequestResult Fetch(const std::string& url, const std::string& path) {
         client->set_read_timeout(timeout_seconds);
         client->set_write_timeout(timeout_seconds);
 
-#ifdef YUZU_BUNDLED_OPENSSL
-        client->load_ca_cert_store(kCert, sizeof(kCert));
-#endif
+        Common::Net::ConfigureCaStore(*client);
 
         if (client == nullptr) {
             LOG_ERROR(Common, "Invalid URL {}{}", url, path);
