@@ -112,7 +112,9 @@ jobs:
           -DYUZU_USE_BUNDLED_QT=OFF
           -DYUZU_USE_BUNDLED_SDL3=ON
           -DENABLE_QT_TRANSLATION=ON
-          -DENABLE_UPDATE_CHECKER=OFF
+          -DENABLE_UPDATE_CHECKER=${{ inputs.release && 'ON' || 'OFF' }}
+          -DEGLANTINE_UPDATE_REPO=${{ github.repository }}
+          -DEGLANTINE_RELEASE_PLATFORM=windows-x86_64
           -DUSE_DISCORD_PRESENCE=ON
           -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }}
           -DCMAKE_C_COMPILER_LAUNCHER=sccache
@@ -229,7 +231,9 @@ jobs:
             -DVulkanHeaders_FORCE_BUNDLED=ON \
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
             -DENABLE_QT_TRANSLATION=ON \
-            -DENABLE_UPDATE_CHECKER=OFF \
+            -DENABLE_UPDATE_CHECKER=${{ inputs.release && 'ON' || 'OFF' }} \
+            -DEGLANTINE_UPDATE_REPO=${{ github.repository }} \
+            -DEGLANTINE_RELEASE_PLATFORM=windows-x86_64-pgo \
             -DUSE_DISCORD_PRESENCE=ON \
             -DUSE_CCACHE=ON \
             -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }} \
