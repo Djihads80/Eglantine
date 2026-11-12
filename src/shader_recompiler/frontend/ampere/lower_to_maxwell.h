@@ -4240,8 +4240,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // threads converged there: .CONV always branches and .DIV never does. .U (1) only
             // says the predicate is warp-uniform: a plain branch (Mario Kart World roads).
             const u32 mode = insn.Bits(32, 2);
-            // .U (1) is the compiler's uniform-branch hint; the predicate and target are unchanged.
-            if (mode <= 1 && insn.Bits(91, 1))
+            if (mode == 0 && insn.Bits(91, 1))
                 return fail(index, "native branch convergence mode");
             if (mode == 2) break;
             u64 branch_predicate = predicate;

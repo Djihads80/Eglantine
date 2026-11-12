@@ -155,7 +155,8 @@ void ImageAtomOp(TranslatorVisitor& v, IR::Reg dest_reg, IR::Reg operand_reg, IR
         throw NotImplementedException("Size {}", size);
     }
     const bool is_signed{size == Size::S32};
-    const ImageFormat format{is_u64_max ? ImageFormat::R64_UINT : Format(size)};
+    // R64_UINT does not fit TextureInstInfo; the texture pass derives it from the opcode.
+    const ImageFormat format{is_u64_max ? ImageFormat::Typeless : Format(size)};
     const TextureType tex_type{GetType(type)};
     const IR::Value coords{MakeCoords(v, coord_reg, type)};
 
