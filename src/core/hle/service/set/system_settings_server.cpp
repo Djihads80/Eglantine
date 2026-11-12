@@ -732,10 +732,6 @@ static Settings GetSettings() {
     // Error
     ret["err"]["applet_auto_close"] = ToBytes(bool{false});
 
-    // DevMenu
-    ret["devmenu"]["development_mode"] = ToBytes(bool{true});
-    ret["devmenu"]["application_update_requried"] = ToBytes(bool{true});
-
     return ret;
 }
 
