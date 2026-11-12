@@ -8,6 +8,7 @@
 #include <string>
 
 #include <catch2/catch_test_macros.hpp>
+#include <fmt/format.h>
 
 #include "shader_recompiler/exception.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
@@ -138,6 +139,35 @@ TEST_CASE("ShaderPrecache: a program naming no texture bank reads bank 0", "[vid
     // num_envs, then six u64 counts and local memory before the texture bank.
     std::memcpy(&texture_bound, entry.data() + 4 + 6 * 8 + 4, sizeof(texture_bound));
     REQUIRE(texture_bound == 0);
+}
+
+TEST_CASE("ShaderPrecache: a file from an older builder or cache version is stale",
+          "[video_core]") {
+    TempDir dir;
+    const auto warm = dir.path / "warm-compute.bin";
+    REQUIRE(ShaderWarm::WarmFilesStale(warm).has_value());
+
+    std::string header = "yuzucach";
+    const u32 version = ShaderWarm::WarmCacheVersion;
+    header.append(reinterpret_cast<const char*>(&version), sizeof(version));
+    WriteBytes(warm, header);
+    const auto count = ShaderWarm::WarmCountPath(warm);
+    // Count files written before the builder version was recorded have two fields.
+    WriteBytes(count, "0 12\n");
+    REQUIRE(ShaderWarm::WarmFilesStale(warm).has_value());
+    WriteBytes(count, fmt::format("0 12 {}\n", ShaderWarm::WarmBuilderVersion - 1));
+    REQUIRE(ShaderWarm::WarmFilesStale(warm).has_value());
+    WriteBytes(count, fmt::format("0 12 {}\n", ShaderWarm::WarmBuilderVersion));
+    REQUIRE_FALSE(ShaderWarm::WarmFilesStale(warm).has_value());
+
+    WriteBytes(count, fmt::format("0 13 {}\n", ShaderWarm::WarmBuilderVersion));
+    REQUIRE(ShaderWarm::WarmFilesStale(warm).has_value());
+    const u32 old_version = ShaderWarm::WarmCacheVersion - 1;
+    std::string old_header = "yuzucach";
+    old_header.append(reinterpret_cast<const char*>(&old_version), sizeof(old_version));
+    WriteBytes(warm, old_header);
+    WriteBytes(count, fmt::format("0 12 {}\n", ShaderWarm::WarmBuilderVersion));
+    REQUIRE(ShaderWarm::WarmFilesStale(warm).has_value());
 }
 
 TEST_CASE("ShaderPrecache: every container the archive walker reads is discovered",
