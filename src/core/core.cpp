@@ -428,6 +428,7 @@ struct System::Impl {
 
         if (!app_loader) {
             LOG_CRITICAL(Core, "Failed to obtain loader for {}!", filepath);
+            ShutdownMainProcess();
             return SystemResultStatus::ErrorGetLoader;
         }
 
