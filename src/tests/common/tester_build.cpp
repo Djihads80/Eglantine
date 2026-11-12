@@ -318,6 +318,24 @@ TEST_CASE("ParseRecipe rejects unsafe entries", "[tester]") {
     rejected("\"verified\": true", "\"verified\": \"yes\"");
 }
 
+TEST_CASE("ParseRecipe reads and validates min_version", "[tester]") {
+    const auto base = RecipeJson();
+    const std::string msvc = "\"id\": \"Microsoft.VisualStudio.2022.BuildTools\"";
+    const auto with = [&](const std::string& value) {
+        return Replace(base, msvc, msvc + ", \"min_version\": " + value);
+    };
+    const auto parsed = ParseRecipe(with("\"18.0\""), Platform::Windows);
+    REQUIRE(parsed.has_value());
+    CHECK(parsed->winget[0].min_version == "18.0");
+    CHECK(parsed->winget[1].min_version.empty());
+    CHECK(ParseRecipe(base, Platform::Windows)->winget[0].min_version.empty());
+    for (const auto* bad : {"\"\"", "\"18.0 \"", "\"v18\"", "\".5\"", "\"18.0)\"", "18",
+                            "\"1111111111.2222222222.3\""}) {
+        CAPTURE(bad);
+        CHECK_FALSE(ParseRecipe(with(bad), Platform::Windows).has_value());
+    }
+}
+
 TEST_CASE("ParseRecipe accepts mixed-case hashes and lowercases them", "[tester]") {
     const auto text = Replace(RecipeJson(), "\"" + Hash + "\", \"bin\": \"cmake/bin\"",
                               "\"" + std::string(64, 'A') + "\", \"bin\": \"cmake/bin\"");
@@ -394,6 +412,11 @@ TEST_CASE("vswhere output and the vcvars step", "[tester]") {
     CHECK(step.args == Strings{"-latest", "-products", "*", "-requires",
                                "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property",
                                "installationPath"});
+    CHECK(VsWhereStep("").args == step.args);
+    CHECK(VsWhereStep("18.0").args ==
+          Strings{"-latest", "-products", "*", "-requires",
+                  "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-version", "[18.0,)",
+                  "-property", "installationPath"});
 
     CHECK(ParseVsWhere("C:\\VS\\2022\\Community\r\n") == fs::path{"C:\\VS\\2022\\Community"});
     CHECK(ParseVsWhere("\r\n  \r\nC:\\VS\r\nD:\\Other\r\n") == fs::path{"C:\\VS"});

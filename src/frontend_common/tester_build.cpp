@@ -39,6 +39,10 @@ bool EqualsIgnoreCase(std::string_view a, std::string_view b) {
     });
 }
 
+bool IsDigit(char c) {
+    return c >= '0' && c <= '9';
+}
+
 bool IsAlnum(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) != 0;
 }
@@ -348,6 +352,12 @@ bool IsConfigureFlag(std::string_view text) {
     return (text.starts_with("-D") || text.starts_with("-G")) && !HasControlCharacter(text);
 }
 
+// Digits and dots, as vswhere takes them.
+bool IsVersion(std::string_view text) {
+    return !text.empty() && text.size() <= 20 && IsDigit(text.front()) &&
+           std::ranges::all_of(text, [](char c) { return IsDigit(c) || c == '.'; });
+}
+
 bool IsSha256(std::string_view text) {
     return text.size() == 64 && std::ranges::all_of(text, [](char c) {
         return std::isxdigit(static_cast<unsigned char>(c)) != 0;
@@ -452,6 +462,11 @@ bool ParseWinget(const json& root, std::vector<WingetPackage>& out) {
                 HasControlCharacter(package.override_args)) {
                 return false;
             }
+        }
+        if (item.contains("min_version") &&
+            (!ReadString(item, "min_version", package.min_version) ||
+             !IsVersion(package.min_version))) {
+            return false;
         }
         out.push_back(std::move(package));
     }
@@ -570,7 +585,9 @@ fs::path FindProgram(std::string_view name, std::string_view path_env) {
         for (const auto& candidate : names) {
             const auto file = PathFromUtf8(dir) / PathFromUtf8(candidate);
             std::error_code ec;
-            if (fs::is_regular_file(file, ec)) {
+            // symlink_status: status fails on an app execution alias such as winget.
+            if (fs::is_regular_file(file, ec) ||
+                fs::is_regular_file(fs::symlink_status(file, ec))) {
                 return file;
             }
         }
@@ -584,15 +601,16 @@ fs::path VsWherePath() {
            "Microsoft Visual Studio" / "Installer" / "vswhere.exe";
 }
 
-Step VsWhereStep() {
-    return {"vswhere",
-            "Locating Visual Studio",
-            VsWherePath(),
-            {"-latest", "-products", "*", "-requires",
-             "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"},
-            {},
-            false,
-            true};
+Step VsWhereStep(std::string_view min_version) {
+    std::vector<std::string> args = {"-latest", "-products", "*", "-requires",
+                                     "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"};
+    if (!min_version.empty()) {
+        args.push_back("-version");
+        args.push_back("[" + std::string{min_version} + ",)");
+    }
+    args.push_back("-property");
+    args.push_back("installationPath");
+    return {"vswhere", "Locating Visual Studio", VsWherePath(), std::move(args), {}, false, true};
 }
 
 fs::path ParseVsWhere(std::string_view output) {

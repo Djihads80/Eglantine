@@ -90,6 +90,8 @@ struct ToolDownload {
 
 struct WingetPackage {
     std::string provides, id, override_args;
+    // Oldest acceptable version of what it provides, "18.0"; empty accepts any.
+    std::string min_version;
 };
 
 enum class PackageManager { None, Apt, Pacman, Dnf };
@@ -135,7 +137,8 @@ struct Step {
 std::filesystem::path FindProgram(std::string_view name, std::string_view path_env);
 
 std::filesystem::path VsWherePath();
-Step VsWhereStep();
+// A non-empty `min_version` limits the answer to installs of at least that version.
+Step VsWhereStep(std::string_view min_version = {});
 std::filesystem::path ParseVsWhere(std::string_view output);
 
 // Runs vcvarsall through cmd.exe and prints the resulting environment. `args` holds the single
