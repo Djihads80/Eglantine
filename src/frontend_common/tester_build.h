@@ -193,6 +193,10 @@ std::vector<Step> BuildSteps(const BuildRequest& request);
 // "[12/345] ..." gives {12, 345}.
 std::optional<std::pair<u32, u32>> ParseNinjaProgress(std::string_view line);
 
+// Seconds left when `done` of `total` took `elapsed_seconds`; nothing until there is enough to go
+// on, because the first steps of a build say little about the rest.
+std::optional<u64> EstimateRemaining(u32 done, u32 total, u64 elapsed_seconds);
+
 std::filesystem::path InstalledExe(const std::filesystem::path& install_dir);
 
 // Copy build/bin to installs/<sha10> and make it the current install, the old one the previous.

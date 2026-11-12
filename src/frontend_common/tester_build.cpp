@@ -981,6 +981,13 @@ std::optional<std::pair<u32, u32>> ParseNinjaProgress(std::string_view line) {
     return std::pair{done, total};
 }
 
+std::optional<u64> EstimateRemaining(u32 done, u32 total, u64 elapsed_seconds) {
+    if (done == 0 || done > total || elapsed_seconds < 15 || u64{done} * 50 < total) {
+        return std::nullopt;
+    }
+    return elapsed_seconds * (total - done) / done;
+}
+
 fs::path InstalledExe(const fs::path& install_dir) {
 #ifdef _WIN32
     return install_dir / "eglantine.exe";

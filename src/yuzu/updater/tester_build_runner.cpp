@@ -100,6 +100,25 @@ int TesterBuildRunner::ExitCode(Result result) {
     return 1;
 }
 
+QString TesterBuildRunner::RemainingText(int done, int total, qint64 elapsed_seconds) {
+    if (done < 0 || total <= 0 || elapsed_seconds < 0) {
+        return {};
+    }
+    const auto seconds = TesterBuild::EstimateRemaining(
+        static_cast<u32>(done), static_cast<u32>(total), static_cast<u64>(elapsed_seconds));
+    if (!seconds) {
+        return {};
+    }
+    if (*seconds < 60) {
+        return tr("less than a minute left");
+    }
+    const auto minutes = (*seconds + 59) / 60;
+    if (minutes < 60) {
+        return tr("about %1 min left").arg(minutes);
+    }
+    return tr("about %1 h %2 min left").arg(minutes / 60).arg(minutes % 60);
+}
+
 QString TesterBuildRunner::InstalledExePath() const {
     return ToQ(m_installed_exe);
 }

@@ -36,6 +36,8 @@ TesterBuildDialog::TesterBuildDialog(TesterBuildRunner& runner, QWidget* parent)
     m_step->setWordWrap(true);
     m_progress = new QProgressBar;
     m_progress->setRange(0, 0);
+    m_remaining = new QLabel;
+    m_step_timer.start();
 
     m_toggle_log = new QPushButton(tr("Show log"));
     m_toggle_log->setCheckable(true);
@@ -84,6 +86,7 @@ TesterBuildDialog::TesterBuildDialog(TesterBuildRunner& runner, QWidget* parent)
     layout->addWidget(m_source);
     layout->addWidget(m_step);
     layout->addWidget(m_progress);
+    layout->addWidget(m_remaining, 0, Qt::AlignRight);
     layout->addWidget(m_consent);
     layout->addWidget(m_toggle_log, 0, Qt::AlignLeft);
     layout->addWidget(m_log, 1);
@@ -112,12 +115,18 @@ TesterBuildDialog::TesterBuildDialog(TesterBuildRunner& runner, QWidget* parent)
         m_source->setText(tr("%1\nRepository: %2")
                               .arg(name, QString::fromUtf8(Common::g_build_auto_update_repo)));
     });
-    connect(&m_runner, &TesterBuildRunner::StepStarted, m_step, &QLabel::setText);
+    connect(&m_runner, &TesterBuildRunner::StepStarted, this, [this](const QString& label) {
+        m_step->setText(label);
+        m_remaining->clear();
+        m_step_timer.restart();
+    });
     connect(&m_runner, &TesterBuildRunner::LogLine, this,
             [this](const QString& line) { m_pending << line; });
     connect(&m_runner, &TesterBuildRunner::Progress, this, [this](int done, int total) {
         m_progress->setRange(0, total);
         m_progress->setValue(done);
+        m_remaining->setText(
+            TesterBuildRunner::RemainingText(done, total, m_step_timer.elapsed() / 1000));
     });
     connect(&m_runner, &TesterBuildRunner::ConsentNeeded, this, &TesterBuildDialog::OnConsent);
     connect(&m_runner, &TesterBuildRunner::Finished, this, &TesterBuildDialog::OnFinished);
@@ -155,6 +164,7 @@ void TesterBuildDialog::OnConsent(const QStringList& items, const QString& text,
     m_accept->setText(accept_label);
     m_accept->setVisible(!accept_label.isEmpty());
     m_consent->show();
+    m_remaining->clear();
     m_progress->setRange(0, 1);
     m_progress->setValue(0);
     if (accept_label.isEmpty()) {
@@ -169,6 +179,7 @@ void TesterBuildDialog::OnFinished(int result, const QString& message) {
     FlushLog();
     const bool failed = result == TesterBuildRunner::Failed;
     m_step->setText(message);
+    m_remaining->clear();
     m_progress->setRange(0, 100);
     m_progress->setValue(failed || result == TesterBuildRunner::Canceled ? 0 : 100);
     m_exit_code = TesterBuildRunner::ExitCode(static_cast<TesterBuildRunner::Result>(result));

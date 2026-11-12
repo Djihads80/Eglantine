@@ -49,6 +49,9 @@ public:
 
     static int ExitCode(Result result);
 
+    // "about 12 min left" for a step that has run `elapsed_seconds`; empty while it cannot be told.
+    static QString RemainingText(int done, int total, qint64 elapsed_seconds);
+
     // Valid once Run() has returned.
     QString InstalledExePath() const;
     QString LogDirectory() const;

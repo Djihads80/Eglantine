@@ -244,11 +244,20 @@ bool TesterBuildSettings::WarnAboutPullRequest() {
     loop.exec();
 
     QString which = QString::fromStdString(source->DisplayName());
-    if (watcher.isFinished() && watcher.result().info && !watcher.result().info->title.empty()) {
-        const auto& info = *watcher.result().info;
-        which = tr("%1 \"%2\" by %3")
-                    .arg(which, QString::fromStdString(info.title),
-                         QString::fromStdString(info.author));
+    if (watcher.isFinished()) {
+        const auto result = watcher.result();
+        if (result.status == 404) {
+            QMessageBox::warning(
+                this, Title(),
+                tr("%1 was not found in %2.")
+                    .arg(which, QString::fromUtf8(Common::g_build_auto_update_repo)));
+            return false;
+        }
+        if (result.info && !result.info->title.empty()) {
+            which = tr("%1 \"%2\" by %3")
+                        .arg(which, QString::fromStdString(result.info->title),
+                             QString::fromStdString(result.info->author));
+        }
     }
     const auto answer = QMessageBox::warning(
         this, Title(),

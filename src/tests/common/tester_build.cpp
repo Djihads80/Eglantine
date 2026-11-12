@@ -866,3 +866,15 @@ TEST_CASE("HasInstall needs the exe on disk", "[tester]") {
     CHECK(ShortSha(Sha1) == "0123456789");
     CHECK(ShortSha("abc") == "abc");
 }
+
+TEST_CASE("EstimateRemaining waits for enough progress", "[tester]") {
+    using TesterBuild::EstimateRemaining;
+    CHECK_FALSE(EstimateRemaining(0, 100, 60).has_value());
+    CHECK_FALSE(EstimateRemaining(50, 100, 14).has_value());
+    CHECK_FALSE(EstimateRemaining(1, 100, 60).has_value());
+    CHECK_FALSE(EstimateRemaining(101, 100, 60).has_value());
+    CHECK_FALSE(EstimateRemaining(5, 0, 60).has_value());
+    CHECK(EstimateRemaining(2, 100, 60) == u64{2940});
+    CHECK(EstimateRemaining(50, 100, 600) == u64{600});
+    CHECK(EstimateRemaining(100, 100, 600) == u64{0});
+}

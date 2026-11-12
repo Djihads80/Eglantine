@@ -9,6 +9,7 @@
 #include <optional>
 #include <QApplication>
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QMessageBox>
 #include <QThread>
 #include <QTimer>
@@ -96,11 +97,14 @@ void Report(bool console, const QString& text) {
 int RunConsole(TesterBuildRunner& runner, const TesterBuildRunner::Options& options) {
     int exit_code = 1;
     int last_percent = -1;
+    QElapsedTimer step_timer;
+    step_timer.start();
     const auto* context = QCoreApplication::instance();
     QObject::connect(&runner, &TesterBuildRunner::SourceResolved, context,
                      [](const QString& name) { Print(QObject::tr("Source: %1").arg(name)); });
     QObject::connect(&runner, &TesterBuildRunner::StepStarted, context, [&](const QString& label) {
         last_percent = -1;
+        step_timer.restart();
         Print(label);
     });
     QObject::connect(&runner, &TesterBuildRunner::Progress, context, [&](int done, int total) {
@@ -110,7 +114,10 @@ int RunConsole(TesterBuildRunner& runner, const TesterBuildRunner::Options& opti
         const int percent = done * 100 / total;
         if (percent != last_percent) {
             last_percent = percent;
-            Print(QStringLiteral("  %1% (%2/%3)").arg(percent).arg(done).arg(total));
+            const auto left =
+                TesterBuildRunner::RemainingText(done, total, step_timer.elapsed() / 1000);
+            Print(QStringLiteral("  %1% (%2/%3)").arg(percent).arg(done).arg(total) +
+                  (left.isEmpty() ? QString{} : QStringLiteral(", ") + left));
         }
     });
     QObject::connect(&runner, &TesterBuildRunner::ConsentNeeded, context,

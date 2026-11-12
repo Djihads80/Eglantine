@@ -4,6 +4,7 @@
 #pragma once
 
 #include <QDialog>
+#include <QElapsedTimer>
 #include <QStringList>
 #include <QTimer>
 
@@ -37,6 +38,8 @@ private:
     QLabel* m_source;
     QLabel* m_step;
     QProgressBar* m_progress;
+    QLabel* m_remaining;
+    QElapsedTimer m_step_timer;
     QPushButton* m_toggle_log;
     QPlainTextEdit* m_log;
 
