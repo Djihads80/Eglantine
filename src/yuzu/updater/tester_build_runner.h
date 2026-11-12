@@ -16,6 +16,7 @@
 #include <QSemaphore>
 #include <QString>
 #include <QStringList>
+#include "common/net/net.h"
 #include "frontend_common/tester_build.h"
 
 // Runs a tester build from fetching the source to installing it. Run() blocks and is meant for a
@@ -84,7 +85,8 @@ private:
     bool Prepare();
     bool EnsureTools();
     bool EnsureTool(const TesterBuild::ToolDownload& tool);
-    bool Download(const TesterBuild::ToolDownload& tool, const std::filesystem::path& archive);
+    bool Download(const std::string& url_text, const std::string& sha256, u64 size,
+                  const std::filesystem::path& archive);
     bool Extract(const std::filesystem::path& archive, const std::filesystem::path& staging);
     bool EnsureToolchain();
     bool Detect(Missing& missing);
@@ -98,6 +100,14 @@ private:
     bool Fetch(std::string& sha);
     bool Build();
     bool Finish(const std::string& sha);
+    // Link the user folder, save the state and prune once `sha` is the current install.
+    bool Activate(const std::string& sha, const QString& message);
+    // Installs the CI build of the source's newest commit when there is one. Nothing is returned
+    // when the build has to be compiled instead.
+    std::optional<Result> TryInstallCiBuild();
+    // Downloads and unpacks `release`'s asset into `staging`; failures are logged, not reported.
+    bool FetchCiBuild(const Common::Net::Release& release, const std::string& sha,
+                      const std::filesystem::path& staging);
     void LinkUserFolder(const std::filesystem::path& install);
 
     TesterBuild::BuildRequest MakeRequest() const;

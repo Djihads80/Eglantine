@@ -232,6 +232,7 @@ State LoadState(const fs::path& file) {
     state.current_install = text("current_install");
     state.previous_install = text("previous_install");
     state.release_exe = text("release_exe");
+    state.auto_source = text("auto_source");
     if (const auto it = parsed.find("built_at"); it != parsed.end() && it->is_number_integer()) {
         state.built_at = it->get<s64>();
     }
@@ -250,6 +251,7 @@ bool SaveState(const fs::path& file, const State& state, std::error_code& ec) {
         {"release_exe", state.release_exe},
         {"built_at", state.built_at},
         {"pr_warning_shown", state.pr_warning_shown},
+        {"auto_source", state.auto_source},
     };
     fs::create_directories(file.parent_path(), ec);
     if (ec) {
@@ -930,11 +932,15 @@ std::vector<Step> BuildSteps(const BuildRequest& request) {
     // The recipe cannot pick the generator, the make program or the repository updates come from.
     for (const auto& flag : request.recipe.configure) {
         if (!flag.starts_with("-G") && !flag.starts_with("-DEGLANTINE_UPDATE_REPO") &&
+            !flag.starts_with("-DEGLANTINE_RELEASE_PLATFORM") &&
             !flag.starts_with("-DCMAKE_MAKE_PROGRAM")) {
             configure.push_back(flag);
         }
     }
     configure.push_back("-DEGLANTINE_UPDATE_REPO=" + request.repo);
+    if (!request.platform.empty()) {
+        configure.push_back("-DEGLANTINE_RELEASE_PLATFORM=" + request.platform);
+    }
 
     std::vector<std::string> build = {"--build", PathToUtf8(layout.build)};
     if (!request.recipe.targets.empty()) {
@@ -1009,22 +1015,42 @@ bool Promote(const Layout& layout, std::string_view sha, State& state, std::erro
         return false;
     }
 
-    std::error_code ignored;
     fs::remove_all(staging, ec);
-    if (!ec) {
-        fs::remove_all(destination, ec);
-    }
     if (!ec) {
         fs::create_directories(layout.installs, ec);
     }
     if (!ec) {
         fs::copy(bin, staging, fs::copy_options::recursive, ec);
     }
+    if (ec) {
+        std::error_code ignored;
+        fs::remove_all(staging, ignored);
+        return false;
+    }
+    return PromoteStaged(layout, staging, sha, state, ec);
+}
+
+bool PromoteStaged(const Layout& layout, const fs::path& staged, std::string_view sha,
+                   State& state, std::error_code& ec) {
+    const auto destination = layout.InstallDir(sha);
+    std::error_code ignored;
+    if (!fs::is_regular_file(InstalledExe(staged), ec)) {
+        ec = std::make_error_code(std::errc::no_such_file_or_directory);
+        fs::remove_all(staged, ignored);
+        return false;
+    }
+    if (!state.current_install.empty() && SamePath(PathFromUtf8(state.current_install), destination)) {
+        ec = std::make_error_code(std::errc::device_or_resource_busy);
+        fs::remove_all(staged, ignored);
+        return false;
+    }
+
+    fs::remove_all(destination, ec);
     if (!ec) {
-        fs::rename(staging, destination, ec);
+        fs::rename(staged, destination, ec);
     }
     if (ec) {
-        fs::remove_all(staging, ignored);
+        fs::remove_all(staged, ignored);
         return false;
     }
 
@@ -1069,23 +1095,27 @@ std::string ShortSha(std::string_view sha) {
 }
 
 LaunchAction DecideLaunch(const State& state, bool self_is_tester, bool release_flag,
-                          bool install_exists, const std::optional<RemoteInfo>& remote) {
+                          bool install_exists, const std::optional<RemoteInfo>& remote,
+                          const std::optional<std::string>& self_commit) {
     if (!state.source || self_is_tester || release_flag) {
         return LaunchAction::RunRelease;
     }
-    if (!install_exists) {
+    // Without an install, this exe stands in for the build of its own commit.
+    const bool self_is_build = !install_exists && self_commit && !self_commit->empty();
+    if (!install_exists && !self_is_build) {
         return LaunchAction::OfferFirstBuild;
     }
+    const auto& built = self_is_build ? *self_commit : state.built_sha;
     if (remote) {
         if (state.source->kind == Source::Kind::PullRequest &&
             (!remote->pr_open || remote->pr_merged)) {
             return LaunchAction::OfferClosedPullRequest;
         }
-        if (!remote->sha.empty() && remote->sha != state.built_sha) {
+        if (!remote->sha.empty() && remote->sha != built) {
             return LaunchAction::OfferUpdate;
         }
     }
-    return LaunchAction::StartTester;
+    return self_is_build ? LaunchAction::RunRelease : LaunchAction::StartTester;
 }
 
 u64 DiskUsage(const fs::path& dir) {

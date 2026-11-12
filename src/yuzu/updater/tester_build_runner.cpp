@@ -13,6 +13,7 @@
 #include "common/fs/path_util.h"
 #include "common/scm_rev.h"
 #include "download.h"
+#include "tester_build_launcher.h"
 #include "qt_common/util/compress.h"
 #include "tester_build_runner.h"
 
@@ -379,10 +380,10 @@ bool TesterBuildRunner::Prepare() {
     emit SourceResolved(Q(m_source.DisplayName()));
 
     // Where "Release" in the settings leads back to, unless this is itself a tester build.
-    const auto self = ToPath(QCoreApplication::applicationFilePath());
+    const auto image = qEnvironmentVariable("APPIMAGE");
+    const auto self = ToPath(image.isEmpty() ? QCoreApplication::applicationFilePath() : image);
     if (!TesterBuild::IsTesterInstall(self, root)) {
-        const auto image = qEnvironmentVariable("APPIMAGE");
-        m_state.release_exe = Utf8(image.isEmpty() ? ToQ(self) : image);
+        m_state.release_exe = Utf8(ToQ(self));
     }
     if (!SaveState()) {
         return false;
@@ -457,7 +458,7 @@ bool TesterBuildRunner::EnsureTool(const TesterBuild::ToolDownload& tool) {
         fs::remove_all(staging, ignored);
     };
     cleanup();
-    if (!Download(tool, archive)) {
+    if (!Download(tool.url, tool.sha256, 0, archive)) {
         cleanup();
         return false;
     }
@@ -486,8 +487,9 @@ bool TesterBuildRunner::EnsureTool(const TesterBuild::ToolDownload& tool) {
     return true;
 }
 
-bool TesterBuildRunner::Download(const TesterBuild::ToolDownload& tool, const fs::path& archive) {
-    const auto url = Q(tool.url);
+bool TesterBuildRunner::Download(const std::string& url_text, const std::string& sha256, u64 size,
+                                 const fs::path& archive) {
+    const auto url = Q(url_text);
     const auto host_end = url.indexOf(QLatin1Char('/'), url.indexOf(QStringLiteral("://")) + 3);
     if (host_end < 0) {
         return Fail(tr("The download address %1 is not valid.").arg(url));
@@ -520,7 +522,7 @@ bool TesterBuildRunner::Download(const TesterBuild::ToolDownload& tool, const fs
 
     m_last_percent = -1;
     const auto outcome = UpdateDownload::Download(
-        {Utf8(url.left(host_end)), Utf8(url.mid(host_end)), tool.sha256, 0}, file, callbacks);
+        {Utf8(url.left(host_end)), Utf8(url.mid(host_end)), sha256, size}, file, callbacks);
     switch (outcome.status) {
     case UpdateDownload::Status::Ok:
         break;
@@ -547,7 +549,7 @@ bool TesterBuildRunner::Download(const TesterBuild::ToolDownload& tool, const fs
     if (!file.commit()) {
         return Fail(tr("Could not write %1.").arg(ToQ(archive)));
     }
-    Log(tr("Verified SHA-256 %1").arg(Q(tool.sha256)));
+    Log(tr("Verified SHA-256 %1").arg(Q(sha256)));
     return true;
 }
 
@@ -894,6 +896,7 @@ TesterBuild::BuildRequest TesterBuildRunner::MakeRequest() const {
     request.clone_url = std::string{Common::g_build_auto_update_website} + "/" + request.repo + ".git";
     request.recipe = m_recipe;
     request.tools = m_tools;
+    request.platform = Common::g_build_release_platform;
     return request;
 }
 
@@ -999,20 +1002,154 @@ bool TesterBuildRunner::Finish(const std::string& sha) {
     if (!TesterBuild::Promote(m_layout, sha, m_state, ec)) {
         return Fail(tr("Could not install the build: %1").arg(QString::fromStdString(ec.message())));
     }
+    return Activate(sha,
+                    tr("Installed %1 (%2).").arg(Q(m_source.DisplayName()), Q(sha.substr(0, 10))));
+}
+
+bool TesterBuildRunner::Activate(const std::string& sha, const QString& message) {
+    const auto destination = m_layout.InstallDir(sha);
     LinkUserFolder(destination);
     if (!SaveState()) {
         return false;
     }
     TesterBuild::PruneInstalls(m_layout, m_state);
     m_installed_exe = TesterBuild::InstalledExe(destination);
-    m_message = tr("Installed %1 (%2).").arg(Q(m_source.DisplayName()), Q(sha.substr(0, 10)));
+    m_message = message;
     emit Progress(100, 100);
     return true;
 }
 
+bool TesterBuildRunner::FetchCiBuild(const Common::Net::Release& release, const std::string& sha,
+                                     const fs::path& staging) {
+    const auto package = m_platform == TesterBuild::Platform::Linux
+                             ? Common::Net::LinuxPackage::AppImage
+                             : Common::Net::LinuxPackage::Any;
+    const auto assets = release.GetPlatformAssets(Common::g_build_release_platform, package);
+    if (assets.empty()) {
+        return false;
+    }
+    const auto& asset = assets.front();
+
+    emit StepStarted(tr("Downloading the CI build of %1").arg(Q(m_source.DisplayName())));
+    emit Progress(0, 0);
+    std::error_code ec;
+    fs::remove_all(staging, ec);
+    fs::create_directories(staging, ec);
+    if (ec) {
+        Log(tr("Could not create %1: %2").arg(ToQ(staging), QString::fromStdString(ec.message())));
+        return false;
+    }
+    const auto url = asset.url + asset.path;
+    if (m_platform == TesterBuild::Platform::Linux) {
+        const auto exe = TesterBuild::InstalledExe(staging);
+        if (!Download(url, asset.sha256, asset.size, exe)) {
+            return false;
+        }
+        const auto text = ToQ(exe);
+        QFile::setPermissions(text, QFile::permissions(text) | QFile::ExeOwner | QFile::ExeGroup |
+                                        QFile::ExeOther);
+        return true;
+    }
+
+    const auto archive = m_layout.tools / TesterBuild::PathFromUtf8(asset.filename);
+    fs::remove(archive, ec);
+    const bool downloaded = Download(url, asset.sha256, asset.size, archive);
+    if (downloaded) {
+        emit StepStarted(tr("Unpacking the CI build"));
+        emit Progress(0, 0);
+    }
+    const bool unpacked = downloaded && Extract(archive, staging);
+    fs::remove(archive, ec);
+    if (downloaded && !unpacked) {
+        Log(tr("Could not unpack the CI build of %1.").arg(Q(sha.substr(0, 10))));
+    }
+    return unpacked;
+}
+
+std::optional<TesterBuildRunner::Result> TesterBuildRunner::TryInstallCiBuild() {
+    emit StepStarted(tr("Looking for a CI build"));
+    emit Progress(0, 0);
+    const auto remote = TesterLauncher::FetchRemote(m_source);
+    if (IsCanceled()) {
+        return Canceled;
+    }
+    if (!remote.info || remote.info->sha.empty()) {
+        Log(tr("Could not read the newest commit (HTTP status %1); building from source.")
+                .arg(remote.status));
+        return std::nullopt;
+    }
+    const std::string sha = remote.info->sha;
+    if (sha == m_state.built_sha && TesterBuild::HasInstall(m_state)) {
+        m_installed_exe =
+            TesterBuild::InstalledExe(TesterBuild::PathFromUtf8(m_state.current_install));
+        m_message = tr("Already up to date (%1).").arg(Q(sha.substr(0, 10)));
+        return UpToDate;
+    }
+    if (std::string_view{Common::g_build_release_platform}.empty()) {
+        return std::nullopt;
+    }
+
+    const auto list = Common::Net::GetReleases();
+    if (IsCanceled()) {
+        return Canceled;
+    }
+    if (!list.ok) {
+        Log(tr("Could not read the list of CI builds (HTTP status %1); building from source.")
+                .arg(list.status));
+        return std::nullopt;
+    }
+    const auto package = m_platform == TesterBuild::Platform::Linux
+                             ? Common::Net::LinuxPackage::AppImage
+                             : Common::Net::LinuxPackage::Any;
+    const auto release = Common::Net::FindReleaseForCommit(
+        list.releases, sha, Common::g_build_release_platform, package);
+    if (!release) {
+        Log(tr("There is no CI build of %1; building from source.").arg(Q(sha.substr(0, 10))));
+        return std::nullopt;
+    }
+    Log(tr("Found the CI build %1.").arg(Q(release->tag)));
+
+    const auto staging = fs::path{m_layout.InstallDir(sha)}.concat(".tmp");
+    std::error_code ec;
+    const auto give_up = [&](const QString& reason) -> std::optional<Result> {
+        fs::remove_all(staging, ec);
+        if (IsCanceled()) {
+            return Canceled;
+        }
+        // The compile path reports its own failures.
+        const auto failure = std::exchange(m_message, QString{});
+        Log(reason + QStringLiteral(" ") + failure + QStringLiteral(" ") +
+            tr("Building from source."));
+        return std::nullopt;
+    };
+    fs::create_directories(m_layout.installs, ec);
+    if (!FetchCiBuild(*release, sha, staging)) {
+        return give_up(tr("The CI build could not be installed."));
+    }
+    emit StepStarted(tr("Installing"));
+    emit Progress(0, 0);
+    if (!TesterBuild::PromoteStaged(m_layout, staging, sha, m_state, ec)) {
+        return give_up(tr("The CI build could not be installed: %1")
+                           .arg(QString::fromStdString(ec.message())));
+    }
+    if (!Activate(sha, tr("Installed %1 (%2) from a CI build.")
+                           .arg(Q(m_source.DisplayName()), Q(sha.substr(0, 10))))) {
+        return Failed;
+    }
+    return Success;
+}
+
 TesterBuildRunner::Result TesterBuildRunner::Execute() {
     const auto stopped = [this] { return IsCanceled() ? Canceled : Failed; };
-    if (!Prepare() || !EnsureTools() || !EnsureToolchain()) {
+    if (!Prepare()) {
+        return stopped();
+    }
+    if (!m_options.force) {
+        if (const auto installed = TryInstallCiBuild()) {
+            return *installed;
+        }
+    }
+    if (!EnsureTools() || !EnsureToolchain()) {
         return stopped();
     }
 

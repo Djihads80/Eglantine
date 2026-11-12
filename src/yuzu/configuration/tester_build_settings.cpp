@@ -44,7 +44,7 @@ QString Title() {
 
 TesterBuildSettings::TesterBuildSettings(QWidget* parent) : QWidget(parent) {
     m_kind = new QComboBox;
-    m_kind->addItem(tr("Release builds"));
+    m_kind->addItem(Common::g_build_follow_branch[0] ? tr("This build") : tr("Release builds"));
     m_kind->addItem(tr("Tester build (branch or pull request)"));
     auto* kind_row = new QHBoxLayout;
     kind_row->addWidget(new QLabel(tr("Build source")));

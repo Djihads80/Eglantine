@@ -28,5 +28,6 @@ extern const char g_build_auto_update_website[];
 extern const char g_build_auto_update_api[];
 extern const char g_build_auto_update_repo[];
 extern const char g_build_release_platform[];
+extern const char g_build_follow_branch[];
 
 } // namespace Common

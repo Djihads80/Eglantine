@@ -51,6 +51,8 @@ struct State {
     std::string release_exe;
     s64 built_at{}; // Unix seconds
     bool pr_warning_shown{};
+    // The branch a CI build pointed `source` at; a different one points it again.
+    std::string auto_source;
 };
 
 // Paths in State are UTF-8 strings.
@@ -177,6 +179,8 @@ struct BuildRequest {
     std::string repo;
     Recipe recipe;
     Toolchain tools;
+    // Release asset platform of this build; passed on so the tester build knows it as well.
+    std::string platform;
 };
 
 // Clone when needed, fetch the source, check it out and read back the commit (capture).
@@ -202,6 +206,12 @@ std::filesystem::path InstalledExe(const std::filesystem::path& install_dir);
 // Copy build/bin to installs/<sha10> and make it the current install, the old one the previous.
 // Does not save `state`.
 bool Promote(const Layout& layout, std::string_view sha, State& state, std::error_code& ec);
+
+// The second half of Promote for a folder the caller filled: `staged` (which must hold the exe)
+// is renamed to installs/<sha10>, replacing a stale one, and becomes the current install. On
+// failure `staged` is removed.
+bool PromoteStaged(const Layout& layout, const std::filesystem::path& staged, std::string_view sha,
+                   State& state, std::error_code& ec);
 
 // Delete every folder under installs that is neither current nor previous. Errors are ignored: a
 // running exe cannot be deleted on Windows and goes next time.
@@ -233,8 +243,11 @@ enum class LaunchAction {
 
 // What the release exe does at startup. `remote` is empty when the check failed, timed out or was
 // skipped, and an unknown remote never blocks starting the installed tester build.
+// `self_commit` is the commit of this exe when it is itself a build of the followed source (a CI
+// build of the branch); until a newer install exists it counts as the build of that commit.
 LaunchAction DecideLaunch(const State& state, bool self_is_tester, bool release_flag,
-                          bool install_exists, const std::optional<RemoteInfo>& remote);
+                          bool install_exists, const std::optional<RemoteInfo>& remote,
+                          const std::optional<std::string>& self_commit = std::nullopt);
 
 // Recursive size in bytes, 0 on error.
 u64 DiskUsage(const std::filesystem::path& dir);

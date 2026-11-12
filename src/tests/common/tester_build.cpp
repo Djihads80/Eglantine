@@ -154,6 +154,7 @@ TEST_CASE("State round trips", "[tester]") {
     state.release_exe = "C:/Program Files/Eglantine/eglantine.exe";
     state.built_at = 1'700'000'000;
     state.pr_warning_shown = true;
+    state.auto_source = "nx2-experimental";
 
     std::error_code ec;
     REQUIRE(SaveState(file, state, ec));
@@ -168,6 +169,7 @@ TEST_CASE("State round trips", "[tester]") {
     CHECK(loaded.release_exe == state.release_exe);
     CHECK(loaded.built_at == state.built_at);
     CHECK(loaded.pr_warning_shown);
+    CHECK(loaded.auto_source == "nx2-experimental");
 
     state.source = Source{Source::Kind::Branch, "dev", 0};
     REQUIRE(SaveState(file, state, ec));
@@ -643,6 +645,15 @@ TEST_CASE("BuildSteps configure and build", "[tester]") {
                   "-DCMAKE_MAKE_PROGRAM=" + PathToUtf8(request.tools.ninja),
                   "-DCMAKE_BUILD_TYPE=Release", "-DFOO=1",
                   "-DEGLANTINE_UPDATE_REPO=aidankinzett/Eglantine"});
+
+    request.platform = "windows-x86_64";
+    request.recipe.configure.push_back("-DEGLANTINE_RELEASE_PLATFORM=evil");
+    CHECK(BuildSteps(request)[0].args ==
+          Strings{"-S", PathToUtf8(layout.src), "-B", PathToUtf8(layout.build), "-G", "Ninja",
+                  "-DCMAKE_MAKE_PROGRAM=" + PathToUtf8(request.tools.ninja),
+                  "-DCMAKE_BUILD_TYPE=Release", "-DFOO=1",
+                  "-DEGLANTINE_UPDATE_REPO=aidankinzett/Eglantine",
+                  "-DEGLANTINE_RELEASE_PLATFORM=windows-x86_64"});
     CHECK(steps[1].id == "build");
     CHECK(steps[1].program == fs::path{"cmake"});
     CHECK(steps[1].args == Strings{"--build", PathToUtf8(layout.build), "--target", "yuzu", "eden-cli"});
@@ -748,6 +759,65 @@ TEST_CASE("Promote replaces a stale install but not the current one", "[tester]"
     CHECK(state.previous_install == before.previous_install);
 }
 
+TEST_CASE("PromoteStaged installs a folder the caller filled", "[tester]") {
+    TempDir dir;
+    const auto layout = MakeLayout(dir.path);
+    State state;
+    std::error_code ec;
+
+    const auto staged = [&](const std::string& sha, const std::string& marker) {
+        const auto folder = fs::path{layout.InstallDir(sha)}.concat(".tmp");
+        Write(InstalledExe(folder), marker);
+        Write(folder / "sub" / "data.txt", marker);
+        return folder;
+    };
+
+    const auto first = staged(Sha1, "one");
+    REQUIRE(PromoteStaged(layout, first, Sha1, state, ec));
+    CHECK_FALSE(fs::exists(first));
+    CHECK(Read(InstalledExe(layout.InstallDir(Sha1))) == "one");
+    CHECK(PathFromUtf8(state.current_install) == layout.InstallDir(Sha1));
+    CHECK(state.previous_install.empty());
+    CHECK(state.built_sha == Sha1);
+    CHECK(state.built_at > 1'600'000'000);
+
+    const auto second = staged(Sha2, "two");
+    REQUIRE(PromoteStaged(layout, second, Sha2, state, ec));
+    CHECK(PathFromUtf8(state.current_install) == layout.InstallDir(Sha2));
+    CHECK(PathFromUtf8(state.previous_install) == layout.InstallDir(Sha1));
+
+    // The current install is never replaced, and the staged folder is cleaned up.
+    const auto before = state;
+    const auto again = staged(Sha2, "again");
+    CHECK_FALSE(PromoteStaged(layout, again, Sha2, state, ec));
+    CHECK(ec == std::errc::device_or_resource_busy);
+    CHECK_FALSE(fs::exists(again));
+    CHECK(Read(InstalledExe(layout.InstallDir(Sha2))) == "two");
+    CHECK(state.current_install == before.current_install);
+    CHECK(state.built_sha == before.built_sha);
+
+    // A stale install of the same commit is replaced.
+    Write(layout.InstallDir(Sha3) / "stale.txt", "stale");
+    const auto third = staged(Sha3, "three");
+    REQUIRE(PromoteStaged(layout, third, Sha3, state, ec));
+    CHECK_FALSE(fs::exists(layout.InstallDir(Sha3) / "stale.txt"));
+    CHECK(Read(InstalledExe(layout.InstallDir(Sha3))) == "three");
+}
+
+TEST_CASE("PromoteStaged refuses a folder without an exe", "[tester]") {
+    TempDir dir;
+    const auto layout = MakeLayout(dir.path);
+    const auto folder = fs::path{layout.InstallDir(Sha1)}.concat(".tmp");
+    Write(folder / "other.txt", "x");
+    State state;
+    std::error_code ec;
+    CHECK_FALSE(PromoteStaged(layout, folder, Sha1, state, ec));
+    CHECK(ec);
+    CHECK(state.current_install.empty());
+    CHECK_FALSE(fs::exists(folder));
+    CHECK_FALSE(fs::exists(layout.InstallDir(Sha1)));
+}
+
 TEST_CASE("PruneInstalls keeps current and previous only", "[tester]") {
     TempDir dir;
     const auto layout = MakeLayout(dir.path);
@@ -831,6 +901,38 @@ TEST_CASE("DecideLaunch follows the policy", "[tester]") {
     state.source.reset();
     CHECK(decide(false, false, true, newer) == LaunchAction::RunRelease);
     CHECK(decide(false, false, false, std::nullopt) == LaunchAction::RunRelease);
+}
+
+TEST_CASE("DecideLaunch counts this exe as the build of its own commit", "[tester]") {
+    State state;
+    state.source = Source{Source::Kind::Branch, "dev", 0};
+    const std::optional<std::string> self = Sha1;
+    const auto decide = [&](bool self_is_tester, bool install_exists,
+                            const std::optional<RemoteInfo>& remote) {
+        return DecideLaunch(state, self_is_tester, false, install_exists, remote, self);
+    };
+
+    // No install: this exe is the build.
+    CHECK(decide(false, false, std::nullopt) == LaunchAction::RunRelease);
+    CHECK(decide(false, false, RemoteInfo{Sha1}) == LaunchAction::RunRelease);
+    CHECK(decide(false, false, RemoteInfo{Sha2}) == LaunchAction::OfferUpdate);
+    CHECK(decide(false, false, RemoteInfo{}) == LaunchAction::RunRelease);
+    // Not a build of the followed source (or no valid commit): the first build is offered.
+    CHECK(DecideLaunch(state, false, false, false, RemoteInfo{Sha2}, std::nullopt) ==
+          LaunchAction::OfferFirstBuild);
+    CHECK(DecideLaunch(state, false, false, false, RemoteInfo{Sha2}, std::string{}) ==
+          LaunchAction::OfferFirstBuild);
+
+    // With an install the existing rules apply, whatever this exe is.
+    state.built_sha = Sha2;
+    CHECK(decide(false, true, RemoteInfo{Sha2}) == LaunchAction::StartTester);
+    CHECK(decide(false, true, RemoteInfo{Sha1}) == LaunchAction::OfferUpdate);
+    CHECK(decide(false, true, std::nullopt) == LaunchAction::StartTester);
+
+    // A tester install and no source never hand off.
+    CHECK(decide(true, false, RemoteInfo{Sha2}) == LaunchAction::RunRelease);
+    state.source.reset();
+    CHECK(decide(false, false, RemoteInfo{Sha2}) == LaunchAction::RunRelease);
 }
 
 TEST_CASE("DecideLaunch on a closed pull request", "[tester]") {

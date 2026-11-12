@@ -40,6 +40,9 @@ struct Release {
     std::string base_download_url;
     std::string html_url;
     std::string host;
+    // The commit the release was made for: 40 lowercase hex characters, or empty when the release
+    // targets a branch name or says nothing.
+    std::string target_commit;
 
     std::vector<std::string> assets;
     // Keyed by the asset's browser_download_url.
@@ -60,6 +63,11 @@ struct Release {
     static std::vector<Release> ListFromJson(const nlohmann::json &json, const std::string &host, const std::string &repo);
     static std::vector<Release> ListFromJson(const std::string_view &json, const std::string &host, const std::string &repo);
 };
+
+// The most recently published release made for exactly `commit` that has an asset for `platform`.
+std::optional<Release> FindReleaseForCommit(const std::vector<Release>& releases,
+                                            std::string_view commit, std::string_view platform,
+                                            LinuxPackage package = LinuxPackage::Any);
 
 struct RequestResult {
     std::optional<std::string> body;

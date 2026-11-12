@@ -109,6 +109,18 @@ static inline u64 ParseIsoTimestamp(const std::string& iso) {
 #endif
 }
 
+// `text` lowercased when it is a 40-character commit hash, else empty.
+static std::string LowercaseSha(std::string text) {
+    if (text.size() != 40 ||
+        !std::ranges::all_of(text, [](unsigned char ch) { return std::isxdigit(ch); })) {
+        return {};
+    }
+    std::ranges::transform(text, text.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return text;
+}
+
 std::optional<Release> Release::FromJson(const nlohmann::json& json, const std::string& host,
                                          const std::string& repo) {
     Release rel;
@@ -138,6 +150,7 @@ std::optional<Release> Release::FromJson(const nlohmann::json& json, const std::
     rel.body = body;
 
     rel.host = host;
+    rel.target_commit = LowercaseSha(json.value("target_commitish", std::string{}));
 
     const auto release_base =
         fmt::format("{}/{}/releases", Common::g_build_auto_update_website, repo);
@@ -266,6 +279,28 @@ RequestResult Fetch(const std::string& url, const std::string& path) {
 
 std::optional<std::string> MakeRequest(const std::string& url, const std::string& path) {
     return Fetch(url, path).body;
+}
+
+std::optional<Release> FindReleaseForCommit(const std::vector<Release>& releases,
+                                            std::string_view commit, std::string_view platform,
+                                            LinuxPackage package) {
+    if (commit.size() != 40) {
+        return std::nullopt;
+    }
+    const auto wanted = LowercaseSha(std::string{commit});
+    if (wanted.empty()) {
+        return std::nullopt;
+    }
+    std::optional<Release> best;
+    for (const auto& release : releases) {
+        if (release.target_commit != wanted || release.GetPlatformAssets(platform, package).empty()) {
+            continue;
+        }
+        if (!best || release.published > best->published) {
+            best = release;
+        }
+    }
+    return best;
 }
 
 static std::string ReleasesPath() {

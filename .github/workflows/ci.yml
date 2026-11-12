@@ -145,6 +145,7 @@ jobs:
       release: ${{ needs.prepare.outputs.kind == 'stable' || needs.prepare.outputs.kind == 'rc' }}
       nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
       pgo: ${{ inputs.pgo || (needs.prepare.outputs.kind == 'branch' && 'none' || 'both') }}
+      follow_branch: ${{ needs.prepare.outputs.branch }}
 
   windows:
     name: Windows
@@ -161,6 +162,7 @@ jobs:
       release: ${{ needs.prepare.outputs.kind == 'stable' || needs.prepare.outputs.kind == 'rc' }}
       nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
       pgo: ${{ inputs.pgo || (needs.prepare.outputs.kind == 'branch' && 'none' || 'both') }}
+      follow_branch: ${{ needs.prepare.outputs.branch }}
 
   macos:
     name: macOS

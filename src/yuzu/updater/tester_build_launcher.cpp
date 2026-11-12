@@ -16,6 +16,7 @@
 #include <QPushButton>
 #include "common/fs/path_util.h"
 #include "common/net/net.h"
+#include "common/scm_rev.h"
 #include "frontend_common/config.h"
 #include "frontend_common/update_installer.h"
 #include "qt_common/config/uisettings.h"
@@ -51,6 +52,10 @@ fs::path SelfPath() {
     buffer.resize(size);
     return fs::path{buffer};
 #elif defined(__linux__)
+    // Inside an AppImage /proc/self/exe is in the mount, not where the file was started from.
+    if (const auto image = qEnvironmentVariable("APPIMAGE"); !image.isEmpty()) {
+        return fs::path{image.toStdString()};
+    }
     std::error_code ec;
     return fs::read_symlink("/proc/self/exe", ec);
 #else
@@ -269,25 +274,48 @@ bool StartBuilder(const QString& exe, bool force, const QString& source) {
 std::optional<int> Run(int argc, char** argv) {
     const auto args = Arguments(argc, argv);
     auto state = TesterBuild::LoadState(StateFile());
+    const auto root = TesterBuild::DefaultRoot();
+    const bool self_is_tester = !root.empty() && TesterBuild::IsTesterInstall(SelfPath(), root);
+
+    // A CI build of a branch follows that branch, once per branch.
+    const std::string follow = Common::g_build_follow_branch;
+    if (!follow.empty() && !self_is_tester && state.auto_source != follow) {
+        if (const auto source = TesterBuild::ParseSource("branch:" + follow,
+                                                         Common::g_build_auto_update_repo)) {
+            state.source = source;
+            state.auto_source = follow;
+            std::error_code ec;
+            TesterBuild::SaveState(StateFile(), state, ec);
+        }
+    }
     if (!state.source) {
         return std::nullopt;
     }
-    const auto root = TesterBuild::DefaultRoot();
-    const bool self_is_tester = !root.empty() && TesterBuild::IsTesterInstall(SelfPath(), root);
+    // This exe is the build of its own commit when it was made for the followed branch.
+    std::optional<std::string> self_commit;
+    if (!follow.empty() && state.source->kind == TesterBuild::Source::Kind::Branch &&
+        state.source->branch == follow) {
+        self_commit = TesterBuild::ParseRevParse(Common::g_scm_rev);
+    }
     const bool release_flag = args.contains(QStringLiteral("--release")) || ShiftHeld();
     const bool install_exists = TesterBuild::HasInstall(state);
 
     using Action = TesterBuild::LaunchAction;
-    if (TesterBuild::DecideLaunch(state, self_is_tester, release_flag, install_exists,
-                                  std::nullopt) == Action::RunRelease) {
+    // With an install the answer without a remote only depends on the flags, which is all that
+    // is needed to know whether anything has to be checked.
+    if (TesterBuild::DecideLaunch(state, self_is_tester, release_flag, true, std::nullopt) ==
+        Action::RunRelease) {
         return std::nullopt;
     }
     std::optional<TesterBuild::RemoteInfo> remote;
-    if (install_exists && CheckEnabled()) {
+    if ((install_exists || self_commit) && CheckEnabled()) {
         remote = CheckRemote(*state.source);
     }
-    const auto action =
-        TesterBuild::DecideLaunch(state, self_is_tester, release_flag, install_exists, remote);
+    const auto action = TesterBuild::DecideLaunch(state, self_is_tester, release_flag,
+                                                  install_exists, remote, self_commit);
+    if (action == Action::RunRelease) {
+        return std::nullopt;
+    }
 
     const auto name = QString::fromStdString(state.source->DisplayName());
     const QString self = SelfExe();
@@ -363,10 +391,16 @@ std::optional<int> Run(int argc, char** argv) {
                    ? start_builder(false)
                    : start_release();
     case Action::OfferUpdate: {
+        const auto old_sha = install_exists ? state.built_sha : self_commit.value_or(std::string{});
         const auto text = QObject::tr("%1 has a new commit (%2 -> %3).")
-                              .arg(name,
-                                   QString::fromStdString(TesterBuild::ShortSha(state.built_sha)),
+                              .arg(name, QString::fromStdString(TesterBuild::ShortSha(old_sha)),
                                    QString::fromStdString(TesterBuild::ShortSha(remote->sha)));
+        if (!install_exists) {
+            // Nothing installed to fall back on: this exe is the build to keep using.
+            return ask(text, {QObject::tr("Build now"), QObject::tr("Later")}, 1) == 0
+                       ? start_builder(false)
+                       : start_release();
+        }
         switch (ask(text,
                     {QObject::tr("Build now"), QObject::tr("Later"),
                      QObject::tr("Use release build")},
