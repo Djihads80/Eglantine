@@ -48,8 +48,8 @@ void ConfigureGraphicsAdvanced::Setup(const ConfigurationShared::Builder& builde
             ConfigureShaders::IsShaderSetting(setting->Id())) {
             continue;
         }
-        // Per-game configuration shows these in the game's Tweaks tab.
-        if (!Settings::IsConfiguringGlobal() && Settings::IsGameTweak(setting->GetLabel())) {
+        // Only the game's Tweaks tab in its properties shows these.
+        if (Settings::IsGameTweak(setting->GetLabel())) {
             continue;
         }
         ConfigurationShared::Widget* widget =
