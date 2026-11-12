@@ -806,3 +806,63 @@ TEST_CASE("DiskUsage and RemoveAll", "[tester]") {
     CHECK_FALSE(RemoveAll(Layout{}, ec));
     CHECK(ec);
 }
+
+TEST_CASE("DecideLaunch follows the policy", "[tester]") {
+    State state;
+    state.source = Source{Source::Kind::Branch, "dev", 0};
+    state.built_sha = Sha1;
+    const auto decide = [&](bool self_is_tester, bool release_flag, bool install_exists,
+                            const std::optional<RemoteInfo>& remote) {
+        return DecideLaunch(state, self_is_tester, release_flag, install_exists, remote);
+    };
+    const RemoteInfo same{Sha1};
+    const RemoteInfo newer{Sha2};
+
+    CHECK(decide(false, false, true, same) == LaunchAction::StartTester);
+    CHECK(decide(false, false, true, std::nullopt) == LaunchAction::StartTester);
+    CHECK(decide(false, false, true, newer) == LaunchAction::OfferUpdate);
+    CHECK(decide(false, false, false, same) == LaunchAction::OfferFirstBuild);
+    CHECK(decide(false, false, false, std::nullopt) == LaunchAction::OfferFirstBuild);
+
+    // The release, a tester install itself and --release never hand off.
+    CHECK(decide(true, false, true, newer) == LaunchAction::RunRelease);
+    CHECK(decide(false, true, true, newer) == LaunchAction::RunRelease);
+    CHECK(decide(false, true, false, std::nullopt) == LaunchAction::RunRelease);
+    state.source.reset();
+    CHECK(decide(false, false, true, newer) == LaunchAction::RunRelease);
+    CHECK(decide(false, false, false, std::nullopt) == LaunchAction::RunRelease);
+}
+
+TEST_CASE("DecideLaunch on a closed pull request", "[tester]") {
+    State state;
+    state.source = Source{Source::Kind::PullRequest, {}, 838};
+    state.built_sha = Sha1;
+
+    RemoteInfo remote{Sha1};
+    CHECK(DecideLaunch(state, false, false, true, remote) == LaunchAction::StartTester);
+    remote.pr_open = false;
+    CHECK(DecideLaunch(state, false, false, true, remote) == LaunchAction::OfferClosedPullRequest);
+    remote.pr_open = true;
+    remote.pr_merged = true;
+    CHECK(DecideLaunch(state, false, false, true, remote) == LaunchAction::OfferClosedPullRequest);
+    remote.pr_merged = false;
+    remote.sha = Sha2;
+    CHECK(DecideLaunch(state, false, false, true, remote) == LaunchAction::OfferUpdate);
+    // A branch's open/merged flags mean nothing.
+    state.source = Source{Source::Kind::Branch, "dev", 0};
+    remote.pr_open = false;
+    remote.sha = Sha1;
+    CHECK(DecideLaunch(state, false, false, true, remote) == LaunchAction::StartTester);
+}
+
+TEST_CASE("HasInstall needs the exe on disk", "[tester]") {
+    TempDir dir;
+    State state;
+    CHECK_FALSE(HasInstall(state));
+    state.current_install = PathToUtf8(dir.path / "installs" / "0123456789");
+    CHECK_FALSE(HasInstall(state));
+    Write(InstalledExe(dir.path / "installs" / "0123456789"), "x");
+    CHECK(HasInstall(state));
+    CHECK(ShortSha(Sha1) == "0123456789");
+    CHECK(ShortSha("abc") == "abc");
+}

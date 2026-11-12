@@ -1051,6 +1051,36 @@ void PruneInstalls(const Layout& layout, const State& state) {
     }
 }
 
+bool HasInstall(const State& state) {
+    std::error_code ec;
+    return !state.current_install.empty() &&
+           fs::is_regular_file(InstalledExe(PathFromUtf8(state.current_install)), ec);
+}
+
+std::string ShortSha(std::string_view sha) {
+    return std::string{sha.substr(0, 10)};
+}
+
+LaunchAction DecideLaunch(const State& state, bool self_is_tester, bool release_flag,
+                          bool install_exists, const std::optional<RemoteInfo>& remote) {
+    if (!state.source || self_is_tester || release_flag) {
+        return LaunchAction::RunRelease;
+    }
+    if (!install_exists) {
+        return LaunchAction::OfferFirstBuild;
+    }
+    if (remote) {
+        if (state.source->kind == Source::Kind::PullRequest &&
+            (!remote->pr_open || remote->pr_merged)) {
+            return LaunchAction::OfferClosedPullRequest;
+        }
+        if (!remote->sha.empty() && remote->sha != state.built_sha) {
+            return LaunchAction::OfferUpdate;
+        }
+    }
+    return LaunchAction::StartTester;
+}
+
 u64 DiskUsage(const fs::path& dir) {
     std::error_code ec;
     u64 total = 0;

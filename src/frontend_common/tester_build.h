@@ -203,6 +203,35 @@ bool Promote(const Layout& layout, std::string_view sha, State& state, std::erro
 // running exe cannot be deleted on Windows and goes next time.
 void PruneInstalls(const Layout& layout, const State& state);
 
+// Whether state.current_install holds a runnable exe.
+bool HasInstall(const State& state);
+
+// The first 10 characters, which name an install folder.
+std::string ShortSha(std::string_view sha);
+
+// What a check of the followed branch or pull request found.
+struct RemoteInfo {
+    std::string sha;
+    // Pull requests only.
+    std::string title;
+    std::string author;
+    bool pr_open{true};
+    bool pr_merged{};
+};
+
+enum class LaunchAction {
+    RunRelease,
+    StartTester,
+    OfferFirstBuild,
+    OfferUpdate,
+    OfferClosedPullRequest,
+};
+
+// What the release exe does at startup. `remote` is empty when the check failed, timed out or was
+// skipped, and an unknown remote never blocks starting the installed tester build.
+LaunchAction DecideLaunch(const State& state, bool self_is_tester, bool release_flag,
+                          bool install_exists, const std::optional<RemoteInfo>& remote);
+
 // Recursive size in bytes, 0 on error.
 u64 DiskUsage(const std::filesystem::path& dir);
 

@@ -1,0 +1,388 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include <chrono>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <vector>
+#include <QApplication>
+#include <QCoreApplication>
+#include <QMessageBox>
+#include <QProcess>
+#include <QProcessEnvironment>
+#include <QPushButton>
+#include "common/fs/path_util.h"
+#include "common/net/net.h"
+#include "frontend_common/config.h"
+#include "frontend_common/update_installer.h"
+#include "qt_common/config/uisettings.h"
+#include "tester_build_launcher.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#include <shellapi.h>
+#else
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+namespace TesterLauncher {
+
+namespace {
+
+namespace fs = std::filesystem;
+using namespace std::chrono_literals;
+
+constexpr auto RemoteTimeout = 5s;
+constexpr int WatchMilliseconds = 10'000;
+
+QString ToQ(const fs::path& path) {
+    return QString::fromUtf8(TesterBuild::PathToUtf8(path));
+}
+
+fs::path SelfPath() {
+#ifdef _WIN32
+    std::wstring buffer(32768, L'\0');
+    const DWORD size = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    buffer.resize(size);
+    return fs::path{buffer};
+#elif defined(__linux__)
+    std::error_code ec;
+    return fs::read_symlink("/proc/self/exe", ec);
+#else
+    return fs::path{QCoreApplication::applicationFilePath().toStdString()};
+#endif
+}
+
+QStringList Arguments(int argc, [[maybe_unused]] char** argv) {
+    QStringList args;
+#ifdef _WIN32
+    // argv is in the ANSI code page, which loses characters of a path.
+    int count = 0;
+    if (LPWSTR* wide = CommandLineToArgvW(GetCommandLineW(), &count)) {
+        for (int i = 1; i < count; ++i) {
+            args << QString::fromWCharArray(wide[i]);
+        }
+        LocalFree(wide);
+        return args;
+    }
+#endif
+    for (int i = 1; i < argc; ++i) {
+        args << QString::fromLocal8Bit(argv[i]);
+    }
+    return args;
+}
+
+QProcessEnvironment ChildEnvironment() {
+    auto environment = QProcessEnvironment::systemEnvironment();
+#ifndef _WIN32
+    const auto app_dir = environment.value(QStringLiteral("APPDIR"));
+    if (!app_dir.isEmpty()) {
+        for (const auto& key : environment.keys()) {
+            const auto value = environment.value(key);
+            if (!value.contains(app_dir)) {
+                continue;
+            }
+            const auto stripped = UpdateInstaller::StripPathListEntries(value.toStdString(),
+                                                                        app_dir.toStdString());
+            if (stripped.empty()) {
+                environment.remove(key);
+            } else {
+                environment.insert(key, QString::fromStdString(stripped));
+            }
+        }
+    }
+    for (const auto& key : {"APPDIR", "APPIMAGE", "ARGV0", "OWD"}) {
+        environment.remove(QString::fromLatin1(key));
+    }
+#endif
+    return environment;
+}
+
+bool ShiftHeld() {
+#ifdef _WIN32
+    return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+#else
+    return false;
+#endif
+}
+
+// Starts `program` and waits up to `timeout_ms` for it to end, without a QCoreApplication so the
+// silent handoff stays cheap. Returns false when it could not be started; `exit_code` is set when
+// it ended within the time.
+bool StartAndWatch(const QString& program, const QStringList& args, int timeout_ms,
+                   std::optional<int>& exit_code) {
+#ifdef _WIN32
+    qint64 pid = 0;
+    if (!QProcess::startDetached(program, args, QString{}, &pid)) {
+        return false;
+    }
+    if (HANDLE process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                                     static_cast<DWORD>(pid))) {
+        DWORD code = 0;
+        if (WaitForSingleObject(process, static_cast<DWORD>(timeout_ms)) == WAIT_OBJECT_0 &&
+            GetExitCodeProcess(process, &code)) {
+            exit_code = static_cast<int>(code);
+        }
+        CloseHandle(process);
+    }
+    return true;
+#else
+    std::vector<QByteArray> storage{program.toLocal8Bit()};
+    for (const auto& arg : args) {
+        storage.push_back(arg.toLocal8Bit());
+    }
+    std::vector<QByteArray> environment_storage;
+    for (const auto& entry : ChildEnvironment().toStringList()) {
+        environment_storage.push_back(entry.toLocal8Bit());
+    }
+    std::vector<char*> argv, envp;
+    for (auto& text : storage) {
+        argv.push_back(text.data());
+    }
+    for (auto& text : environment_storage) {
+        envp.push_back(text.data());
+    }
+    argv.push_back(nullptr);
+    envp.push_back(nullptr);
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+        return false;
+    }
+    if (pid == 0) {
+        setsid();
+        execve(argv[0], argv.data(), envp.data());
+        _exit(127);
+    }
+    for (int waited = 0; waited < timeout_ms; waited += 50) {
+        int status = 0;
+        if (waitpid(pid, &status, WNOHANG) == pid) {
+            exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+            return true;
+        }
+        std::this_thread::sleep_for(50ms);
+    }
+    return true;
+#endif
+}
+
+struct PendingRemote {
+    std::mutex mutex;
+    std::condition_variable done_signal;
+    bool done{};
+    RemoteResult result;
+};
+
+// A slow check is abandoned rather than waited for: its thread is detached and ends with the
+// process.
+std::optional<TesterBuild::RemoteInfo> CheckRemote(const TesterBuild::Source& source) {
+    const auto pending = std::make_shared<PendingRemote>();
+    std::thread{[pending, source] {
+        auto result = FetchRemote(source);
+        std::lock_guard lock{pending->mutex};
+        pending->result = std::move(result);
+        pending->done = true;
+        pending->done_signal.notify_all();
+    }}.detach();
+
+    std::unique_lock lock{pending->mutex};
+    if (!pending->done_signal.wait_for(lock, RemoteTimeout, [&] { return pending->done; })) {
+        return std::nullopt;
+    }
+    return pending->result.info;
+}
+
+bool CheckEnabled() {
+    Config::ReadGlobalSettingEarly("qt-config", UISettings::values.check_for_updates);
+    return UISettings::values.check_for_updates.GetValue();
+}
+
+} // namespace
+
+fs::path StateFile() {
+    return TesterBuild::StatePath(Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir));
+}
+
+QString SelfExe() {
+    const auto image = qEnvironmentVariable("APPIMAGE");
+    return image.isEmpty() ? ToQ(SelfPath()) : image;
+}
+
+RemoteResult FetchRemote(const TesterBuild::Source& source) {
+    const auto fetched = source.kind == TesterBuild::Source::Kind::Branch
+                             ? Common::Net::GetBranchHead(source.branch)
+                             : Common::Net::GetPullRequestHead(source.pr);
+    RemoteResult result;
+    result.status = fetched.status;
+    if (fetched.head) {
+        result.info = TesterBuild::RemoteInfo{fetched.head->sha, fetched.head->title,
+                                              fetched.head->author, fetched.head->open,
+                                              fetched.head->merged};
+    }
+    return result;
+}
+
+bool StartDetached(const QString& program, const QStringList& args, const QString& working_dir) {
+    QProcess process;
+    process.setProgram(program);
+    process.setArguments(args);
+    if (!working_dir.isEmpty()) {
+        process.setWorkingDirectory(working_dir);
+    }
+#ifndef _WIN32
+    process.setProcessEnvironment(ChildEnvironment());
+#endif
+    return process.startDetached();
+}
+
+bool StartBuilder(const QString& exe, bool force, const QString& source) {
+    QStringList args{QStringLiteral("--tester-build")};
+    if (force) {
+        args << QStringLiteral("--force");
+    }
+    if (!source.isEmpty()) {
+        args << QStringLiteral("--source") << source;
+    }
+    return StartDetached(exe, args);
+}
+
+std::optional<int> Run(int argc, char** argv) {
+    const auto args = Arguments(argc, argv);
+    auto state = TesterBuild::LoadState(StateFile());
+    if (!state.source) {
+        return std::nullopt;
+    }
+    const auto root = TesterBuild::DefaultRoot();
+    const bool self_is_tester = !root.empty() && TesterBuild::IsTesterInstall(SelfPath(), root);
+    const bool release_flag = args.contains(QStringLiteral("--release")) || ShiftHeld();
+    const bool install_exists = TesterBuild::HasInstall(state);
+
+    using Action = TesterBuild::LaunchAction;
+    if (TesterBuild::DecideLaunch(state, self_is_tester, release_flag, install_exists,
+                                  std::nullopt) == Action::RunRelease) {
+        return std::nullopt;
+    }
+    std::optional<TesterBuild::RemoteInfo> remote;
+    if (install_exists && CheckEnabled()) {
+        remote = CheckRemote(*state.source);
+    }
+    const auto action =
+        TesterBuild::DecideLaunch(state, self_is_tester, release_flag, install_exists, remote);
+
+    const auto name = QString::fromStdString(state.source->DisplayName());
+    const QString self = SelfExe();
+    const QString install_exe =
+        install_exists
+            ? ToQ(TesterBuild::InstalledExe(TesterBuild::PathFromUtf8(state.current_install)))
+            : QString{};
+
+    // Only a prompt needs a QApplication.
+    std::optional<QApplication> app;
+    // Returns the index of the clicked button; closing the window gives `on_close`.
+    const auto ask = [&](const QString& text, const QStringList& buttons, int on_close) {
+        if (!app) {
+#ifdef _WIN32
+            QApplication::setStyle(QStringLiteral("windowsvista"));
+#endif
+            app.emplace(const_cast<int&>(argc), argv);
+        }
+        QMessageBox box{QMessageBox::Question, QObject::tr("Eglantine"), text};
+        std::vector<QAbstractButton*> created;
+        for (const auto& label : buttons) {
+            created.push_back(box.addButton(label, QMessageBox::ActionRole));
+        }
+        box.setDefaultButton(static_cast<QPushButton*>(created[0]));
+        box.setEscapeButton(created[static_cast<std::size_t>(on_close)]);
+        box.exec();
+        for (std::size_t i = 0; i < created.size(); ++i) {
+            if (box.clickedButton() == created[i]) {
+                return static_cast<int>(i);
+            }
+        }
+        return on_close;
+    };
+    const auto start_release = [&] {
+        if (!StartDetached(self, QStringList{QStringLiteral("--release")} + args)) {
+            ask(QObject::tr("Could not start %1.").arg(self), {QObject::tr("Close")}, 0);
+        }
+        return 0;
+    };
+    const auto start_builder = [&](bool force) {
+        if (!StartBuilder(self, force)) {
+            ask(QObject::tr("Could not start %1.").arg(self), {QObject::tr("Close")}, 0);
+        }
+        return 0;
+    };
+    // `watch` is false when the user was already asked something and the build just runs.
+    const auto start_tester = [&](bool watch) {
+        std::optional<int> exit_code;
+        const bool started =
+            StartAndWatch(install_exe, args, watch ? WatchMilliseconds : 0, exit_code);
+        if (started && (!exit_code || *exit_code == 0)) {
+            return 0;
+        }
+        const auto text = started ? QObject::tr("The tester build closed right after starting.")
+                                  : QObject::tr("The tester build could not be started.");
+        switch (ask(text,
+                    {QObject::tr("Rebuild"), QObject::tr("Use release build"),
+                     QObject::tr("Close")},
+                    2)) {
+        case 0:
+            return start_builder(true);
+        case 1:
+            return start_release();
+        default:
+            return 0;
+        }
+    };
+
+    switch (action) {
+    case Action::OfferFirstBuild:
+        return ask(QObject::tr("No tester build of %1 is installed yet.").arg(name),
+                   {QObject::tr("Build now"), QObject::tr("Use release build")}, 1) == 0
+                   ? start_builder(false)
+                   : start_release();
+    case Action::OfferUpdate: {
+        const auto text = QObject::tr("%1 has a new commit (%2 -> %3).")
+                              .arg(name,
+                                   QString::fromStdString(TesterBuild::ShortSha(state.built_sha)),
+                                   QString::fromStdString(TesterBuild::ShortSha(remote->sha)));
+        switch (ask(text,
+                    {QObject::tr("Build now"), QObject::tr("Later"),
+                     QObject::tr("Use release build")},
+                    1)) {
+        case 0:
+            return start_builder(false);
+        case 2:
+            return start_release();
+        default:
+            return start_tester(false);
+        }
+    }
+    case Action::OfferClosedPullRequest: {
+        const auto text = (remote->pr_merged ? QObject::tr("%1 was merged.")
+                                             : QObject::tr("%1 was closed."))
+                              .arg(name);
+        if (ask(text,
+                {QObject::tr("Keep using it"),
+                 QObject::tr("Use release build and stop following")},
+                0) == 1) {
+            state.source.reset();
+            std::error_code ec;
+            TesterBuild::SaveState(StateFile(), state, ec);
+            return start_release();
+        }
+        return start_tester(false);
+    }
+    case Action::StartTester:
+    case Action::RunRelease:
+        break;
+    }
+    return start_tester(true);
+}
+
+} // namespace TesterLauncher
