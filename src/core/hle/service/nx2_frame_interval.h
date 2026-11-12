@@ -8,6 +8,7 @@
 #include <chrono>
 
 #include "common/common_types.h"
+#include "common/game_presets.h"
 
 namespace Service::Nx2FrameInterval {
 
@@ -16,7 +17,7 @@ namespace Service::Nx2FrameInterval {
 // player and 2 in split screen, so below 60 fps one player runs in slow motion. The loader finds
 // the global (and the value the game copies into it) next to its single copy; with
 // hyrule_dynamic_fps the present path switches it to 2 while the game runs below about 50 fps.
-inline constexpr u64 HyruleWarriorsProgramId = 0x04003F40232DE000ULL;
+inline constexpr u64 HyruleWarriorsProgramId = Settings::HyruleWarriorsProgramId;
 
 /// Picks 1 (60 fps) or 2 (30 fps) from the time between presents.
 class Controller {
