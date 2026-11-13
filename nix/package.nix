@@ -10,10 +10,12 @@
 , pgo ? false
 , # CPU tuning, off by default, only here for tinkerers
   march ? null
-, # mark the binary as a Nix-specific build
-  # off by default as the output should be practically identical
-  # to the non-Nix builds
-  nixBuildIdentity ? false
+, # mark the binary as a Nix-specific build. On by default: the dependency set
+  # is not identical to the release builds. Several dependencies come from
+  # nixpkgs rather than cpmfile.json (and at nixpkgs' version where the
+  # manifest pin could not be carried over), so the title bar says where the
+  # binary came from instead of implying it is the same build as the tarball.
+  nixBuildIdentity ? true
 ,
 }:
 
