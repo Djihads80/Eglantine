@@ -27,8 +27,9 @@ jobs:
     uses: ./.github/workflows/build-nix.yml
     with:
       sha: ${{ github.event.pull_request.head.sha || github.sha }}
-      os: ${{ inputs.os || 'all' }}
-      pgo: ${{ inputs.pgo || 'both' || 'only' }}
+      linux: ${{ inputs.os == 'all' || inputs.os == 'linux' }}
+      macos: ${{ inputs.os == 'all' || inputs.os == 'macos' }}
+      pgo: ${{ inputs.pgo || 'both' }}
     secrets:
       CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
 

@@ -7,12 +7,13 @@
 , # CMakeLists.txt calls AddJsonPackage for some entries only on some
   # platforms, and those decisions are CMake code rather than manifest data,
   # so a reader has to be told what this platform never downloads:
-  #   vulkan-validation-layers  :306  if (ANDROID AND YUZU_DOWNLOAD_ANDROID_VVL)
-  #   llvm-mingw                :719  the clang-cl (Windows) branch
+  #   vulkan-validation-layers  inside `if (ANDROID AND YUZU_DOWNLOAD_ANDROID_VVL)`
+  #   llvm-mingw                the clang-cl (Windows) branch
   #   linkernsbypass            never AddJsonPackage'd in CMakeLists.txt
+  # (conditions, not line numbers: the numbers drifted twice in four days)
   #
   # moltenvk is the one entry that differs between the platforms we build:
-  # externals/CMakeLists.txt:438 reaches AddJsonPackage(moltenvk) inside
+  # externals/CMakeLists.txt reaches AddJsonPackage(moltenvk) inside
   # `if (APPLE)`, so Linux never downloads it and darwin does. On darwin it is
   # therefore left in the fetch set, which is more robust than relying on
   # find_library(MOLTENVK_LIBRARY ...) finding a system copy: if that lookup
@@ -99,14 +100,18 @@ let
           in
           !(builtins.elem top [
             ".ci"
+            ".claude"
             ".forgejo"
             ".github"
             ".tx"
             "docs"
+            "hooks"
             "nix"
           ])
           && !(lib.hasSuffix ".md" base)
           && !(builtins.elem base [
+            ".mcp.json"
+            "relower_words.cpp"
             ".clang-format"
             ".clang-tidy"
             ".editorconfig"
