@@ -1085,6 +1085,9 @@ void DmaPusher::RefreshDeferredEntries(CommandList& list) {
 }
 
 namespace {
+/// EDEN_NX2_LIST_SPECULATE: longer lists wait for their writers as before.
+constexpr size_t MaxSpeculatedListPages = 16;
+
 bool ListSpeculation() {
     static const bool enabled = [] {
         const char* value = std::getenv("EDEN_NX2_LIST_SPECULATE");
@@ -1106,33 +1109,42 @@ bool DmaPusher::SpeculateList(GPUVAddr address, size_t size) {
         !VideoCommon::GpuSplit::Get().SyncedWritersQueued()) {
         return false; // nothing to wait for: read it as before
     }
+    namespace Profile = VideoCommon::Nx2Profile;
     const GPUVAddr first_page = address & ~GPUVAddr{0xfff};
     const GPUVAddr last_page = (address + size - 1) & ~GPUVAddr{0xfff};
-    if (last_page - first_page > 0x1000) {
-        return false; // more than two pages: wait as before
-    }
-    const auto first = memory_manager.GpuToCpuAddress(first_page);
-    const auto last = memory_manager.GpuToCpuAddress(last_page);
-    if (!first || !last) {
+    if (last_page - first_page >= MaxSpeculatedListPages * 0x1000) {
+        Profile::Add(Profile::Counter::ListSpeculationLong, 1);
         return false;
     }
-    VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::ListsSpeculated, 1);
-    VideoCommon::GpuSplit::Get().Defer(
-        [first = *first, last = *last, address, size, channel = channel_state.bind_id] {
-            if (!Tegra::Nx2IsGpuWritten(first) && !Tegra::Nx2IsGpuWritten(last)) {
-                return;
-            }
-            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::ListSpeculationHazards,
-                                         1);
-            static std::atomic<u32> logged{};
-            if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
-                LOG_ERROR(HW_GPU,
-                          "List speculation hazard: channel {} parsed {:#x}+{:#x} before the "
-                          "work that writes its pages (device {:#x}) ran",
-                          channel, address, size, first);
-            }
-        },
-        VideoCommon::GpuSplit::Effect::None);
+    std::array<DAddr, MaxSpeculatedListPages> devices{};
+    size_t num_pages = 0;
+    for (GPUVAddr page = first_page; page <= last_page; page += 0x1000) {
+        const auto device = memory_manager.GpuToCpuAddress(page);
+        if (!device) {
+            Profile::Add(Profile::Counter::ListSpeculationUnmapped, 1);
+            return false;
+        }
+        devices[num_pages++] = *device;
+    }
+    Profile::Add(Profile::Counter::ListsSpeculated, 1);
+    for (size_t i = 0; i < num_pages; ++i) {
+        VideoCommon::GpuSplit::Get().Defer(
+            [page = devices[i], address, size, channel = channel_state.bind_id] {
+                if (!Tegra::Nx2IsGpuWritten(page)) {
+                    return;
+                }
+                VideoCommon::Nx2Profile::Add(
+                    VideoCommon::Nx2Profile::Counter::ListSpeculationHazards, 1);
+                static std::atomic<u32> logged{};
+                if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
+                    LOG_ERROR(HW_GPU,
+                              "List speculation hazard: channel {} parsed {:#x}+{:#x} before the "
+                              "work that writes its pages (device {:#x}) ran",
+                              channel, address, size, page);
+                }
+            },
+            VideoCommon::GpuSplit::Effect::None);
+    }
     return true;
 }
 
@@ -1155,20 +1167,28 @@ bool DmaPusher::ReadSpeculatedGpuWrittenCommands(GPUVAddr address, u32 count) {
     // texture binding lists share pages with storage the GPU writes, and guest memory held the
     // same words as the copy in every check (26,000 of 26,000). The back compares each read with
     // the page's copy once the GPU made it; a page that differed once waits from then on.
+    namespace Profile = VideoCommon::Nx2Profile;
     const GPUVAddr end = address + u64{count} * sizeof(u32);
-    if (((end - 1) & ~GPUVAddr{0xfff}) - (address & ~GPUVAddr{0xfff}) > 0x1000) {
-        return false; // more than two pages
+    if (((end - 1) & ~GPUVAddr{0xfff}) - (address & ~GPUVAddr{0xfff}) >=
+        MaxSpeculatedListPages * 0x1000) {
+        Profile::Add(Profile::Counter::ListSpeculationLong, 1);
+        return false;
     }
     struct Part {
         DAddr device;
         u32 size;
     };
-    std::array<Part, 2> parts{};
+    std::array<Part, MaxSpeculatedListPages> parts{};
     size_t num_parts = 0;
     for (GPUVAddr chunk = address; chunk < end;) {
         const GPUVAddr chunk_end = (std::min)(end, (chunk & ~GPUVAddr{0xfff}) + 0x1000);
         const auto device = memory_manager.GpuToCpuAddress(chunk);
-        if (!device || !rasterizer->Nx2ListSpeculationAllowed(*device & ~DAddr{0xfff})) {
+        if (!device) {
+            Profile::Add(Profile::Counter::ListSpeculationUnmapped, 1);
+            return false;
+        }
+        if (!rasterizer->Nx2ListSpeculationAllowed(*device & ~DAddr{0xfff})) {
+            Profile::Add(Profile::Counter::ListSpeculationHazardPage, 1);
             return false;
         }
         parts[num_parts++] = {*device, static_cast<u32>(chunk_end - chunk)};

@@ -347,6 +347,11 @@ enum class Counter : u32 {
     /// (counted by the back when it reaches the list)
     ListsSpeculated,
     ListSpeculationHazards,
+    /// Lists that still waited for their writers with speculation on, by why: more than 16
+    /// pages, an unmapped page, a page a speculated read of differed on
+    ListSpeculationLong,
+    ListSpeculationUnmapped,
+    ListSpeculationHazardPage,
     /// Acquire trigger drains by reason (puller.cpp AcquireDrainReason, same order): count, time
     /// in ns, and how many the drain met
     AcquireDrainNotGequal,
@@ -576,6 +581,15 @@ inline void Report(const char* thread_name = "GPU thread") {
         line += fmt::format(" | lists parsed without waiting for writers {:.0f} ({:.0f} hazards)",
                             per_second(Counter::ListsSpeculated),
                             per_second(Counter::ListSpeculationHazards));
+    }
+    if (data.counters[static_cast<size_t>(Counter::ListSpeculationLong)] != 0 ||
+        data.counters[static_cast<size_t>(Counter::ListSpeculationUnmapped)] != 0 ||
+        data.counters[static_cast<size_t>(Counter::ListSpeculationHazardPage)] != 0) {
+        line += fmt::format(" | lists that still waited: long {:.0f}, unmapped {:.0f}, hazard "
+                            "page {:.0f}",
+                            per_second(Counter::ListSpeculationLong),
+                            per_second(Counter::ListSpeculationUnmapped),
+                            per_second(Counter::ListSpeculationHazardPage));
     }
     if (data.counters[static_cast<size_t>(Counter::ListGuestReads)] != 0) {
         line += fmt::format(" | lists read from guest memory past GPU writes {:.0f}",
