@@ -281,6 +281,15 @@ option(YUZU_LEGACY "Apply patches that improve compatibility with older GPUs (e.
 
 option(NIGHTLY_BUILD "Use Nightly qualifiers in the update checker and build metadata" OFF)
 
+# GetSCMRev (CMakeModules/GetSCMRev.cmake) reads GIT-COMMIT, GIT-REFSPEC,
+# GIT-TAG and GIT-RELEASE from the source root so a build with no .git still
+# reports the identity the CI handed it. GIT-NIGHTLY does the same for this
+# option, so a builder that cannot pass -D (a Nix derivation, a source tarball)
+# can still mark a nightly without growing an extra package per qualifier.
+if (EXISTS ${CMAKE_SOURCE_DIR}/GIT-NIGHTLY)
+    set(NIGHTLY_BUILD ON)
+endif()
+
 cmake_dependent_option(YUZU_ROOM "Enable dedicated room functionality" ON "NOT ANDROID" OFF)
 cmake_dependent_option(YUZU_ROOM_STANDALONE "Enable standalone room executable" ON "YUZU_ROOM" OFF)
 

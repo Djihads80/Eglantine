@@ -61,7 +61,7 @@ jobs:
         uses: DeterminateSystems/flake-checker-action@v14
 
   build:
-    name: nix-${{ matrix.system }}${{ inputs.nightly && '-nightly' || '' }}${{ matrix.pgo && '-pgo' || '' }}
+    name: nix-${{ matrix.system }}${{ matrix.pgo && '-pgo' || '' }}
     needs: flake
     runs-on: ${{ matrix.system == 'aarch64-darwin' && (vars.MACOS_RUNNER || 'macos-26') || (matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'ubuntu-24.04') }}
     strategy:
@@ -91,6 +91,7 @@ jobs:
           SCM_REFSPEC: ${{ inputs.refspec }}
           SCM_TAG: ${{ inputs.tag }}
           SCM_RELEASE: ${{ inputs.release }}
+          SCM_NIGHTLY: ${{ inputs.nightly }}
         run: |
           set -uo pipefail
           printf '%s\n' "$SCM_SHA" > GIT-COMMIT
@@ -99,10 +100,13 @@ jobs:
             printf '%s\n' "$SCM_TAG" > GIT-TAG
             if [ "$SCM_RELEASE" = "true" ]; then printf '%s\n' "$SCM_TAG" > GIT-RELEASE; fi
           fi
-          for f in GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE; do
+          # CMakeLists.txt turns NIGHTLY_BUILD on when this file exists, so a
+          # nightly is a tree property rather than a second package output.
+          if [ "$SCM_NIGHTLY" = "true" ]; then printf 'nightly\n' > GIT-NIGHTLY; fi
+          for f in GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE GIT-NIGHTLY; do
             [ -f "$f" ] && git add -f "$f"
           done
-          head -v GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE 2> /dev/null || true
+          head -v GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE GIT-NIGHTLY 2> /dev/null || true
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
@@ -185,7 +189,7 @@ jobs:
             | grep -E 'Cacheable|Hits|Misses|Cache size' || echo 'no statistics'
 
       - name: Build
-        run: nix build -L .#packages.${{ matrix.system }}.eglantine${{ inputs.nightly && '-nightly' || '' }}${{ matrix.pgo && '-pgo' || '' }}
+        run: nix build -L .#packages.${{ matrix.system }}.eglantine${{ matrix.pgo && '-pgo' || '' }}
 
       - name: Open the ccache tree for the save
         if: always()

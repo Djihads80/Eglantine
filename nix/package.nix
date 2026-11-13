@@ -8,7 +8,6 @@
 , src
 , version
 , pgo ? false
-, nightly ? false
 , # CPU tuning, off by default, only here for tinkerers
   march ? null
 , # mark the binary as a Nix-specific build
@@ -44,8 +43,6 @@ let
 
   archFlags = lib.optionalString (march != null) "-march=${march} -mtune=${march}";
 
-  onOff = b: if b then "ON" else "OFF";
-
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
 
   pgoBintools = lib.optional (pgo && !isDarwin) llvmPackages_23.bintools;
@@ -77,7 +74,10 @@ buildEdenEmulator (
       "-DYUZU_ROOM=OFF"
       "-DVulkanHeaders_FORCE_BUNDLED=ON"
       "-DVulkanUtilityLibraries_FORCE_BUNDLED=ON"
-      "-DNIGHTLY_BUILD=${onOff nightly}"
+
+      # NIGHTLY_BUILD is not a flag here: CMakeLists.txt turns it on when a
+      # GIT-NIGHTLY file sits in the source root, the same way GIT-RELEASE
+      # already decides release-ness. CI drops that file in before building.
 
       # Matching upstream's build-linux.yml, which has always passed this for
       # the Linux release. discord-rpc comes from cpmfile.json like everything
