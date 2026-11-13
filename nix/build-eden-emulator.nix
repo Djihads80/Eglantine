@@ -202,12 +202,14 @@ in
 {
   inherit cpmDeps customDirFlags;
 
-  # Everything the caller has to supply beyond a source tree is the extra
-  # system dependencies and the configure flags the repository's CI uses.
+  # Everything the caller has to supply beyond a source tree is the system
+  # dependencies and the configure flags the repository's CI uses.
   #
-  # The base system dependency set is inherited from nixpkgs' `eden`: this
-  # family of builds needs exactly that set, and re-listing it here would be a
-  # second, silently-drifting copy of it.
+  # The dependency lists are the caller's, not nixpkgs' `eden`'s. They used to
+  # default to that package's inputs, which made this derivation's dependency
+  # set another emulator's decision -- and made it impossible to submit the
+  # package to nixpkgs, where you cannot inherit from a sibling derivation.
+  # `nix/package.nix` passes Eglantine's own list.
   buildEdenEmulator =
     { src
     , version
@@ -215,8 +217,8 @@ in
     , # builder is replaced for PGO builds,
       # which means different stdenv
       stdenv ? pkgs.stdenv
-    , nativeBuildInputs ? (pkgs.eden.nativeBuildInputs or (throw "pkgs.eden.nativeBuildInputs is missing; buildEdenEmulator leverages it as a base for its own"))
-    , buildInputs ? (pkgs.eden.buildInputs or (throw "pkgs.eden.buildInputs is missing; buildEdenEmulator leverages it as a base for its own"))
+    , nativeBuildInputs ? [ ]
+    , buildInputs ? [ ]
     , extraNativeBuildInputs ? [ ]
     , extraBuildInputs ? [ ]
     , cmakeFlags ? [ ]
