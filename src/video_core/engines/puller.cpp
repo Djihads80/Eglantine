@@ -373,6 +373,13 @@ bool Puller::PollAcquire(DmaPusher& dma_pusher) {
                     dma_pusher.memory_manager.Read<u32>((pending_acquire->address & ~GPUVAddr{0xf}) + 4),
                     dma_pusher.memory_manager.Read<u32>((pending_acquire->address & ~GPUVAddr{0xf}) + 8),
                     dma_pusher.memory_manager.Read<u32>((pending_acquire->address & ~GPUVAddr{0xf}) + 12));
+        // Who should have written it: GPU writes seen while suspended (none: the CPU, a write
+        // path that doesn't latch waiters, or work that never ran).
+        const auto [writes, last_written] = Nx2SemaphoreWaiters::Get().Writes(this);
+        LOG_WARNING(HW_GPU, "Channel {} stuck acquire: {} GPU writes to the word while suspended "
+                    "(last {:#x}), suspended {}",
+                    dma_pusher.channel_state.bind_id, writes, last_written,
+                    pending_acquire->no_drain ? "without a drain" : "after a drain");
     }
     return false;
 }
@@ -385,6 +392,19 @@ bool Puller::ResumeAcquire(DmaPusher& dma_pusher) {
     // counting those made the count odd ("suspended") at random, so submit-time snapshots were
     // thrown away for about half of all entries (CommandList::snapshot_suspensions).
     if (pending_acquire) {
+        if (const u64 watch = Nx2SemWatchDevice(); watch != 0) [[unlikely]] {
+            const auto device = dma_pusher.memory_manager.GpuToCpuAddress(pending_acquire->address);
+            if (device && (*device & ~u64{3}) == watch && Nx2SemWatchLog()) {
+                LOG_INFO(HW_GPU, "Sem watch: channel {} resumes after {} us, {}, memory {:#x}",
+                         dma_pusher.channel_state.bind_id,
+                         std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - pending_acquire->since)
+                             .count(),
+                         Nx2SemaphoreWaiters::Get().Latched(this) ? "latched by a GPU write"
+                                                                    : "by a memory read",
+                         dma_pusher.memory_manager.Read<u32>(pending_acquire->address));
+            }
+        }
         if (pending_acquire->stats) [[unlikely]] {
             AcquireStats::Get().NoteResumed(
                 pending_acquire->address,
@@ -543,6 +563,16 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             return;
         }
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireChecks, 1);
+        const bool watched = [&] {
+            const u64 watch = Nx2SemWatchDevice();
+            const auto device = dma_pusher.memory_manager.GpuToCpuAddress(acquire.address);
+            return watch != 0 && device && (*device & ~u64{3}) == watch;
+        }();
+        if (watched && Nx2SemWatchLog()) [[unlikely]] {
+            LOG_INFO(HW_GPU, "Sem watch: channel {} acquire op {} value {:#x} at {:#x}, memory {:#x}",
+                     dma_pusher.channel_state.bind_id, acquire.operation, acquire.value,
+                     acquire.address, dma_pusher.memory_manager.Read<u32>(acquire.address));
+        }
         AcquireDrainReason drain_reason{};
         if (const AcquireCheck without_drain = CheckWithoutDrain(dma_pusher, acquire, drain_reason);
             without_drain == AcquireCheck::Met || without_drain == AcquireCheck::MetByQueued) {
@@ -575,6 +605,11 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         DrainBack(VideoCommon::DrainSite::AcquireTrigger);
         const u32 drained = ReadSemaphoreWord(dma_pusher, acquire.address);
         const bool met_after_drain = acquire.Matches(drained);
+        if (watched && Nx2SemWatchLog()) [[unlikely]] {
+            LOG_INFO(HW_GPU, "Sem watch: channel {} after the trigger drain {:#x} ({}, reason {})",
+                     dma_pusher.channel_state.bind_id, drained,
+                     met_after_drain ? "met" : "not met", static_cast<u32>(drain_reason));
+        }
         if (AcquireStats::On()) [[unlikely]] {
             AcquireStats::Get().NoteDrain(
                 acquire.address, acquire.operation, dma_pusher.channel_state.bind_id,

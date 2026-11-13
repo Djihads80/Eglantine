@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include "common/common_types.h"
+#include "common/logging.h"
 #include "common/thread.h"
 #include "video_core/nx2_perf.h"
 
@@ -648,6 +650,21 @@ inline void Wake(std::atomic<u64>& seq, u32 reason) {
 }
 } // namespace Nx2PendingWake
 
+/// EDEN_NX2_SEM_WATCH_DEVICE=<hex device address>: logs every GPU write to that u32 and every
+/// acquire on it (the GPU address of a game's semaphore changes between runs, the device address
+/// of some stays put). Capped, for short runs.
+inline u64 Nx2SemWatchDevice() {
+    static const u64 device = [] {
+        const char* value = std::getenv("EDEN_NX2_SEM_WATCH_DEVICE");
+        return value ? u64{std::strtoull(value, nullptr, 16)} : u64{};
+    }();
+    return device;
+}
+inline bool Nx2SemWatchLog() {
+    static std::atomic<u32> lines{};
+    return lines.fetch_add(1, std::memory_order_relaxed) < 20000;
+}
+
 /// Channels suspended on a semaphore acquire. A console channel polls and sees every release;
 /// Eden writes releases in bursts when fences signal and resumes waiters only between command
 /// lists, so an acquire-equal could miss its value. Writes latch the waiters they satisfy.
@@ -666,7 +683,7 @@ public:
     void Add(const void* owner, u64 device_address, u32 value, u32 operation) {
         std::scoped_lock lk{mutex};
         std::erase_if(waiters, [owner](const Waiter& w) { return w.owner == owner; });
-        waiters.push_back({owner, device_address, value, operation, false});
+        waiters.push_back({owner, device_address, value, operation, false, 0, 0});
         count.store(waiters.size(), std::memory_order_release);
     }
 
@@ -688,8 +705,24 @@ public:
                                    [owner](const Waiter& w) { return w.owner == owner && w.latched; });
     }
 
+    /// GPU writes to the owner's word since it suspended, and the last value written.
+    [[nodiscard]] std::pair<u32, u32> Writes(const void* owner) {
+        std::scoped_lock lk{mutex};
+        for (const auto& w : waiters) {
+            if (w.owner == owner) {
+                return {w.writes, w.last_written};
+            }
+        }
+        return {};
+    }
+
     /// A GPU write of `value` to the u32 at `device_address`.
     void OnWrite(u64 device_address, u32 value) {
+        if (const u64 watch = Nx2SemWatchDevice(); watch != 0 && (device_address & ~u64{3}) == watch &&
+                                                   Nx2SemWatchLog()) [[unlikely]] {
+            LOG_INFO(HW_GPU, "Sem watch: GPU write {:#x} = {:#x} ({} waiters)", device_address,
+                     value, count.load(std::memory_order_relaxed));
+        }
         if (count.load(std::memory_order_acquire) == 0) {
             return;
         }
@@ -697,6 +730,10 @@ public:
         {
             std::scoped_lock lk{mutex};
             for (auto& w : waiters) {
+                if (w.address == device_address) {
+                    ++w.writes;
+                    w.last_written = value;
+                }
                 if (w.address == device_address && !w.latched && Matches(w, value)) {
                     w.latched = true;
                     latched = true;
@@ -716,6 +753,8 @@ private:
         u32 value;
         u32 operation;
         bool latched;
+        u32 writes;       ///< GPU writes to the word while suspended
+        u32 last_written; ///< The last of them
     };
 
     static bool Matches(const Waiter& w, u32 current) {
