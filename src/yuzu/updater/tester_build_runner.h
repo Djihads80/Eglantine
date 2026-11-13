@@ -139,6 +139,8 @@ private:
     std::deque<QString> m_tail;
 
     TesterBuild::Platform m_platform;
+    // The release asset platform of the CI builds to download.
+    std::string m_download_platform;
     TesterBuild::Layout m_layout;
     std::filesystem::path m_state_path;
     TesterBuild::State m_state;

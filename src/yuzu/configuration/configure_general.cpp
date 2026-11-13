@@ -74,10 +74,14 @@ void ConfigureGeneral::Setup(const ConfigurationShared::Builder& builder) {
     push(UISettings::values.linkage.by_category[Settings::Category::UiGeneral]);
     for (const auto setting : settings) {
         const bool is_update_channel = setting->Id() == UISettings::values.update_channel.Id();
-        const bool is_update_setting =
-            is_update_channel || setting->Id() == UISettings::values.check_for_updates.Id();
+        const bool is_update_variant = setting->Id() == UISettings::values.update_variant.Id();
+        const bool is_update_setting = is_update_channel || is_update_variant ||
+                                       setting->Id() == UISettings::values.check_for_updates.Id();
 #ifdef ENABLE_UPDATE_CHECKER
         if (is_update_channel && !UpdateChecker::BuildChannel()) {
+            continue;
+        }
+        if (is_update_variant && Common::g_build_release_platform[0] == '\0') {
             continue;
         }
 #else

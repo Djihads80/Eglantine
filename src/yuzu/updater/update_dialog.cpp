@@ -19,6 +19,7 @@
 #include "common/scm_rev.h"
 #include "qt_common/abstract/frontend.h"
 #include "qt_common/abstract/progress.h"
+#include "qt_common/config/uisettings.h"
 #ifdef ENABLE_UPDATE_CHECKER
 #include "frontend_common/update_installer.h"
 #ifdef _WIN32
@@ -61,7 +62,9 @@ UpdateDialog::UpdateDialog(const Common::Net::Release& release, UpdateChecker::C
     connect(skip, &QPushButton::clicked, this, [this] { done(SkipVersion); });
 
     // TODO(crueter): Find a way to set default
-    const auto assets = release.GetPlatformAssets();
+    const auto assets = release.GetPlatformAssets(
+        UpdateChecker::DownloadPlatform(UISettings::values.update_variant.GetValue()),
+        Common::Net::CurrentLinuxPackage());
 
     ui->buttonBox->button(QDialogButtonBox::Yes)
         ->setText(assets.empty() ? tr("Open Release Page") : tr("Download"));

@@ -57,7 +57,21 @@ std::optional<Common::Net::Release> SelectUpdate(std::span<const Common::Net::Re
     return selected ? std::make_optional(*selected) : std::nullopt;
 }
 
-CheckResult Check(Channel channel) {
+std::string DownloadPlatform(Settings::UpdateVariant variant, std::string_view build_platform) {
+    if (build_platform.empty() || variant == Settings::UpdateVariant::Auto) {
+        return std::string{build_platform};
+    }
+    if (build_platform.ends_with("-pgo")) {
+        build_platform.remove_suffix(4);
+    }
+    std::string platform{build_platform};
+    if (variant == Settings::UpdateVariant::Pgo) {
+        platform += "-pgo";
+    }
+    return platform;
+}
+
+CheckResult Check(Channel channel, std::string_view platform) {
     if (!ParseTag(Common::g_build_version)) {
         return {.failure = Failure::NotReleaseBuild};
     }
@@ -68,8 +82,7 @@ CheckResult Check(Channel channel) {
         return {.failure = ClassifyFailure(list.status), .status = list.status};
     }
 
-    auto update = SelectUpdate(list.releases, Common::g_build_version, channel,
-                               Common::g_build_release_platform,
+    auto update = SelectUpdate(list.releases, Common::g_build_version, channel, platform,
                                Common::Net::CurrentLinuxPackage());
     if (update) {
         LOG_INFO(Frontend, "Received update {}", update->title);

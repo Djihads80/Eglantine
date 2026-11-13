@@ -12,6 +12,8 @@
 #include <QVersionNumber>
 #include "common/fs/path_util.h"
 #include "common/scm_rev.h"
+#include "frontend_common/update_checker.h"
+#include "qt_common/config/uisettings.h"
 #include "download.h"
 #include "tester_build_launcher.h"
 #include "qt_common/util/compress.h"
@@ -83,6 +85,8 @@ bool SameFile(const fs::path& a, const fs::path& b) {
 
 TesterBuildRunner::TesterBuildRunner(const Options& options, QObject* parent)
     : QObject(parent), m_options(options), m_platform(TesterBuild::CurrentPlatform()),
+      m_download_platform(
+          UpdateChecker::DownloadPlatform(UISettings::values.update_variant.GetValue())),
       m_base_env(QProcessEnvironment::systemEnvironment()) {
     // A missing login must fail the clone, not wait for a prompt nobody can see.
     m_base_env.insert(QStringLiteral("GIT_TERMINAL_PROMPT"), QStringLiteral("0"));
@@ -896,7 +900,8 @@ TesterBuild::BuildRequest TesterBuildRunner::MakeRequest() const {
     request.clone_url = std::string{Common::g_build_auto_update_website} + "/" + request.repo + ".git";
     request.recipe = m_recipe;
     request.tools = m_tools;
-    request.platform = Common::g_build_release_platform;
+    // A build compiled here is never a PGO build.
+    request.platform = UpdateChecker::DownloadPlatform(Settings::UpdateVariant::Standard);
     return request;
 }
 
@@ -1024,7 +1029,7 @@ bool TesterBuildRunner::FetchCiBuild(const Common::Net::Release& release, const 
     const auto package = m_platform == TesterBuild::Platform::Linux
                              ? Common::Net::LinuxPackage::AppImage
                              : Common::Net::LinuxPackage::Any;
-    const auto assets = release.GetPlatformAssets(Common::g_build_release_platform, package);
+    const auto assets = release.GetPlatformAssets(m_download_platform, package);
     if (assets.empty()) {
         return false;
     }
@@ -1085,7 +1090,7 @@ std::optional<TesterBuildRunner::Result> TesterBuildRunner::TryInstallCiBuild() 
         m_message = tr("Already up to date (%1).").arg(Q(sha.substr(0, 10)));
         return UpToDate;
     }
-    if (std::string_view{Common::g_build_release_platform}.empty()) {
+    if (m_download_platform.empty()) {
         return std::nullopt;
     }
 
@@ -1102,7 +1107,7 @@ std::optional<TesterBuildRunner::Result> TesterBuildRunner::TryInstallCiBuild() 
                              ? Common::Net::LinuxPackage::AppImage
                              : Common::Net::LinuxPackage::Any;
     const auto release = Common::Net::FindReleaseForCommit(
-        list.releases, sha, Common::g_build_release_platform, package);
+        list.releases, sha, m_download_platform, package);
     if (!release) {
         Log(tr("There is no CI build of %1; building from source.").arg(Q(sha.substr(0, 10))));
         return std::nullopt;

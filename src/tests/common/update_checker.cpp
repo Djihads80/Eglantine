@@ -190,3 +190,26 @@ TEST_CASE("UpdateChecker: failure classification", "[updater]") {
     CHECK(ClassifyFailure(500) == Failure::Http);
     CHECK(ClassifyFailure(503) == Failure::Http);
 }
+
+TEST_CASE("UpdateChecker: download platform of a variant", "[updater]") {
+    using Settings::UpdateVariant;
+    CHECK(DownloadPlatform(UpdateVariant::Auto, "linux-x86_64-pgo") == "linux-x86_64-pgo");
+    CHECK(DownloadPlatform(UpdateVariant::Auto, "windows-x86_64") == "windows-x86_64");
+    CHECK(DownloadPlatform(UpdateVariant::Standard, "linux-x86_64-pgo") == "linux-x86_64");
+    CHECK(DownloadPlatform(UpdateVariant::Standard, "windows-x86_64") == "windows-x86_64");
+    CHECK(DownloadPlatform(UpdateVariant::Pgo, "windows-x86_64") == "windows-x86_64-pgo");
+    CHECK(DownloadPlatform(UpdateVariant::Pgo, "linux-aarch64-pgo") == "linux-aarch64-pgo");
+    CHECK(DownloadPlatform(UpdateVariant::Pgo, "").empty());
+
+    // PGO falls back to the standard asset of a release that has no PGO one.
+    const auto both = MakeRelease("v1.0.0", {"eglantine-windows-x86_64.zip",
+                                             "eglantine-windows-x86_64-pgo.zip"});
+    const auto standard = MakeRelease("v1.0.0");
+    const auto pgo = DownloadPlatform(UpdateVariant::Pgo, "windows-x86_64");
+    REQUIRE(both.GetPlatformAssets(pgo, Common::Net::LinuxPackage::Any).size() == 1);
+    CHECK(both.GetPlatformAssets(pgo, Common::Net::LinuxPackage::Any)[0].filename ==
+          "eglantine-windows-x86_64-pgo.zip");
+    REQUIRE(standard.GetPlatformAssets(pgo, Common::Net::LinuxPackage::Any).size() == 1);
+    CHECK(standard.GetPlatformAssets(pgo, Common::Net::LinuxPackage::Any)[0].filename ==
+          "eglantine-windows-x86_64.zip");
+}

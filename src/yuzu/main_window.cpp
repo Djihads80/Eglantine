@@ -5139,7 +5139,10 @@ void MainWindow::CheckForUpdates(bool manual) {
     update_check_running = true;
     update_check_manual = manual;
     update_future = QtConcurrent::run(
-        [channel = update_check_channel]() { return UpdateChecker::Check(channel); });
+        [channel = update_check_channel,
+         platform = UpdateChecker::DownloadPlatform(UISettings::values.update_variant.GetValue())]() {
+            return UpdateChecker::Check(channel, platform);
+        });
     update_watcher.setFuture(update_future);
 }
 

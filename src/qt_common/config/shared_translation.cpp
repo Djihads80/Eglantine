@@ -398,6 +398,10 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(UISettings, update_channel, tr("Update channel"),
            tr("Stable only offers finished releases.\nRelease candidate also offers release "
               "candidates of upcoming versions."));
+    INSERT(UISettings, update_variant, tr("Update build"),
+           tr("PGO builds are optimized using a profile of real games and are usually faster.\n"
+              "When a release or tester build has no PGO build, the standard one is used.\n"
+              "Tester builds compiled on this computer are always standard."));
 
     // Linux
     INSERT(UISettings, enable_gamemode, tr("Enable Gamemode"), QString());
@@ -720,6 +724,12 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                           {
                               PAIR(UpdateChannel, Stable, tr("Stable")),
                               PAIR(UpdateChannel, ReleaseCandidate, tr("Release candidate")),
+                          }});
+    translations->insert({Settings::EnumMetadata<Settings::UpdateVariant>::Index(),
+                          {
+                              PAIR(UpdateVariant, Auto, tr("Same as this build")),
+                              PAIR(UpdateVariant, Standard, tr("Standard")),
+                              PAIR(UpdateVariant, Pgo, tr("PGO")),
                           }});
     translations->insert({Settings::EnumMetadata<Settings::GpuClock>::Index(),
                           {

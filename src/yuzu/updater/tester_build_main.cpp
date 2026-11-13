@@ -15,7 +15,9 @@
 #include <QThread>
 #include <QTimer>
 #include "frontend_common/tester_build.h"
+#include "frontend_common/config.h"
 #include "frontend_common/update_installer.h"
+#include "qt_common/config/uisettings.h"
 #include "tester_build_dialog.h"
 #include "tester_build_main.h"
 #include "tester_build_runner.h"
@@ -202,6 +204,7 @@ int RunTesterBuild(int argc, char** argv) {
         return 1;
     }
 
+    Config::ReadGlobalSettingEarly("qt-config", UISettings::values.update_variant);
     TesterBuildRunner runner{arguments.options};
     if (console) {
         return RunConsole(runner, arguments.options);
