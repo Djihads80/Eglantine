@@ -388,6 +388,7 @@ private slots:
     void OnMenuInstallToNAND();
     void OnMenuRecentFile();
     void OnConfigure();
+    void OnConfigureProfiles();
     void OnConfigureTas();
     void OnDecreaseVolume();
     void OnIncreaseVolume();
@@ -461,6 +462,7 @@ private slots:
 #endif
 
 private:
+    void OpenConfigureDialog(bool select_profiles);
     void RemovePlayTimeData(u64 program_id);
     bool SelectRomFSDumpTarget(const FileSys::ContentProvider&, u64 program_id,
                                u64* selected_title_id, u8* selected_content_record_type);

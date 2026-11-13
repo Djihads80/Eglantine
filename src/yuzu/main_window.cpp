@@ -2023,6 +2023,8 @@ void MainWindow::ConnectMenuEvents() {
     connect(ui->action_Show_Room, &QAction::triggered, multiplayer_state,
             &MultiplayerState::OnOpenNetworkRoom);
     connect(multiplayer_state, &MultiplayerState::SaveConfig, this, &MainWindow::OnSaveConfig);
+    connect(multiplayer_state, &MultiplayerState::RequestProfileConfiguration, this,
+            &MainWindow::OnConfigureProfiles);
 
     // Tools
     connect_menu(ui->action_Launch_PhotoViewer, [this] {
@@ -4026,6 +4028,14 @@ void MainWindow::ToggleShowGameName() {
 }
 
 void MainWindow::OnConfigure() {
+    OpenConfigureDialog(false);
+}
+
+void MainWindow::OnConfigureProfiles() {
+    OpenConfigureDialog(true);
+}
+
+void MainWindow::OpenConfigureDialog(bool select_profiles) {
     const auto old_theme = UISettings::values.theme;
     const bool old_discord_presence = UISettings::values.enable_discord_presence.GetValue();
     const auto old_language_index = Settings::values.language_index.GetValue();
@@ -4048,6 +4058,10 @@ void MainWindow::OnConfigure() {
             &MainWindow::OnLanguageChanged);
     connect(&configure_dialog, &ConfigureDialog::ExternalContentDirsChanged, this,
             &MainWindow::OnGameListRefresh);
+
+    if (select_profiles) {
+        configure_dialog.SelectProfilesTab();
+    }
 
     const auto result = configure_dialog.exec();
     if (result != QDialog::Accepted && !UISettings::values.configuration_applied &&

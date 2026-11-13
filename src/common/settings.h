@@ -1003,7 +1003,7 @@ struct Values {
     // WebService
     Setting<std::string> web_api_url{linkage, "api.ynet-fun.xyz", "web_api_url",
                                      Category::WebService};
-    Setting<std::string> eden_username{linkage, "Eden", "eden_username",
+    Setting<std::string> eden_username{linkage, "Eglantine", "eden_username",
                                        Category::WebService};
     Setting<std::string> eden_token{linkage, "",
                                     "eden_token", Category::WebService};
