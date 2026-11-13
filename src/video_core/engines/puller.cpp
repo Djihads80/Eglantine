@@ -215,13 +215,14 @@ struct AcquireStats {
 // back ran the queued work. Only the last release the front sent to the word decides instead,
 // when the back may not have run it yet. With nothing queued to the word that also holds for
 // equal and mask acquires: the back can't change the word before the front sends a release.
-// EDEN_NX2_ACQ_NO_DRAIN=0 turns it off: equal and mask acquires are checked the same way (with
+// EDEN_NX2_ACQ_NO_DRAIN=1 turns on: equal and mask acquires are checked the same way (with
 // nothing queued to the word, memory decides; else the last release queued to it), and an acquire
-// nothing queued can meet suspends its channel without draining (Puller::PollAcquire).
+// nothing queued can meet suspends its channel without draining (Puller::PollAcquire). Opt-in:
+// Donkey Kong Bananza froze with it when breaking walls, both channels suspended for good.
 bool AcquireNoDrain() {
     static const bool on = [] {
         const char* value = std::getenv("EDEN_NX2_ACQ_NO_DRAIN");
-        return value == nullptr || value[0] != '0';
+        return value != nullptr && value[0] == '1';
     }();
     return on;
 }
