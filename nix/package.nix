@@ -124,7 +124,17 @@ let
       src = pkgs.fetchFromGitHub { inherit owner repo rev hash; };
     });
 
-  # Linux only, so it cannot live in pinnedDeps.
+  # nixpkgs marks these Linux-only (meta.platforms), so they cannot live in
+  # pinnedDeps: on darwin they have to come from the manifest instead.
+  siritPinned = pinTo {
+    pkg = pkgs.sirit;
+    owner = "eden-emulator";
+    repo = "sirit";
+    version = "v1.0.5";
+    rev = "v1.0.5";
+    hash = "sha256-T4f1C33rh8KEXPyxPiIbdDUQLGT3ufTIt4XmgSsLRpA=";
+  };
+
   gamemodePinned = pinTo {
     pkg = pkgs.gamemode;
     owner = "FeralInteractive";
@@ -150,14 +160,6 @@ let
       version = "v4.25";
       rev = "v4.25";
       hash = "sha256-1JTVjMfEuWqlyYAm4Er6HPjrP2Tnt0ntai8oVvIEOu0=";
-    })
-    (pinTo {
-      pkg = pkgs.sirit;
-      owner = "eden-emulator";
-      repo = "sirit";
-      version = "v1.0.5";
-      rev = "v1.0.5";
-      hash = "sha256-T4f1C33rh8KEXPyxPiIbdDUQLGT3ufTIt4XmgSsLRpA=";
     })
     (pinTo {
       pkg = pkgs.xbyak;
@@ -227,6 +229,7 @@ let
     ]
     ++ lib.optionals (!isDarwin) [
       gamemodePinned
+      siritPinned
       qt6.qtwayland
     ];
 in
@@ -264,7 +267,6 @@ buildEdenEmulator (
       "-Dlibusb_FORCE_SYSTEM=ON"
       "-Dfmt_FORCE_SYSTEM=ON"
       "-DSimpleIni_FORCE_SYSTEM=ON"
-      "-Dsirit_FORCE_SYSTEM=ON"
       "-Dxbyak_FORCE_SYSTEM=ON"
       "-Dlz4_FORCE_SYSTEM=ON"
       "-Dcubeb_FORCE_SYSTEM=ON"
@@ -301,6 +303,7 @@ buildEdenEmulator (
 
       "-DENABLE_WERROR=OFF"
     ]
+    ++ lib.optionals (!isDarwin) [ "-Dsirit_FORCE_SYSTEM=ON" ]
     ++ pgoLinkerFlags
     ++ lib.optionals pgo [
       "-DCMAKE_C_FLAGS=${profile} ${archFlags}"
