@@ -106,6 +106,101 @@ let
     };
   });
 
+  # A nixpkgs package moved onto the version cpmfile.json pins. `hash` is the
+  # unpacked-tree hash of the GitHub archive (nix store prefetch-file --unpack),
+  # which is what fetchFromGitHub expects for a tag or commit.
+  #
+  # patches = [ ] because nixpkgs' patch set is written for the version nixpkgs
+  # ships, not for the one the manifest pins -- fmt's 12.2.0 fix fails to apply
+  # to 12.1.0 and aborts the unpack phase. A package that still needs a patch at
+  # the pinned version has to pass it explicitly.
+  pinTo =
+    { pkg, owner, repo, version, rev, hash, patches ? [ ] }:
+    pkg.overrideAttrs (_: {
+      inherit version patches;
+      # Their test suite is not ours to run, and nixpkgs' one is written for the
+      # version nixpkgs ships: zstd's wants a static library we never ask for.
+      doCheck = false;
+      src = pkgs.fetchFromGitHub { inherit owner repo rev hash; };
+    });
+
+  # Linux only, so it cannot live in pinnedDeps.
+  gamemodePinned = pinTo {
+    pkg = pkgs.gamemode;
+    owner = "FeralInteractive";
+    repo = "gamemode";
+    version = "ce6fe122f3";
+    rev = "ce6fe122f3";
+    hash = "sha256-RMi4PBKqx1kdthKPs8x7GZyvIapo8PXDeMoT4QCxiws=";
+  };
+
+  pinnedDeps = [
+    (pinTo {
+      pkg = pkgs.fmt;
+      owner = "fmtlib";
+      repo = "fmt";
+      version = "12.1.0";
+      rev = "12.1.0";
+      hash = "sha256-ZmI1Dv0ZabPlxa02OpERI47jp7zFfjpeWCy1WyuPYZ0=";
+    })
+    (pinTo {
+      pkg = pkgs.simpleini;
+      owner = "brofield";
+      repo = "simpleini";
+      version = "v4.25";
+      rev = "v4.25";
+      hash = "sha256-1JTVjMfEuWqlyYAm4Er6HPjrP2Tnt0ntai8oVvIEOu0=";
+    })
+    (pinTo {
+      pkg = pkgs.sirit;
+      owner = "eden-emulator";
+      repo = "sirit";
+      version = "v1.0.5";
+      rev = "v1.0.5";
+      hash = "sha256-T4f1C33rh8KEXPyxPiIbdDUQLGT3ufTIt4XmgSsLRpA=";
+    })
+    (pinTo {
+      pkg = pkgs.xbyak;
+      owner = "herumi";
+      repo = "xbyak";
+      version = "v7.40.1";
+      rev = "v7.40.1";
+      hash = "sha256-PdeN2ArmqznAThe1KE5d9v6CglA8e81Rm8hH9lCZVKY=";
+    })
+    (pinTo {
+      pkg = pkgs.lz4;
+      owner = "lz4";
+      repo = "lz4";
+      version = "ebb370ca83";
+      rev = "ebb370ca83";
+      hash = "sha256-/dG1n59SKBaEBg72pAWltAtVmJ2cXxlFFhP+klrkTos=";
+    })
+    (pinTo {
+      pkg = pkgs.cubeb;
+      owner = "mozilla";
+      repo = "cubeb";
+      version = "fa02160712";
+      rev = "fa02160712";
+      hash = "sha256-6PUHUPybe3g5nexunAHsHLThFdvpnv+avks+C0oYih0=";
+    })
+    (pinTo {
+      pkg = pkgs.vulkan-headers;
+      owner = "KhronosGroup";
+      repo = "Vulkan-Headers";
+      version = "v1.4.345";
+      rev = "v1.4.345";
+      hash = "sha256-bZKNFiZMVYDxa6RKb1c/GxIR+eEFQAyYNaEptzQW5TE=";
+    })
+    (pinTo {
+      pkg = pkgs.vulkan-utility-libraries;
+      owner = "KhronosGroup";
+      repo = "Vulkan-Utility-Libraries";
+      version = "v1.4.345";
+      rev = "v1.4.345";
+      hash = "sha256-4XsQN94JsQXFGwJKp3W2gdTCCxUZrpCKiRVXzxL+Qs0=";
+    })
+  ];
+
   deps =
     with pkgs;
     [
@@ -114,6 +209,9 @@ let
       qt6.qtbase
       qt6.qtcharts
       sdl3Pinned
+    ]
+    ++ pinnedDeps
+    ++ [
 
       # nixpkgs ships these at the exact version cpmfile.json pins, so they
       # come from the binary cache instead of being compiled from the manifest.
@@ -128,7 +226,7 @@ let
       libusb1
     ]
     ++ lib.optionals (!isDarwin) [
-      gamemode
+      gamemodePinned
       qt6.qtwayland
     ];
 in
@@ -149,8 +247,6 @@ buildEdenEmulator (
       "-DCMAKE_BUILD_TYPE=Release"
       "-DBUILD_TESTING=OFF"
       "-DYUZU_ROOM=OFF"
-      "-DVulkanHeaders_FORCE_BUNDLED=ON"
-      "-DVulkanUtilityLibraries_FORCE_BUNDLED=ON"
 
       # NIGHTLY_BUILD is not a flag here: CMakeLists.txt turns it on when a
       # GIT-NIGHTLY file sits in the source root, the same way GIT-RELEASE
@@ -166,6 +262,15 @@ buildEdenEmulator (
       "-Dnlohmann_json_FORCE_SYSTEM=ON"
       "-Doaknut_FORCE_SYSTEM=ON"
       "-Dlibusb_FORCE_SYSTEM=ON"
+      "-Dfmt_FORCE_SYSTEM=ON"
+      "-DSimpleIni_FORCE_SYSTEM=ON"
+      "-Dsirit_FORCE_SYSTEM=ON"
+      "-Dxbyak_FORCE_SYSTEM=ON"
+      "-Dlz4_FORCE_SYSTEM=ON"
+      "-Dcubeb_FORCE_SYSTEM=ON"
+      "-Dgamemode_FORCE_SYSTEM=ON"
+      "-DVulkanHeaders_FORCE_SYSTEM=ON"
+      "-DVulkanUtilityLibraries_FORCE_SYSTEM=ON"
       "-DZLIB_FORCE_SYSTEM=ON"
 
       # Matching upstream's build-linux.yml, which has always passed this for
