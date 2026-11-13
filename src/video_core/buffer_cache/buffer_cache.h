@@ -1474,6 +1474,10 @@ void BufferCache<P>::BindHostDrawIndirectBuffers() {
         Buffer& buffer = slot_buffers[binding.buffer_id];
         TouchBuffer(buffer, binding.buffer_id);
         SynchronizeBuffer(buffer, binding.device_addr, binding.size);
+        // The draw reads these words on the GPU: a later upload to them in this batch must not
+        // be reordered ahead of it (DK Bananza resets its terrain draw records with inline
+        // writes right after the draws that read them; hoisted, every record read zero).
+        buffer.MarkUsage(buffer.Offset(binding.device_addr), binding.size);
     };
     if (current_draw_indirect->include_count) {
         bind_buffer(channel_state->count_buffer_binding);
