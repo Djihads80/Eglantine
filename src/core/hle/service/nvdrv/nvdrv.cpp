@@ -32,6 +32,7 @@
 #include "frontend_common/firmware_manager.h"
 #include "video_core/gpu.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_gpu_latency.h"
 
 namespace Service::Nvidia {
 
@@ -138,6 +139,7 @@ Module::Module(Core::System& system)
     Devices::g_nx2_driver = false;
     Tegra::g_nx2_ampere = false;
     Core::g_nx2_present_count = 0;
+    VideoCommon::Nx2GpuLatency::Reset();
     nx2_stub_builder = [this, &system](DeviceFD fd, const std::string& name) {
         auto device = std::make_shared<Devices::nx2_stub_device>(system, name);
         open_files.emplace(fd, device);

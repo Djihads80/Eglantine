@@ -63,6 +63,7 @@
 #include "video_core/host1x/nx2_video_decoder.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_job_stats.h"
+#include "video_core/nx2_gpu_latency.h"
 #include "video_core/nx2_hazard.h"
 #include "video_core/nx2_timeline.h"
 #include "video_core/nx2_knobs.h"
@@ -1801,6 +1802,7 @@ private:
     void PresentClientBuffer(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         ++m_presents;
+        VideoCommon::Nx2GpuLatency::NotePresent();
         Core::g_nx2_present_count.fetch_add(1, std::memory_order_relaxed);
         if (m_presents <= 4 || (m_presents % 600) == 0) {
             LOG_INFO(Service, "nx2:vi2 229 present #{} token={:#x} slot={} image={}", m_presents,
@@ -2209,6 +2211,7 @@ private:
             bool done{};
         };
         auto wake = std::make_shared<Wake>();
+        VideoCommon::Nx2GpuLatency::NoteGuestWait();
         system.GPU().RunInOrder([wake] {
             {
                 std::scoped_lock lk{wake->mutex};
@@ -2232,6 +2235,8 @@ private:
         // other channels acquire. Extend the deadline whenever the syncpoint makes progress.
         auto deadline = start + std::chrono::milliseconds{unless_gpu_waits ? 4000 : 15000};
         if (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
+            // The game is blocked on the GPU, so it isn't writing what queued lists read.
+            VideoCommon::Nx2GpuLatency::NoteGuestWait();
             // Woken by the GPU thread as it reaches the fence. Polling with 200 us sleeps slept
             // about 1 ms per check on Windows, added to every frame. An action left registered
             // after a timeout fires later on a state nobody waits on.
