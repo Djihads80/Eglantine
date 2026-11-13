@@ -215,6 +215,16 @@ fs::path StatePath(const fs::path& config_dir) {
     return config_dir / "tester.json";
 }
 
+void SetSource(State& state, const std::optional<Source>& source) {
+    if (source && source != state.source) {
+        state.built_sha.clear();
+        state.current_install.clear();
+        state.previous_install.clear();
+        state.built_at = 0;
+    }
+    state.source = source;
+}
+
 State LoadState(const fs::path& file) {
     State state;
     const auto parsed = json::parse(ReadFile(file), nullptr, false);

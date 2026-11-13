@@ -176,6 +176,32 @@ TEST_CASE("State round trips", "[tester]") {
     CHECK(LoadState(file).source == state.source);
 }
 
+TEST_CASE("SetSource drops the install of a different source", "[tester]") {
+    State state;
+    state.source = Source{Source::Kind::Branch, "old", 0};
+    state.built_sha = Sha1;
+    state.current_install = "/x/installs/0123456789";
+    state.previous_install = "/x/installs/fedcba9876";
+    state.release_exe = "/usr/bin/eglantine";
+    state.built_at = 1'700'000'000;
+
+    SetSource(state, Source{Source::Kind::Branch, "old", 0});
+    CHECK(state.current_install == "/x/installs/0123456789");
+    CHECK(state.built_sha == Sha1);
+
+    SetSource(state, Source{Source::Kind::Branch, "new", 0});
+    CHECK(state.source == Source{Source::Kind::Branch, "new", 0});
+    CHECK(state.built_sha.empty());
+    CHECK(state.current_install.empty());
+    CHECK(state.previous_install.empty());
+    CHECK(state.built_at == 0);
+    CHECK(state.release_exe == "/usr/bin/eglantine");
+
+    // A CI branch build that took over now stands in for the build of its branch.
+    CHECK(DecideLaunch(state, false, false, HasInstall(state), std::nullopt, std::string{Sha1}) ==
+          LaunchAction::RunRelease);
+}
+
 TEST_CASE("State load tolerates a missing or corrupt file", "[tester]") {
     TempDir dir;
     const auto file = dir.path / "tester.json";

@@ -354,7 +354,7 @@ std::optional<int> Run(int argc, char** argv) {
     if (!follow.empty() && !self_is_tester && state.auto_source != follow) {
         if (const auto source = TesterBuild::ParseSource("branch:" + follow,
                                                          Common::g_build_auto_update_repo)) {
-            state.source = source;
+            TesterBuild::SetSource(state, source);
             state.auto_source = follow;
             std::error_code ec;
             TesterBuild::SaveState(StateFile(), state, ec);

@@ -61,6 +61,9 @@ std::filesystem::path PathFromUtf8(std::string_view text);
 
 std::filesystem::path StatePath(const std::filesystem::path& config_dir);
 
+// Follows `source`. A different source drops the install, which was built for the previous one.
+void SetSource(State& state, const std::optional<Source>& source);
+
 // A missing or corrupt file gives a default State.
 State LoadState(const std::filesystem::path& file);
 

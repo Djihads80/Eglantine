@@ -288,14 +288,7 @@ bool TesterBuildSettings::ConfirmChanges() {
 
 bool TesterBuildSettings::SaveSource(const std::optional<TesterBuild::Source>& source) {
     auto state = TesterBuild::LoadState(TesterLauncher::StateFile());
-    if (source && source != state.source) {
-        // What is installed belongs to the previous source.
-        state.built_sha.clear();
-        state.current_install.clear();
-        state.previous_install.clear();
-        state.built_at = 0;
-    }
-    state.source = source;
+    TesterBuild::SetSource(state, source);
     state.pr_warning_shown |= m_warning_accepted;
     std::error_code ec;
     if (!TesterBuild::SaveState(TesterLauncher::StateFile(), state, ec)) {
