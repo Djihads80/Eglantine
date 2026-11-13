@@ -28,6 +28,10 @@ on:
         description: none or both
         type: string
         default: none
+      save_cache:
+        description: Force-save the compiler and CPM caches at the end of the job
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -57,6 +61,7 @@ jobs:
           refspec: ${{ inputs.refspec }}
           tag: ${{ inputs.tag }}
           release: ${{ inputs.release }}
+          save-cache: ${{ inputs.save_cache }}
 
       - name: Setup build from compatibility pin
         if: hashFiles('.github/actions/setup-build/action.yml') == ''
@@ -67,6 +72,7 @@ jobs:
           refspec: ${{ inputs.refspec }}
           tag: ${{ inputs.tag }}
           release: ${{ inputs.release }}
+          save-cache: ${{ inputs.save_cache }}
 
       - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -159,8 +165,6 @@ jobs:
     runs-on: windows-2025
     env:
       PLATFORM: windows-x86_64-pgo
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 1000M
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -177,6 +181,7 @@ jobs:
           refspec: ${{ inputs.refspec }}
           tag: ${{ inputs.tag }}
           release: ${{ inputs.release }}
+          save-cache: ${{ inputs.save_cache }}
 
       - name: Setup build from compatibility pin
         if: hashFiles('.github/actions/setup-build/action.yml') == ''
@@ -187,6 +192,7 @@ jobs:
           refspec: ${{ inputs.refspec }}
           tag: ${{ inputs.tag }}
           release: ${{ inputs.release }}
+          save-cache: ${{ inputs.save_cache }}
 
       # The profile is in the source tree, where the configure step reads it.
       - name: Check PGO profile
