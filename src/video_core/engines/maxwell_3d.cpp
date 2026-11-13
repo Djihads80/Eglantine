@@ -2714,13 +2714,44 @@ void Maxwell3D::BackDrawIndexedIndirect(Core::System& system, u32 topology, GPUV
     regs.global_base_vertex_index = 0;
     regs.global_base_instance_index = 0;
     dirty.flags[VideoCommon::Dirty::IndexBuffer] = true;
-    // EDEN_NX2_INDIRECT_REPLACE=1: shaders read the base vertex and instance from the draw
-    // instead of the driver constants at 0x640 (which then hold zero).
-    static const bool replace = std::getenv("EDEN_NX2_INDIRECT_REPLACE") != nullptr;
+    // The macro copies the record's base vertex and instance to the driver constants at 0x640 of
+    // the selected constant buffer, which this draw skips: shaders read them from the draw
+    // instead (the host GPU takes them from the record). NVN's draw macros keep them in c[0] in
+    // Mario Kart World (2ad0830d2f); the bank is looked up rather than assumed.
+    // EDEN_NX2_INDIRECT_REPLACE=0: leave the constants at zero.
+    static const bool replace_enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_INDIRECT_REPLACE");
+        return value == nullptr || value[0] != '0';
+    }();
+    std::optional<u32> driver_bank;
+    if (replace_enabled) {
+        const GPUVAddr driver_cb = regs.const_buffer.Address();
+        const auto& vertex_buffers = state.shader_stages[0].const_buffers;
+        for (u32 bank = 0; bank < vertex_buffers.size(); ++bank) {
+            if (vertex_buffers[bank].enabled && vertex_buffers[bank].address == driver_cb) {
+                driver_bank = bank;
+                break;
+            }
+        }
+        static std::atomic<u32> logged_banks{};
+        const u32 bit = driver_bank ? 1U << *driver_bank : 1U << 31;
+        if ((logged_banks.fetch_or(bit, std::memory_order_relaxed) & bit) == 0) {
+            if (driver_bank) {
+                LOG_INFO(HW_GPU, "Indirect records: driver constants at {:#x} are vertex c[{}]",
+                         driver_cb, *driver_bank);
+            } else {
+                LOG_WARNING(HW_GPU, "Indirect records: no vertex constant buffer binds the driver "
+                                    "constants at {:#x}: base vertex and instance read zero",
+                            driver_cb);
+            }
+        }
+    }
+    const bool replace = driver_bank.has_value();
     if (replace) {
         engine_state = EngineHint::OnHLEMacro;
-        SetHLEReplacementAttributeType(0, 0x640, HLEReplacementAttributeType::BaseVertex);
-        SetHLEReplacementAttributeType(0, 0x644, HLEReplacementAttributeType::BaseInstance);
+        SetHLEReplacementAttributeType(*driver_bank, 0x640, HLEReplacementAttributeType::BaseVertex);
+        SetHLEReplacementAttributeType(*driver_bank, 0x644,
+                                       HLEReplacementAttributeType::BaseInstance);
     }
     auto& params = draw_manager.indirect_state;
     params.is_byte_count = false;
