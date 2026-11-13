@@ -860,8 +860,12 @@ function(AddPackage)
             # substituted a distribution package -- which is what Nix does for
             # most dependencies now -- shows what actually got linked next to
             # what the manifest asked for.
+            #
+            # No semicolons: these land in GLOBAL properties, where ';' is the
+            # list separator, and one would split the entry in two and desync
+            # the arrays GenerateDepHashes.cmake emits.
             if(NOT "${sys_ver}" STREQUAL "${PKG_ARGS_VERSION}")
-                set(sys_label "${sys_ver} (system; manifest ${PKG_ARGS_VERSION})")
+                set(sys_label "${sys_ver} (system, manifest ${PKG_ARGS_VERSION})")
             else()
                 set(sys_label "${sys_ver} (system)")
             endif()
