@@ -19,14 +19,20 @@
 #include "common/scm_rev.h"
 #include "frontend_common/update_installer.h"
 #include "tester_build_dialog.h"
+#include "tester_build_launcher.h"
 #include "tester_build_runner.h"
 
 namespace {
 constexpr int MaxLogLines = 5000;
-}
+constexpr int CallerPollMilliseconds = 200;
+// Long enough to answer a "close while a game runs?" question.
+constexpr int CallerPolls = 60'000 / CallerPollMilliseconds;
+} // namespace
 
-TesterBuildDialog::TesterBuildDialog(TesterBuildRunner& runner, QWidget* parent)
-    : QDialog(parent), m_runner(runner) {
+TesterBuildDialog::TesterBuildDialog(TesterBuildRunner& runner, qint64 caller_pid, QWidget* parent)
+    : QDialog(parent), m_runner(runner),
+      m_caller(caller_pid > 0 ? std::make_unique<TesterLauncher::CallerProcess>(caller_pid)
+                              : nullptr) {
     setWindowTitle(tr("Tester build"));
     setMinimumSize(560, 360);
     resize(680, 440);
@@ -131,10 +137,25 @@ TesterBuildDialog::TesterBuildDialog(TesterBuildRunner& runner, QWidget* parent)
     connect(&m_runner, &TesterBuildRunner::ConsentNeeded, this, &TesterBuildDialog::OnConsent);
     connect(&m_runner, &TesterBuildRunner::Finished, this, &TesterBuildDialog::OnFinished);
 
+    m_caller_wait.setInterval(CallerPollMilliseconds);
+    connect(&m_caller_wait, &QTimer::timeout, this, [this] {
+        if (!m_caller->Running()) {
+            m_caller_wait.stop();
+            LaunchBuiltEmulator();
+        } else if (++m_caller_polls >= CallerPolls) {
+            m_caller_wait.stop();
+            m_step->setText(tr("Eglantine is still open. Close it, then start the tester build."));
+            m_start->setEnabled(true);
+            m_cancel->setEnabled(true);
+        }
+    });
+
     m_flush.setInterval(150);
     connect(&m_flush, &QTimer::timeout, this, &TesterBuildDialog::FlushLog);
     m_flush.start();
 }
+
+TesterBuildDialog::~TesterBuildDialog() = default;
 
 void TesterBuildDialog::reject() {
     if (m_running) {
@@ -195,6 +216,20 @@ void TesterBuildDialog::OnFinished(int result, const QString& message) {
 }
 
 void TesterBuildDialog::StartBuiltEmulator() {
+    // The running Eglantine closes first, so the new one reads the settings it saves on close.
+    if (!m_caller || !m_caller->Running()) {
+        LaunchBuiltEmulator();
+        return;
+    }
+    m_step->setText(tr("Closing the running Eglantine..."));
+    m_start->setEnabled(false);
+    m_cancel->setEnabled(false);
+    m_caller_polls = 0;
+    m_caller->RequestClose();
+    m_caller_wait.start();
+}
+
+void TesterBuildDialog::LaunchBuiltEmulator() {
     const QString exe = m_runner.InstalledExePath();
     QProcess process;
     process.setProgram(exe);
@@ -227,6 +262,8 @@ void TesterBuildDialog::StartBuiltEmulator() {
 #endif
     if (!process.startDetached()) {
         m_step->setText(tr("Could not start %1.").arg(exe));
+        m_start->setEnabled(true);
+        m_cancel->setEnabled(true);
         return;
     }
     accept();

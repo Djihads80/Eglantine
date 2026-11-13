@@ -40,8 +40,32 @@ RemoteResult FetchRemote(const TesterBuild::Source& source);
 bool StartDetached(const QString& program, const QStringList& args,
                    const QString& working_dir = {});
 
-// `<exe> --tester-build`, which shows the builder window.
-bool StartBuilder(const QString& exe, bool force, const QString& source = {});
+// `<exe> --tester-build`, which shows the builder window. `close_caller` lets the builder close
+// this process when the user starts the new build.
+bool StartBuilder(const QString& exe, bool force, const QString& source = {},
+                  bool close_caller = true);
+
+// The Eglantine that started the builder. It is held from the builder's start, so its pid cannot
+// be reused by another process before it is asked to close.
+class CallerProcess {
+public:
+    CallerProcess() = default;
+    explicit CallerProcess(qint64 pid);
+    ~CallerProcess();
+    CallerProcess(const CallerProcess&) = delete;
+    CallerProcess& operator=(const CallerProcess&) = delete;
+
+    bool Running() const;
+    // Asks it to close like its window's close button would, so it saves its settings.
+    void RequestClose() const;
+
+private:
+#ifdef _WIN32
+    void* m_handle{};
+#else
+    int m_fd{-1};
+#endif
+};
 
 // Called at the start of main(), once it is known this is not a helper process. Returns the exit
 // code when the launcher handled this start (it never falls through into the emulator), and

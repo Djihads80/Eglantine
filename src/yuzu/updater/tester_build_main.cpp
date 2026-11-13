@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -65,6 +66,7 @@ void Print(const QString& text) {
 
 struct Arguments {
     TesterBuildRunner::Options options;
+    qint64 caller_pid{};
 };
 
 Arguments ParseArguments(int argc, char** argv) {
@@ -81,6 +83,8 @@ Arguments ParseArguments(int argc, char** argv) {
             arguments.options.source = QString::fromLocal8Bit(argv[++i]);
         } else if (std::strncmp(arg, "--source=", 9) == 0) {
             arguments.options.source = QString::fromLocal8Bit(arg + 9);
+        } else if (std::strcmp(arg, "--caller") == 0 && i + 1 < argc) {
+            arguments.caller_pid = std::strtoll(argv[++i], nullptr, 10);
         }
     }
     return arguments;
@@ -203,7 +207,7 @@ int RunTesterBuild(int argc, char** argv) {
         return RunConsole(runner, arguments.options);
     }
 
-    TesterBuildDialog dialog{runner};
+    TesterBuildDialog dialog{runner, arguments.caller_pid};
     std::unique_ptr<QThread> thread{QThread::create([&runner] { runner.Run(); })};
     thread->start();
     dialog.exec();

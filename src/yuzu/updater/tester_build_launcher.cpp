@@ -26,7 +26,9 @@
 #include <windows.h>
 #include <shellapi.h>
 #else
+#include <poll.h>
 #include <signal.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -260,7 +262,7 @@ bool StartDetached(const QString& program, const QStringList& args, const QStrin
     return process.startDetached();
 }
 
-bool StartBuilder(const QString& exe, bool force, const QString& source) {
+bool StartBuilder(const QString& exe, bool force, const QString& source, bool close_caller) {
     QStringList args{QStringLiteral("--tester-build")};
     if (force) {
         args << QStringLiteral("--force");
@@ -268,8 +270,78 @@ bool StartBuilder(const QString& exe, bool force, const QString& source) {
     if (!source.isEmpty()) {
         args << QStringLiteral("--source") << source;
     }
+    if (close_caller) {
+        args << QStringLiteral("--caller") << QString::number(QCoreApplication::applicationPid());
+    }
     return StartDetached(exe, args);
 }
+
+#ifdef _WIN32
+CallerProcess::CallerProcess(qint64 pid)
+    : m_handle(OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                           static_cast<DWORD>(pid))) {}
+
+CallerProcess::~CallerProcess() {
+    if (m_handle) {
+        CloseHandle(m_handle);
+    }
+}
+
+bool CallerProcess::Running() const {
+    return m_handle && WaitForSingleObject(m_handle, 0) == WAIT_TIMEOUT;
+}
+
+void CallerProcess::RequestClose() const {
+    if (!Running()) {
+        return;
+    }
+    // Only the windows without an owner: the main window, not its dialogs.
+    DWORD pid = GetProcessId(m_handle);
+    EnumWindows(
+        [](HWND window, LPARAM param) -> BOOL {
+            DWORD owner_pid = 0;
+            GetWindowThreadProcessId(window, &owner_pid);
+            if (owner_pid == *reinterpret_cast<DWORD*>(param) && IsWindowVisible(window) &&
+                !GetWindow(window, GW_OWNER)) {
+                PostMessageW(window, WM_CLOSE, 0, 0);
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&pid));
+}
+#else
+CallerProcess::CallerProcess(qint64 pid) {
+#ifdef SYS_pidfd_open
+    m_fd = static_cast<int>(syscall(SYS_pidfd_open, static_cast<pid_t>(pid), 0));
+#else
+    (void)pid;
+#endif
+}
+
+CallerProcess::~CallerProcess() {
+    if (m_fd >= 0) {
+        ::close(m_fd);
+    }
+}
+
+bool CallerProcess::Running() const {
+    if (m_fd < 0) {
+        return false;
+    }
+    // A pidfd turns readable once the process has exited.
+    pollfd fd{m_fd, POLLIN, 0};
+    return poll(&fd, 1, 0) == 0;
+}
+
+void CallerProcess::RequestClose() const {
+#ifdef SYS_pidfd_send_signal
+    if (Running()) {
+        // The main window closes on SIGTERM.
+        syscall(SYS_pidfd_send_signal, m_fd, SIGTERM, nullptr, 0);
+    }
+#endif
+}
+#endif
 
 std::optional<int> Run(int argc, char** argv) {
     const auto args = Arguments(argc, argv);
@@ -356,7 +428,7 @@ std::optional<int> Run(int argc, char** argv) {
         return 0;
     };
     const auto start_builder = [&](bool force) {
-        if (!StartBuilder(self, force)) {
+        if (!StartBuilder(self, force, {}, false)) {
             ask(QObject::tr("Could not start %1.").arg(self), {QObject::tr("Close")}, 0);
         }
         return 0;
