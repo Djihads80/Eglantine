@@ -7,6 +7,7 @@
 #include <cctype>
 #include <chrono>
 #include <fstream>
+#include <iterator>
 #include <set>
 #include <thread>
 #include <vector>
@@ -14,6 +15,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <cerrno>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
@@ -35,6 +37,13 @@ bool IsProtected(const fs::path& relative) {
     return std::ranges::equal(first, ProtectedFolder, [](unsigned char a, unsigned char b) {
         return std::tolower(a) == std::tolower(b);
     });
+}
+
+// Eglantine only ships plain ASCII names, and only those convert to a narrow string on every
+// Windows code page without throwing.
+bool IsAscii(const fs::path& path) {
+    return std::ranges::all_of(path.native(),
+                               [](auto ch) { return static_cast<unsigned>(ch) < 0x80u; });
 }
 
 // A rename can fail for a moment on Windows while a virus scanner holds the file.
@@ -67,7 +76,8 @@ std::set<fs::path> ReadManifest(const fs::path& install_dir) {
             line.pop_back();
         }
         const fs::path relative{line};
-        if (!line.empty() && relative.is_relative() &&
+        // has_root_path, not is_relative: on Windows "/x" and "\x" are relative to the drive.
+        if (!line.empty() && !relative.has_root_path() &&
             std::ranges::none_of(relative, [](const fs::path& part) {
                 return part == ".." || part == ".";
             })) {
@@ -101,7 +111,12 @@ bool Lock::Held() const {
     return reinterpret_cast<HANDLE>(handle) != INVALID_HANDLE_VALUE;
 }
 #else
-Lock::Lock(const fs::path& path) : handle(open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600)) {
+Lock::Lock(const fs::path& path) : handle(open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0666)) {
+    // Another user of a shared folder created it, so this one may only read it. flock takes an
+    // exclusive lock through a read-only descriptor on local filesystems.
+    if (handle < 0 && errno == EACCES) {
+        handle = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    }
     if (handle >= 0 && flock(static_cast<int>(handle), LOCK_EX | LOCK_NB) != 0) {
         close(static_cast<int>(handle));
         handle = -1;
@@ -120,7 +135,8 @@ bool Lock::Held() const {
 #endif
 
 fs::path LockPath(const fs::path& target) {
-    return fs::path{target}.concat(".lock");
+    // Hidden, so Install never takes it for a file of the version while the helper holds it open.
+    return target.parent_path() / fs::path{"."}.concat(target.filename().native()).concat(".lock");
 }
 
 fs::path StagedPath(const fs::path& target) {
@@ -210,7 +226,23 @@ bool Rollback(const fs::path& target, std::error_code& ec) {
     return true;
 }
 
+bool HasPendingBackup(const fs::path& install_dir) {
+    std::error_code ec;
+    const auto pending_backup = install_dir / PendingBackupName;
+    if (!fs::exists(pending_backup, ec)) {
+        return static_cast<bool>(ec);
+    }
+    // Anything that cannot be listed counts as holding files, so it is never removed unseen.
+    const fs::directory_iterator it{pending_backup, ec};
+    return ec || it != fs::directory_iterator{};
+}
+
 bool Install(const fs::path& staging, const fs::path& install_dir, std::error_code& ec) {
+    if (HasPendingBackup(install_dir)) {
+        ec = std::make_error_code(std::errc::file_exists);
+        return false;
+    }
+
     std::set<fs::path> new_files;
     for (fs::recursive_directory_iterator it{staging, ec}, end; !ec && it != end;
          it.increment(ec)) {
@@ -258,29 +290,46 @@ bool Install(const fs::path& staging, const fs::path& install_dir, std::error_co
 
     const auto backup = install_dir / BackupName;
     const auto pending_backup = install_dir / PendingBackupName;
-    fs::remove_all(pending_backup, ec);
+    // Empty, as HasPendingBackup said, or not there at all.
+    fs::remove(pending_backup, ec);
+    if (ec) {
+        return false;
+    }
     fs::create_directories(pending_backup, ec);
     if (ec) {
         return false;
     }
 
     // Without a manifest from an earlier update, record the files that are there now, so that
-    // restoring this backup knows the whole version it brings back.
+    // restoring this backup knows the whole version it brings back. Only folders the new version
+    // also ships are read: a restore makes this list the installed manifest, and the next update
+    // removes what it lists, so a folder of the user's own must never end up in it.
     if (installed_manifest.empty()) {
+        std::set<fs::path> shipped_folders;
+        for (const auto& relative : new_files) {
+            if (std::next(relative.begin()) != relative.end()) {
+                shipped_folders.insert(*relative.begin());
+            }
+        }
         std::ofstream stream{pending_backup / manifest_name, std::ios::binary};
-        for (const auto& entry : fs::directory_iterator{install_dir, ec}) {
-            const auto name = entry.path().filename();
-            if (name.generic_string().starts_with('.') || IsProtected(name)) {
+        for (fs::directory_iterator entry{install_dir, ec}, end; !ec && entry != end;
+             entry.increment(ec)) {
+            const auto name = entry->path().filename();
+            if (!IsAscii(name) || name.native().front() == '.' || IsProtected(name)) {
                 continue;
             }
-            if (entry.is_regular_file(ec)) {
+            if (entry->is_regular_file(ec)) {
                 stream << name.generic_string() << '\n';
                 continue;
             }
-            for (fs::recursive_directory_iterator it{entry.path(), ec}, end; !ec && it != end;
-                 it.increment(ec)) {
-                if (it->is_regular_file(ec)) {
-                    stream << fs::relative(it->path(), install_dir).generic_string() << '\n';
+            if (!shipped_folders.contains(name)) {
+                continue;
+            }
+            for (fs::recursive_directory_iterator it{entry->path(), ec}, it_end;
+                 !ec && it != it_end; it.increment(ec)) {
+                const auto relative = it->path().lexically_relative(install_dir);
+                if (it->is_regular_file(ec) && IsAscii(relative)) {
+                    stream << relative.generic_string() << '\n';
                 }
             }
         }

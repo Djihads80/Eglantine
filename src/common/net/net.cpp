@@ -4,6 +4,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include <boost/algorithm/string/replace.hpp>
 
@@ -11,6 +15,8 @@
 #include "common/scm_rev.h"
 #include "net.h"
 
+#include "common/fs/fs_util.h"
+#include "common/fs/path_util.h"
 #include "common/logging.h"
 
 #include "common/httplib.h"
@@ -18,6 +24,49 @@
 #include "common/net/ca_store.h"
 
 namespace Common::Net {
+
+#ifdef YUZU_BUNDLED_OPENSSL
+std::string BundledCaFile() {
+    namespace fs = std::filesystem;
+    try {
+        const std::string_view contents{kCert, sizeof(kCert) - 1};
+        const auto matches = [&contents](const fs::path& file) {
+            std::ifstream stream{file, std::ios::binary};
+            const std::string on_disk{std::istreambuf_iterator<char>{stream}, {}};
+            return stream && on_disk == contents;
+        };
+
+        const auto dir = Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir);
+        const auto path = dir / "ca-bundle.pem";
+        if (matches(path)) {
+            return Common::FS::PathToUTF8String(path);
+        }
+
+        // Written beside it and renamed, so another instance never reads half a file.
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        const auto temp = fs::path{path}.concat(
+            fmt::format(".{}", std::chrono::steady_clock::now().time_since_epoch().count()));
+        {
+            std::ofstream stream{temp, std::ios::binary | std::ios::trunc};
+            stream.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+            if (!stream) {
+                fs::remove(temp, ec);
+                return {};
+            }
+        }
+        fs::rename(temp, path, ec);
+        if (ec) {
+            fs::remove(temp, ec);
+        }
+        // A failed rename is fine when another instance has just written the same file.
+        return matches(path) ? Common::FS::PathToUTF8String(path) : std::string{};
+    } catch (const std::exception& e) {
+        LOG_WARNING(Common, "Could not write the built-in CA bundle: {}", e.what());
+        return {};
+    }
+}
+#endif
 
 LinuxPackage CurrentLinuxPackage() {
 #ifdef __linux__
@@ -55,15 +104,13 @@ std::vector<Asset> Release::GetPlatformAssets(std::string_view platform,
         return {};
     }
 
-    const std::string prefix = fmt::format("/{}/releases/download/{}/",
-                                           Common::g_build_auto_update_repo, tag);
     for (const std::string_view variant : pgo ? std::vector<std::string_view>{"-pgo", ""}
                                               : std::vector<std::string_view>{""}) {
         for (const auto extension : extensions) {
             const auto filename = fmt::format("eglantine-{}{}{}", platform, variant, extension);
-            const auto it = std::ranges::find_if(assets, [&](const std::string& url) {
-                return url.ends_with(prefix + filename);
-            });
+            const auto suffix = fmt::format("{}/{}", base_download_url, filename);
+            const auto it = std::ranges::find_if(
+                assets, [&suffix](const std::string& url) { return url.ends_with(suffix); });
             if (it == assets.end()) {
                 continue;
             }
@@ -264,28 +311,78 @@ std::optional<std::string> MakeRequest(const std::string& url, const std::string
     return Fetch(url, path).body;
 }
 
-static std::string ReleasesPath() {
-    return fmt::format("/repos/{}/releases?per_page=100", Common::g_build_auto_update_repo);
+namespace {
+
+struct ReleasesJson {
+    nlohmann::json releases = nlohmann::json::array();
+    bool ok{};
+    int status{};
+};
+
+// GitHub lists releases newest first by creation, and rolling builds are recreated on every build,
+// so tagged releases can sit several pages down. Every page is read: a list cut short could hide
+// the newest tag and read as no update.
+ReleasesJson FetchReleasesJson() {
+    constexpr int per_page = 100;
+    constexpr int max_pages = 10;
+    const auto url = fmt::format("https://{}", Common::g_build_auto_update_api);
+
+    ReleasesJson result;
+    for (int page = 1; page <= max_pages; ++page) {
+        const auto response =
+            Fetch(url, fmt::format("/repos/{}/releases?per_page={}&page={}",
+                                   Common::g_build_auto_update_repo, per_page, page));
+        result.status = response.status;
+        if (!response.body) {
+            LOG_WARNING(Common, "Failed to get page {} of the releases", page);
+            return {.status = response.status};
+        }
+        // A body that is not a release list, such as a proxy's error page, fails the check instead
+        // of reading as one that found no update.
+        auto json = nlohmann::json::parse(*response.body, nullptr, false);
+        if (!json.is_array()) {
+            LOG_WARNING(Common, "Releases response is not a JSON array");
+            return {.status = response.status};
+        }
+        const auto count = json.size();
+        for (auto& release : json) {
+            result.releases.push_back(std::move(release));
+        }
+        if (count < static_cast<std::size_t>(per_page)) {
+            result.ok = true;
+            return result;
+        }
+    }
+    LOG_WARNING(Common, "More than {} pages of releases, reading only those", max_pages);
+    result.ok = true;
+    return result;
 }
 
+} // namespace
+
 ReleaseList GetReleases() {
-    const auto url = fmt::format("https://{}", Common::g_build_auto_update_api);
-    const auto response = Fetch(url, ReleasesPath());
-
-    if (!response.body) {
-        LOG_WARNING(Common, "Failed to get releases");
-        return {.status = response.status};
+    const auto json = FetchReleasesJson();
+    if (!json.ok) {
+        return {.status = json.status};
     }
-
-    return {.releases = Release::ListFromJson(std::string_view{*response.body}, url,
-                                              Common::g_build_auto_update_repo),
-            .ok = true,
-            .status = response.status};
+    const auto url = fmt::format("https://{}", Common::g_build_auto_update_api);
+    try {
+        return {.releases =
+                    Release::ListFromJson(json.releases, url, Common::g_build_auto_update_repo),
+                .ok = true,
+                .status = json.status};
+    } catch (std::exception& e) {
+        LOG_WARNING(Common, "Failed to parse releases: {}", e.what());
+        return {.status = json.status};
+    }
 }
 
 std::optional<std::string> GetReleasesBody() {
-    const auto url = fmt::format("https://{}", Common::g_build_auto_update_api);
-    return MakeRequest(url, ReleasesPath());
+    const auto json = FetchReleasesJson();
+    if (!json.ok) {
+        return std::nullopt;
+    }
+    return json.releases.dump();
 }
 
 } // namespace Common::Net

@@ -27,7 +27,7 @@ private:
     std::intptr_t handle;
 };
 
-// Where the lock for `target` lives, beside it.
+// Where the lock for `target` lives: a hidden file beside it.
 std::filesystem::path LockPath(const std::filesystem::path& target);
 
 // Where a download is staged before it replaces `target`; always beside it, so the final step is
@@ -58,12 +58,17 @@ inline constexpr std::string_view BackupName = ".update-backup";
 // could not be put back, and then holds the only copy of it.
 inline constexpr std::string_view PendingBackupName = ".update-backup.tmp";
 
+// Whether `install_dir`/PendingBackupName holds files a failed install could not put back. Install
+// refuses to run until the user has copied them back or removed the folder.
+bool HasPendingBackup(const std::filesystem::path& install_dir);
+
 // Install the files under `staging` over `install_dir`. Files the previous update installed that
 // `staging` no longer has are removed. Everything replaced or removed is kept in
 // `install_dir`/BackupName, replacing the older backup, and `staging` is deleted. `staging` may
 // itself be that backup, which restores the previous version. The top-level folder `user`, which
 // holds portable settings and data, is never read, written or removed. When a step fails every
 // file is put back as it was; one that cannot be put back stays in `install_dir`/PendingBackupName.
+// Fails with file_exists, changing nothing, while HasPendingBackup(install_dir).
 bool Install(const std::filesystem::path& staging, const std::filesystem::path& install_dir,
              std::error_code& ec);
 

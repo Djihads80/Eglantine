@@ -69,6 +69,23 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         return 1;
     }
 
+    // Files an earlier failed install could not put back; Install would refuse, so say why.
+    if (UpdateInstaller::HasPendingBackup(install_dir)) {
+        Log(install_dir, "Files from an earlier failed update are in .update-backup.tmp, the "
+                         "update was not installed");
+        if (staging.filename() == ".update-staging") {
+            std::error_code ignored;
+            fs::remove_all(staging, ignored);
+        }
+        MessageBoxW(nullptr,
+                    L"An earlier update could not put back some files of your previous version. "
+                    L"They are kept in .update-backup.tmp in the Eglantine folder. Copy them back "
+                    L"from there, or delete that folder if you no longer need them, then try the "
+                    L"update again. Your installation was not changed.",
+                    L"Eglantine update", MB_OK | MB_ICONINFORMATION);
+        return 1;
+    }
+
     std::error_code ec;
     const bool installed = UpdateInstaller::Install(staging, install_dir, ec);
     if (installed) {

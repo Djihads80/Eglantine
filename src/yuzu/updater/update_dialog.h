@@ -26,7 +26,7 @@ public:
 
     static QString ChannelName(UpdateChecker::Channel channel);
 
-#if defined(ENABLE_UPDATE_CHECKER) && (defined(__linux__) || defined(_WIN32))
+#if defined(ENABLE_UPDATE_CHECKER) && defined(__linux__)
     // Start `target` again once this process has exited, then close `window`.
     static void Restart(QWidget* window, const QString& target);
 #endif
@@ -34,6 +34,9 @@ public:
 #if defined(ENABLE_UPDATE_CHECKER) && defined(_WIN32)
     // Start the installer helper on the files under `staging`, then close `window`.
     static bool LaunchInstaller(QWidget* window, const QString& staging);
+
+    // Tell the user when files a failed install could not put back block the next one.
+    static bool ReportPendingBackup();
 #endif
 
 private slots:

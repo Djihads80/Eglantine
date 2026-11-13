@@ -2083,8 +2083,8 @@ void MainWindow::ConnectMenuEvents() {
     ui->action_Check_For_Updates->setVisible(false);
 #endif
 #if defined(ENABLE_UPDATE_CHECKER) && (defined(__linux__) || defined(_WIN32))
-    auto* restore_action = ui->menu_Help->addAction(tr("Restore Previous Version..."));
-    restore_action->setVisible(false);
+    // In main.ui, so a language change retranslates it; hidden until there is a version to restore.
+    auto* restore_action = ui->action_Restore_Previous_Version;
 #ifdef __linux__
     const auto previous_version = [] {
         const std::filesystem::path target{qEnvironmentVariable("APPIMAGE").toStdString()};

@@ -239,6 +239,7 @@
     <addaction name="action_Check_For_Updates"/>
     <addaction name="action_About"/>
     <addaction name="action_Eden_Dependencies"/>
+    <addaction name="action_Restore_Previous_Version"/>
    </widget>
    <addaction name="menu_File"/>
    <addaction name="menu_Emulation"/>
@@ -411,6 +412,14 @@
   <action name="action_Check_For_Updates">
    <property name="text">
     <string>Check for &amp;Updates</string>
+   </property>
+  </action>
+  <action name="action_Restore_Previous_Version">
+   <property name="text">
+    <string>Restore Previous Version...</string>
+   </property>
+   <property name="visible">
+    <bool>false</bool>
    </property>
   </action>
   <action name="action_Open_UserHandbook">
