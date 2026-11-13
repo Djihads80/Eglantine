@@ -8,8 +8,9 @@
 #pragma once
 
 #include <QMainWindow>
-#include "qt_common/config/qt_config.h"
 #include "yuzu/migration_worker.h"
+
+class QtConfig;
 
 // TODO(crueter): Quick implementation
 class UserDataMigrator {

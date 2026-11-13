@@ -397,8 +397,6 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     filter.ParseFilterString(Settings::values.log_filter.GetValue());
     Common::Log::SetGlobalFilter(filter);
 
-    UserDataMigrator::ReconcileLegacyPaths(this, *config);
-
 #ifdef __unix__
     SetupSigInterrupts();
 #endif
@@ -408,6 +406,7 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     UISettings::RestoreWindowState(config);
 
     LoadTranslation();
+    UserDataMigrator::ReconcileLegacyPaths(this, *config);
     FrontendCommon::GenerateSettings();
 
     setAcceptDrops(true);

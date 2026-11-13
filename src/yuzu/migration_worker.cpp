@@ -46,13 +46,20 @@ void RewriteConfigPaths(const std::filesystem::path& config_dir,
         return false;
     };
 
+    // Runs on the migration thread, so nothing here may throw: a file that can't be read or
+    // written is left as it was.
     std::error_code ec;
-    for (const auto& entry : fs::recursive_directory_iterator(config_dir, ec)) {
-        if (!entry.is_regular_file() || entry.path().extension() != ".ini") {
+    for (fs::recursive_directory_iterator
+             it(config_dir, fs::directory_options::skip_permission_denied, ec),
+         end;
+         !ec && it != end; it.increment(ec)) {
+        const fs::path& path = it->path();
+        std::error_code type_ec;
+        if (!it->is_regular_file(type_ec) || path.extension() != ".ini") {
             continue;
         }
 
-        std::ifstream in(entry.path(), std::ios::binary);
+        std::ifstream in(path, std::ios::binary);
         std::stringstream out;
         bool changed = false;
         std::string line;
@@ -67,10 +74,25 @@ void RewriteConfigPaths(const std::filesystem::path& config_dir,
             }
             out << line << '\n';
         }
+        if (in.bad() || !changed) {
+            continue;
+        }
         in.close();
 
-        if (changed) {
-            std::ofstream(entry.path(), std::ios::binary | std::ios::trunc) << out.str();
+        // Write beside the file and swap it in, so a failed write can't truncate the config.
+        fs::path temp = path;
+        temp += ".tmp";
+        std::ofstream file(temp, std::ios::binary | std::ios::trunc);
+        file << out.str();
+        file.close();
+        std::error_code write_ec;
+        if (!file) {
+            fs::remove(temp, write_ec);
+            continue;
+        }
+        fs::rename(temp, path, write_ec);
+        if (write_ec) {
+            fs::remove(temp, write_ec);
         }
     }
 }
