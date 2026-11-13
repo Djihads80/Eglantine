@@ -26,6 +26,9 @@ done
 python3 -I "$repo/tools/nx2/session_watch.py" --out "$session" --binary "$exe" \
     --symbols "$root/symbols" ${WATCH_ARGS---ipc-prefix nx2:} >"$session/watch.log" 2>&1 &
 watcher=$!
+# Also when the script is interrupted (a frozen emulator killed with Ctrl-C): a leftover watcher
+# reconnects to every later emulator's MCP server.
+trap 'kill "$watcher" 2>/dev/null' EXIT
 echo "session  $session"
 echo "watcher  tail -f $session/watch.log"
 
