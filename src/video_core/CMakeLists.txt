@@ -222,6 +222,7 @@ add_library(video_core STATIC
     renderer_vulkan/vk_query_cache.h
     renderer_vulkan/vk_query_copy.h
     renderer_vulkan/vk_rasterizer.cpp
+    renderer_vulkan/upload_batch.h
     renderer_vulkan/vk_rasterizer.h
     renderer_vulkan/vk_render_pass_cache.cpp
     renderer_vulkan/vk_render_pass_cache.h
