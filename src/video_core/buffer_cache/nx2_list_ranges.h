@@ -21,11 +21,13 @@ struct Nx2ListRanges {
 
     boost::container::small_vector<std::pair<u32, u32>, 4> ranges;
     bool known{};
+    bool merged{}; ///< Past MaxRanges since the last Reset: the ranges hold one bounding range
 
     /// The front flushed the page: guest memory holds all of it.
     void Reset() {
         ranges.clear();
         known = true;
+        merged = false;
     }
 
     /// GPU work wrote [begin, end) of the page.
@@ -50,6 +52,7 @@ struct Nx2ListRanges {
             last = (std::max)(last, range.second);
         }
         ranges.assign(1, {first, last});
+        merged = true;
     }
 
     /// Guest memory got [begin, end) (a CPU write, an inline upload): its bytes are current

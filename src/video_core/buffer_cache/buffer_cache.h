@@ -2527,7 +2527,11 @@ void BufferCache<P>::Nx2NoteListWrite(BufferId buffer_id, DAddr device_addr, u64
                     if (!entry.gpu_ranges.known) {
                         // Writes before the page became a list page were not noted: start from
                         // what guest memory may not hold (this write among it).
-                        entry.gpu_ranges = Nx2StaleListRanges(page_addr);
+                        entry.gpu_ranges = Nx2StaleListRanges(page_addr, Nx2SeedOrigins(entry));
+                    }
+                    if (Nx2ListStats()) [[unlikely]] {
+                        entry.notes[entry.note_count++ % entry.notes.size()] = {
+                            device_addr, size, static_cast<s8>(nx2_graphics_stage)};
                     }
                     constexpr DAddr list_page_size = DAddr{1} << page_bits;
                     const DAddr write_begin = (std::max)(device_addr, page_addr);
@@ -2605,7 +2609,7 @@ bool BufferCache<P>::Nx2CopyListPages(u64 tick) {
             }
             entry.copy = staging;
             // Exact again now: noted writes only add up, while downloads make guest memory current.
-            entry.gpu_ranges = Nx2StaleListRanges(page);
+            entry.gpu_ranges = Nx2StaleListRanges(page, Nx2SeedOrigins(entry));
             entry.copy_writes = entry.writes;
             entry.copy_tick = tick;
             entry.copy_time = Nx2Profile::Enabled() ? Nx2Profile::Now() : 0;
@@ -2686,10 +2690,32 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out, bool 
                     for (const auto& [begin, end] : entry.gpu_ranges.ranges) {
                         ranges += fmt::format(" [{:#x}, {:#x})", begin, end);
                     }
+                    static constexpr std::array source_names{"modified", "uncommitted",
+                                                             "committed", "downloading"};
+                    std::string seed;
+                    for (size_t i = 0; i < entry.seed_origins.size(); ++i) {
+                        const auto& o = entry.seed_origins[i];
+                        if (o.count != 0) {
+                            seed += fmt::format(" {} {}x [{:#x}, {:#x})", source_names[i],
+                                                o.count, o.begin, o.end);
+                        }
+                    }
+                    std::string notes;
+                    const u32 note_total = entry.note_count;
+                    const u32 shown = (std::min<u32>)(note_total, entry.notes.size());
+                    for (u32 i = note_total - shown; i < note_total; ++i) {
+                        const auto& n = entry.notes[i % entry.notes.size()];
+                        notes += fmt::format(" {:#x}+{:#x}{}", n.addr, n.size,
+                                             n.stage >= 0 ? fmt::format(" (draw, stage {})", n.stage)
+                                                          : std::string{" (compute/copy)"});
+                    }
                     LOG_INFO(HW_GPU,
                              "List stats: list at {:#x}+{:#x} on page {:#x} overlaps GPU ranges "
-                             "(known {}):{}",
-                             offset, out.size(), page, entry.gpu_ranges.known, ranges);
+                             "(known {}, merged {}):{} | seeded at write {} of {} from:{} | "
+                             "last of {} noted writes:{}",
+                             offset, out.size(), page, entry.gpu_ranges.known,
+                             entry.gpu_ranges.merged, ranges, entry.seed_at_write, entry.writes,
+                             seed.empty() ? std::string{" nothing"} : seed, note_total, notes);
                 }
             }
             if (!current(entry)) {
@@ -2726,22 +2752,49 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out, bool 
 }
 
 template <class P>
-Nx2ListRanges BufferCache<P>::Nx2StaleListRanges(DAddr page) const {
+bool BufferCache<P>::Nx2ListStats() {
+    static const bool stats = std::getenv("EDEN_NX2_LIST_STATS") != nullptr;
+    return stats;
+}
+
+template <class P>
+void* BufferCache<P>::Nx2SeedOrigins(Nx2ListPage& entry) {
+    if (!Nx2ListStats()) {
+        return nullptr;
+    }
+    entry.seed_origins = {};
+    entry.seed_at_write = static_cast<u32>(entry.writes);
+    return entry.seed_origins.data();
+}
+
+template <class P>
+Nx2ListRanges BufferCache<P>::Nx2StaleListRanges(DAddr page, void* origins) const {
     Nx2ListRanges result;
     result.Reset();
     constexpr DAddr page_size = DAddr{1} << Tegra::Nx2WrittenPageBits;
-    const auto note = [&result, page](DAddr begin, DAddr end) {
+    auto* const origin = static_cast<typename Nx2ListPage::Origin*>(origins);
+    size_t source = 0;
+    const auto note = [&](DAddr begin, DAddr end) {
         begin = (std::max)(begin, page);
         end = (std::min)(end, page + page_size);
         if (begin < end) {
             result.Note(static_cast<u32>(begin - page), static_cast<u32>(end - page));
+            if (origin != nullptr) {
+                auto& o = origin[source];
+                o.begin = (std::min)(o.begin, static_cast<u32>(begin - page));
+                o.end = (std::max)(o.end, static_cast<u32>(end - page));
+                ++o.count;
+            }
         }
     };
     gpu_modified_ranges.ForEachInRange(page, page_size, note);
+    source = 1;
     uncommitted_gpu_modified_ranges.ForEachInRange(page, page_size, note);
+    source = 2;
     for (const auto& ranges : committed_gpu_modified_ranges) {
         ranges.ForEachInRange(page, page_size, note);
     }
+    source = 3;
     for (const auto& ranges : pending_download_ranges) {
         ranges.ForEachInRange(page, page_size, note);
     }

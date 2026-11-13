@@ -730,7 +730,12 @@ private:
     void Nx2NoteListWrite(BufferId buffer_id, DAddr device_addr, u64 size);
     /// Back: the bytes of the list page at `page` whose guest memory may be older than the GPU's
     /// (GPU-modified, committed or being downloaded), as Nx2ListRanges.
-    Nx2ListRanges Nx2StaleListRanges(DAddr page) const;
+    /// `origins` (EDEN_NX2_LIST_STATS), when given, gets each source's part.
+    Nx2ListRanges Nx2StaleListRanges(DAddr page, void* origins = nullptr) const;
+    static bool Nx2ListStats();
+    struct Nx2ListPage;
+    /// EDEN_NX2_LIST_STATS: clears and returns `entry`'s seed origins, else nullptr.
+    static void* Nx2SeedOrigins(Nx2ListPage& entry);
 
     [[nodiscard]] BufferId FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible);
 
@@ -1042,6 +1047,22 @@ private:
         bool draw_written{};
         Nx2ListRanges gpu_ranges; ///< GPU-written bytes since the front last flushed the page
         std::optional<Nx2Staging> copy;
+        /// EDEN_NX2_LIST_STATS: what gpu_ranges came from. The last seed's bounding range per
+        /// source (GPU-modified, uncommitted, committed, downloading) and the last noted writes.
+        struct Origin {
+            u32 begin{~0U};
+            u32 end{};
+            u32 count{};
+        };
+        struct Note {
+            DAddr addr{};
+            u64 size{};
+            s8 stage{-1}; ///< Graphics stage writing it, -1 outside draws (compute, copies)
+        };
+        std::array<Origin, 4> seed_origins{};
+        u32 seed_at_write{}; ///< `writes` when last seeded
+        std::array<Note, 4> notes{};
+        u32 note_count{};
     };
     std::mutex nx2_list_mutex; ///< nx2_list_pages: the split's front reads the copies
     std::unordered_map<DAddr, Nx2ListPage> nx2_list_pages;
