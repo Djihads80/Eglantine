@@ -101,9 +101,16 @@ jobs:
             -DUSE_CCACHE=ON \
             -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }}
 
+      - name: ccache settings
+        shell: bash
+        run: |
+          ccache --version | head -1
+          ccache -p | grep -E '^(cache_dir|compiler_check|base_dir|hash_dir|sloppiness|max_size)' || true
+
       - name: Build
         shell: bash
         run: |
+          ccache --zero-stats
           cmake --build build/release --target yuzu yuzu-cmd --parallel
           ccache --show-stats
 

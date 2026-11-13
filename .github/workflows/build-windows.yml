@@ -118,7 +118,7 @@ jobs:
           -DCMAKE_C_COMPILER_LAUNCHER=sccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
-      - name: CCache zero stats
+      - name: sccache zero stats
         shell: bash
         run: sccache --zero-stats
 
@@ -239,9 +239,16 @@ jobs:
             "-DCMAKE_C_FLAGS=$profile" \
             "-DCMAKE_CXX_FLAGS=$profile"
 
+      - name: ccache settings
+        shell: msys2 {0}
+        run: |
+          ccache --version | head -1
+          ccache -p | grep -E '^(cache_dir|compiler_check|base_dir|hash_dir|sloppiness|max_size)' || true
+
       - name: Build
         shell: msys2 {0}
         run: |
+          ccache --zero-stats
           cmake --build build/release --target yuzu yuzu-cmd --parallel
           ccache --show-stats
 
