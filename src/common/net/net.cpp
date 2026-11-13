@@ -453,8 +453,54 @@ std::vector<std::string> BranchNamesFromJson(const std::string_view& json) {
     return names;
 }
 
+std::vector<std::string> RecentBranchesFromActivityJson(const std::string_view& json,
+                                                        std::size_t limit) {
+    constexpr std::string_view prefix = "refs/heads/";
+    std::vector<std::string> names;
+    std::vector<std::string> seen;
+    try {
+        const auto parsed = nlohmann::json::parse(json);
+        if (!parsed.is_array())
+            return {};
+
+        // Newest first: a branch's first entry tells whether it still exists.
+        for (const auto& activity : parsed) {
+            if (names.size() >= limit)
+                break;
+            if (!activity.contains("ref") || !activity["ref"].is_string())
+                continue;
+            const auto ref = activity["ref"].get<std::string>();
+            if (!ref.starts_with(prefix))
+                continue;
+            auto name = ref.substr(prefix.size());
+            if (std::find(seen.begin(), seen.end(), name) != seen.end())
+                continue;
+            seen.push_back(name);
+            const bool deleted = activity.contains("activity_type") &&
+                                 activity["activity_type"] == "branch_deletion";
+            if (!deleted)
+                names.push_back(std::move(name));
+        }
+    } catch (std::exception& e) {
+        LOG_WARNING(Common, "Failed to parse JSON: {}", e.what());
+        return {};
+    }
+
+    return names;
+}
+
 BranchList GetBranches() {
+    constexpr std::size_t RecentBranchCount = 15;
     const auto url = fmt::format("https://{}", Common::g_build_auto_update_api);
+    const auto activity = Fetch(
+        url, fmt::format("/repos/{}/activity?per_page=100", Common::g_build_auto_update_repo));
+    if (activity.body) {
+        auto names = RecentBranchesFromActivityJson(*activity.body, RecentBranchCount);
+        if (!names.empty()) {
+            return {.names = std::move(names), .ok = true, .status = activity.status};
+        }
+    }
+
     const auto path =
         fmt::format("/repos/{}/branches?per_page=100", Common::g_build_auto_update_repo);
     const auto response = Fetch(url, path);

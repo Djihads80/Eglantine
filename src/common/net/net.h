@@ -122,12 +122,18 @@ RemoteHeadResult GetPullRequestHead(u64 number);
 // Branch names from GET /repos/{repo}/branches
 std::vector<std::string> BranchNamesFromJson(const std::string_view& json);
 
+// Branches from GET /repos/{repo}/activity, the most recently pushed first, at most `limit`.
+// Branches deleted since their last push are left out.
+std::vector<std::string> RecentBranchesFromActivityJson(const std::string_view& json,
+                                                        std::size_t limit);
+
 struct BranchList {
     std::vector<std::string> names;
     bool ok{};
     int status{};
 };
 
+// The most recently pushed branches, or every branch name when the activity cannot be read.
 BranchList GetBranches();
 
 }

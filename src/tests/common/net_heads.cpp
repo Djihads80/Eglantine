@@ -112,6 +112,27 @@ TEST_CASE("Net: branch names from JSON", "[tester]") {
     CHECK(BranchNamesFromJson("").empty());
 }
 
+TEST_CASE("Net: recent branches from the activity JSON", "[tester]") {
+    using Common::Net::RecentBranchesFromActivityJson;
+    const std::string json = R"([
+        {"ref":"refs/heads/nx2-experimental","activity_type":"push"},
+        {"ref":"refs/heads/gone","activity_type":"branch_deletion"},
+        {"ref":"refs/tags/daily-20261112","activity_type":"branch_deletion"},
+        {"ref":"refs/heads/nx2","activity_type":"pr_merge"},
+        {"ref":"refs/heads/nx2-experimental","activity_type":"push"},
+        {"ref":"refs/heads/gone","activity_type":"push"},
+        {"activity_type":"push"},
+        {"ref":"refs/heads/fix/lag","activity_type":"branch_creation"}
+    ])";
+    CHECK(RecentBranchesFromActivityJson(json, 10) ==
+          std::vector<std::string>{"nx2-experimental", "nx2", "fix/lag"});
+    CHECK(RecentBranchesFromActivityJson(json, 2) ==
+          std::vector<std::string>{"nx2-experimental", "nx2"});
+    CHECK(RecentBranchesFromActivityJson("[]", 10).empty());
+    CHECK(RecentBranchesFromActivityJson(R"({"message":"Not Found"})", 10).empty());
+    CHECK(RecentBranchesFromActivityJson("", 10).empty());
+}
+
 namespace {
 
 constexpr std::string_view kOtherSha = "fedcba9876543210fedcba9876543210fedcba98";
