@@ -197,6 +197,13 @@ jobs:
           fi
           cmake -S . -B build/release -G Ninja "${flags[@]}"
 
+      - name: ccache settings
+        shell: bash
+        run: |
+          ccache --version | head -1
+          ccache -p | grep -E '^(cache_dir|compiler_check|base_dir|hash_dir|sloppiness|max_size)' || true
+          if [ '${{ matrix.pgo }}' = 'true' ]; then clang-$PGO_LLVM_VERSION --version | head -1; fi
+
       - name: Build
         shell: bash
         run: |
