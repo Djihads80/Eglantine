@@ -13,6 +13,7 @@
 #include <mutex>
 #include <numeric>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -93,6 +94,13 @@ inline std::atomic<u64> g_window_ns{10'000'000'000ULL};
 inline bool Enabled() {
     return g_enabled.load(std::memory_order_relaxed);
 }
+
+/// EDEN_NX2_GPU_PROFILE=waits: counters and waits by site only, no zone timing. The zones time
+/// millions of scopes a second, which by itself took Donkey Kong Bananza from 30 to 20 fps.
+inline const bool g_waits_only = [] {
+    const char* value = std::getenv("EDEN_NX2_GPU_PROFILE");
+    return value != nullptr && std::string_view{value} == "waits";
+}();
 
 /// Bumped on every toggle: threads drop totals from before it (thread_local, so they reset
 /// themselves at their next Report).
@@ -239,7 +247,7 @@ inline void Publish(const char* thread_name, u64 now) {
 
 class Scope {
 public:
-    explicit Scope(Zone zone_) : zone{zone_}, enabled{Enabled()} {
+    explicit Scope(Zone zone_) : zone{zone_}, enabled{Enabled() && !g_waits_only} {
         if (!enabled) {
             return;
         }
