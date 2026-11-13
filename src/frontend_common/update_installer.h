@@ -54,12 +54,16 @@ inline constexpr std::string_view ManifestName = "install-manifest.txt";
 // Folder in an install folder that keeps what the last update replaced.
 inline constexpr std::string_view BackupName = ".update-backup";
 
+// Where an install in progress collects that backup. It only outlives a failed install when a file
+// could not be put back, and then holds the only copy of it.
+inline constexpr std::string_view PendingBackupName = ".update-backup.tmp";
+
 // Install the files under `staging` over `install_dir`. Files the previous update installed that
 // `staging` no longer has are removed. Everything replaced or removed is kept in
 // `install_dir`/BackupName, replacing the older backup, and `staging` is deleted. `staging` may
 // itself be that backup, which restores the previous version. The top-level folder `user`, which
 // holds portable settings and data, is never read, written or removed. When a step fails every
-// file is put back as it was.
+// file is put back as it was; one that cannot be put back stays in `install_dir`/PendingBackupName.
 bool Install(const std::filesystem::path& staging, const std::filesystem::path& install_dir,
              std::error_code& ec);
 

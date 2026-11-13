@@ -257,7 +257,7 @@ bool Install(const fs::path& staging, const fs::path& install_dir, std::error_co
     }
 
     const auto backup = install_dir / BackupName;
-    const auto pending_backup = fs::path{backup}.concat(".tmp");
+    const auto pending_backup = install_dir / PendingBackupName;
     fs::remove_all(pending_backup, ec);
     fs::create_directories(pending_backup, ec);
     if (ec) {
@@ -294,16 +294,22 @@ bool Install(const fs::path& staging, const fs::path& install_dir, std::error_co
     std::vector<Step> steps;
     const auto roll_back = [&] {
         std::error_code ignored;
+        bool restored = true;
         for (auto step = steps.rbegin(); step != steps.rend(); ++step) {
             const auto target = install_dir / step->relative;
             if (step->placed_new) {
                 Move(target, staging / step->relative, ignored);
             }
             if (step->had_old) {
-                Move(pending_backup / step->relative, target, ignored);
+                std::error_code undo_ec;
+                Move(pending_backup / step->relative, target, undo_ec);
+                restored = restored && !undo_ec;
             }
         }
-        fs::remove_all(pending_backup, ignored);
+        // A file that could not be put back has its only copy in the pending backup.
+        if (restored) {
+            fs::remove_all(pending_backup, ignored);
+        }
     };
 
     for (const auto& relative : obsolete) {

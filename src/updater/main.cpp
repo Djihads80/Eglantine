@@ -58,10 +58,32 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         }
     }
 
+    // Eglantine released the lock when it handed over, so another window may have taken it since.
+    const UpdateInstaller::Lock lock{UpdateInstaller::LockPath(program)};
+    if (!lock.Held()) {
+        Log(install_dir, "Another update holds the lock, the update was not installed");
+        MessageBoxW(nullptr,
+                    L"Another Eglantine window is updating this installation, so this update was "
+                    L"not installed. Start Eglantine again once it has finished.",
+                    L"Eglantine update", MB_OK | MB_ICONINFORMATION);
+        return 1;
+    }
+
     std::error_code ec;
     const bool installed = UpdateInstaller::Install(staging, install_dir, ec);
     if (installed) {
         Log(install_dir, "Installed the staged update");
+    } else if (std::error_code ignored;
+               fs::exists(install_dir / UpdateInstaller::PendingBackupName, ignored)) {
+        Log(install_dir,
+            "Install failed, some previous files are still in .update-backup.tmp: " + ec.message());
+        MessageBoxW(nullptr,
+                    L"Eglantine could not install the update, and some files of your previous "
+                    L"version could not be put back. They are kept in .update-backup.tmp in the "
+                    L"Eglantine folder. Copy them back from there, or download Eglantine again. "
+                    L"Your settings and data are not affected.",
+                    L"Eglantine update", MB_OK | MB_ICONERROR);
+        return 1;
     } else {
         Log(install_dir, "Install failed, the previous files were put back: " + ec.message());
         MessageBoxW(nullptr,
