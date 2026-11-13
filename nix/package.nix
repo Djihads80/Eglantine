@@ -59,28 +59,25 @@ let
   # renamed `eden`, and cannot be submitted to nixpkgs, where a derivation
   # cannot inherit from a sibling one.
   #
-  # What is left is only what CPM cannot supply. The builder passes
-  # -DCPMUTIL_FORCE_SYSTEM=OFF and points every cpmfile.json entry at a
-  # pre-fetched store path, so a nixpkgs copy of a manifest library is shadowed
-  # at best and the wrong version at worst.
+  # Policy: nixpkgs first. cpmfile.json stays the pin, but a dependency that
+  # nixpkgs can serve is taken from nixpkgs instead of being compiled from
+  # source here -- it arrives from the binary cache and its build recipe is
+  # maintained upstream. Only what nixpkgs cannot serve is built from the
+  # manifest, which is what the -D<package>_FORCE_SYSTEM flags below select.
   #
+  # Listed here because CPM cannot serve them:
   #   ffmpeg-headless  deliberately the system build, see the FFmpeg note below
   #   openssl          upstream's Linux build links the system OpenSSL too
-  #   gamemode         Linux only, and loaded by the running process rather
-  #                    than linked; upstream installs the distro's dev package
+  #   gamemode         Linux only, loaded by the running process rather than
+  #                    linked; upstream installs the distro's dev package
   #   qt6.qtbase       Core, Gui, Widgets and Concurrent all live here
   #   qt6.qtcharts     listed in YUZU_QT_COMPONENTS, so required unconditionally
   #   qt6.qtwayland    the wayland platform plugin the wrapper hook needs
   #
-  # Dropped from the inherited list because cpmfile.json supplies them:
-  #   boost cpp-jwt cubeb enet fmt_11 frozen-containers httplib quazip libopus
-  #   libusb1 lz4 nlohmann_json simpleini sirit spirv-headers vulkan-headers
-  #   vulkan-memory-allocator vulkan-utility-libraries zlib zstd xbyak oaknut
-  # Dropped because nothing here uses them:
-  #   SDL2 (SDL3 comes from the manifest), stb (vendored in externals/stb,
-  #   which defines the stb target), unordered_dense (no reference anywhere in
-  #   the tree), qt6.qtmultimedia and qt6.qtwebengine (YUZU_USE_QT_MULTIMEDIA
-  #   and YUZU_USE_QT_WEB_ENGINE both default OFF and are never set here)
+  # Removed from the inherited Eden list because nothing here uses them:
+  #   SDL2, stb (vendored in externals/stb, which defines the target),
+  #   unordered_dense (no reference anywhere in the tree), qt6.qtmultimedia and
+  #   qt6.qtwebengine (both options default OFF and are never set here)
   nativeDeps = with pkgs; [
     cmake
     ninja
@@ -92,37 +89,20 @@ let
     wrapGAppsHook3
   ];
 
-  # SDL3 is compiled from source inside this derivation: the manifest pins
-  # 3.4.8 and the builder hands CPM the source tree, so SDL3's own configure
-  # runs here and its dependencies have to be ours. They used to arrive by
-  # accident, transitively through SDL2 and qt6.qtwebengine -- dropping those
-  # is what broke the first trimmed build, with SDL3 failing on XSCRNSAVER.
-  # This is nixpkgs' SDL3 build dependency set for Linux, minus the optional
-  # tray/ibus/jack/pipewire bits, which SDL3 autodetects rather than requires.
-  sdl3Deps = with pkgs; [
-    alsa-lib
-    dbus
-    libGL
-    libdecor
-    libdrm
-    libgbm
-    libpulseaudio
-    libusb1
-    libx11
-    libxcb
-    libxcursor
-    libxext
-    libxfixes
-    libxi
-    libxkbcommon
-    libxrandr
-    libxscrnsaver
-    libxtst
-    systemdLibs
-    vulkan-headers
-    vulkan-loader
-    wayland
-  ];
+  # nixpkgs' SDL3, pinned to the version cpmfile.json asks for. Using the
+  # nixpkgs recipe keeps SDL3's own build dependencies out of this expression:
+  # while it was compiled from source here, they all had to be listed by hand
+  # and every SDL3 bump could add another required library -- the first
+  # stripped-down build died exactly that way, on XSCRNSAVER.
+  sdl3Pinned = pkgs.sdl3.overrideAttrs (_: {
+    version = "3.4.8";
+    src = pkgs.fetchFromGitHub {
+      owner = "libsdl-org";
+      repo = "SDL";
+      rev = "release-3.4.8";
+      hash = "sha256-uBGyGxrUVx642Ku8qhR2sTy2JagcSioIhh/5RsXVAIM=";
+    };
+  });
 
   deps =
     with pkgs;
@@ -131,14 +111,24 @@ let
       openssl
       qt6.qtbase
       qt6.qtcharts
+      sdl3Pinned
+
+      # nixpkgs ships these at the exact version cpmfile.json pins, so they
+      # come from the binary cache instead of being compiled from the manifest.
+      enet
+      nlohmann_json
+      oaknut
+      zlib
+
+      # libusb's manifest entry carries one patch, 0001-netbsd-gettime.patch,
+      # which does not apply to anything we build. Left to CPM it compiles from
+      # source and insists on autoconf.
+      libusb1
     ]
-    ++ lib.optionals (!isDarwin) (
-      [
-        gamemode
-        qt6.qtwayland
-      ]
-      ++ sdl3Deps
-    );
+    ++ lib.optionals (!isDarwin) [
+      gamemode
+      qt6.qtwayland
+    ];
 in
 buildEdenEmulator (
   {
@@ -163,6 +153,18 @@ buildEdenEmulator (
       # NIGHTLY_BUILD is not a flag here: CMakeLists.txt turns it on when a
       # GIT-NIGHTLY file sits in the source root, the same way GIT-RELEASE
       # already decides release-ness. CI drops that file in before building.
+
+      # Take these from nixpkgs rather than compiling them from the manifest.
+      # CPMUtil checks <package>_FORCE_SYSTEM before the global option; the name
+      # is the manifest's `package` field, or the entry key when absent. With
+      # force_system set, a find_package miss is a FATAL_ERROR naming the
+      # package, and a hit logs "Using system package <name>@<version>".
+      "-DSDL3_FORCE_SYSTEM=ON"
+      "-Denet_FORCE_SYSTEM=ON"
+      "-Dnlohmann_json_FORCE_SYSTEM=ON"
+      "-Doaknut_FORCE_SYSTEM=ON"
+      "-Dlibusb_FORCE_SYSTEM=ON"
+      "-DZLIB_FORCE_SYSTEM=ON"
 
       # Matching upstream's build-linux.yml, which has always passed this for
       # the Linux release. discord-rpc comes from cpmfile.json like everything
