@@ -29,6 +29,9 @@ jobs:
       sha: ${{ github.event.pull_request.head.sha || github.sha }}
       linux: ${{ inputs.os == 'all' || inputs.os == 'linux' }}
       macos: ${{ inputs.os == 'all' || inputs.os == 'macos' }}
+      # A manual run has no prepare job; label it with the ref it was started on.
+      refspec: ${{ github.ref_name }}
+      tag: manual
       pgo: ${{ inputs.pgo || 'both' }}
     secrets:
       CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}

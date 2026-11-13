@@ -198,6 +198,12 @@ jobs:
       sha: ${{ needs.prepare.outputs.sha }}
       linux: ${{ github.event_name != 'workflow_dispatch' || inputs.build_linux }}
       macos: ${{ github.event_name != 'workflow_dispatch' || inputs.build_macos }}
+      # Same identity inputs the linux job gets, so the Nix binary reports the
+      # same version string as the release it sits next to.
+      refspec: ${{ needs.prepare.outputs.refspec }}
+      tag: ${{ needs.prepare.outputs.tag }}
+      release: ${{ needs.prepare.outputs.kind == 'stable' || needs.prepare.outputs.kind == 'rc' }}
+      nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
       pgo: ${{ inputs.pgo || (needs.prepare.outputs.kind == 'branch' && 'none' || 'both') }}
     secrets:
       CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
