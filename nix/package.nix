@@ -270,7 +270,6 @@ buildEdenEmulator (
       "-Dxbyak_FORCE_SYSTEM=ON"
       "-Dlz4_FORCE_SYSTEM=ON"
       "-Dcubeb_FORCE_SYSTEM=ON"
-      "-Dgamemode_FORCE_SYSTEM=ON"
       "-DVulkanHeaders_FORCE_SYSTEM=ON"
       "-DVulkanUtilityLibraries_FORCE_SYSTEM=ON"
       "-DZLIB_FORCE_SYSTEM=ON"
@@ -303,7 +302,12 @@ buildEdenEmulator (
 
       "-DENABLE_WERROR=OFF"
     ]
-    ++ lib.optionals (!isDarwin) [ "-Dsirit_FORCE_SYSTEM=ON" ]
+    # sirit and gamemode are Linux-only in nixpkgs, so both their packages
+    # and the instruction to look for them are conditional.
+    ++ lib.optionals (!isDarwin) [
+      "-Dsirit_FORCE_SYSTEM=ON"
+      "-Dgamemode_FORCE_SYSTEM=ON"
+    ]
     ++ pgoLinkerFlags
     ++ lib.optionals pgo [
       "-DCMAKE_C_FLAGS=${profile} ${archFlags}"
