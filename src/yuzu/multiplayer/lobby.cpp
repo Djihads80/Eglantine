@@ -4,16 +4,12 @@
 // SPDX-FileCopyrightText: Copyright 2017 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <algorithm>
-#include <array>
-
 #include <QInputDialog>
 #include <QList>
 #include <QtConcurrentRun>
 #include "common/logging.h"
 #include "common/settings.h"
 #include "core/core.h"
-#include "core/hle/service/acc/profile_manager.h"
 #include "core/internal_network/network_interface.h"
 #include "network/network.h"
 #include "qt_common/config/uisettings.h"
@@ -29,25 +25,6 @@
 #ifdef ENABLE_WEB_SERVICE
 #include "web_service/web_backend.h"
 #endif
-
-namespace {
-/// Names the emulator ships as defaults. Using one in a public room makes players impossible to
-/// tell apart.
-constexpr std::array<const char*, 8> DEFAULT_DISPLAY_NAMES{
-    "Eglantine", "Eden", "Lichii", "Suyu", "Citron", "Yuzu", "Torzu", "Sudachii",
-};
-
-/// Returns the default name that matches, or an empty string when the name is the user's own.
-QString GetDefaultDisplayName(const QString& name) {
-    const QString trimmed_name = name.trimmed();
-    for (const char* default_name : DEFAULT_DISPLAY_NAMES) {
-        if (trimmed_name.compare(QLatin1String(default_name), Qt::CaseInsensitive) == 0) {
-            return QString::fromLatin1(default_name);
-        }
-    }
-    return {};
-}
-} // Anonymous namespace
 
 Lobby::Lobby(QWidget* parent, QStandardItemModel* list,
              std::shared_ptr<Core::AnnounceMultiplayerSession> session, Core::System& system_)
@@ -87,19 +64,16 @@ Lobby::Lobby(QWidget* parent, QStandardItemModel* list,
         QString::fromStdString(UISettings::values.multiplayer_nickname.GetValue()));
 
     // Try find the best nickname by default. Only the name the emulator itself shipped as a default
-    // is replaced here; any other default name was picked by the user and is caught by the join
-    // warning instead of being overwritten behind their back.
+    // is replaced here; any other default name was picked by the user and is caught by the warning
+    // before joining instead of being overwritten behind their back.
     const QString stored_nickname = ui->nickname->text().trimmed();
-    if (stored_nickname.isEmpty() ||
-        stored_nickname.compare(QLatin1String("Eden"), Qt::CaseInsensitive) == 0 ||
-        stored_nickname.compare(QLatin1String("Eglantine"), Qt::CaseInsensitive) == 0) {
+    if (stored_nickname.isEmpty() || NetworkMessage::IsShippedDefaultNickname(stored_nickname)) {
+        const std::string profile_name = NetworkMessage::GetProfileUsername(system);
         if (!Settings::values.eden_username.GetValue().empty()) {
             ui->nickname->setText(
                 QString::fromStdString(Settings::values.eden_username.GetValue()));
-        } else if (!GetProfileUsername().empty()) {
-            ui->nickname->setText(QString::fromStdString(GetProfileUsername()));
-        } else {
-            ui->nickname->setText(QStringLiteral("Eglantine"));
+        } else if (!profile_name.empty()) {
+            ui->nickname->setText(QString::fromStdString(profile_name));
         }
     }
 
@@ -151,97 +125,6 @@ QString Lobby::PasswordPrompt() {
     return ok ? text : QString();
 }
 
-bool Lobby::IsNicknameAcceptable(const QString& nickname) {
-    QString text = nickname;
-    int position = 0;
-    return validation.GetNickname()->validate(text, position) == QValidator::Acceptable;
-}
-
-bool Lobby::RenameCurrentProfile(const QString& new_name) {
-    auto& profile_manager = system.GetProfileManager();
-    const auto current_user = profile_manager.GetUser(Settings::values.current_user.GetValue());
-    if (!current_user.has_value()) {
-        return false;
-    }
-
-    Service::Account::ProfileBase profile{};
-    if (!profile_manager.GetProfileBase(*current_user, profile)) {
-        return false;
-    }
-
-    const std::string new_username = new_name.toStdString();
-    if (new_username.size() > profile.username.size()) {
-        LOG_WARNING(Frontend, "Profile name is {} bytes, over the {} byte profile field",
-                    new_username.size(), profile.username.size());
-        return false;
-    }
-
-    std::fill(profile.username.begin(), profile.username.end(), '\0');
-    std::copy(new_username.begin(), new_username.end(), profile.username.begin());
-
-    return profile_manager.SetProfileBase(*current_user, profile);
-}
-
-bool Lobby::ConfirmDisplayName() {
-    while (true) {
-        const QString profile_name = QString::fromStdString(GetProfileUsername());
-        const QString nickname = ui->nickname->text();
-
-        const QString default_profile_name = GetDefaultDisplayName(profile_name);
-        const QString default_nickname = GetDefaultDisplayName(nickname);
-        if (default_profile_name.isEmpty() && default_nickname.isEmpty()) {
-            return true;
-        }
-
-        // Only useful when the nickname is a name of the user's own
-        const bool offer_nickname = !default_profile_name.isEmpty() &&
-                                    default_nickname.isEmpty() &&
-                                    nickname.compare(profile_name, Qt::CaseInsensitive) != 0;
-
-        const QString detected =
-            default_profile_name.isEmpty() ? default_nickname : default_profile_name;
-        const bool profile_is_default = !default_profile_name.isEmpty();
-
-        switch (NetworkMessage::WarnDefaultName(
-            this, detected,
-            profile_is_default ? NetworkMessage::DefaultNameKind::ProfileName
-                               : NetworkMessage::DefaultNameKind::Nickname,
-            offer_nickname)) {
-        case NetworkMessage::DefaultNameAction::Cancel:
-            return false;
-        case NetworkMessage::DefaultNameAction::Continue:
-            return true;
-        case NetworkMessage::DefaultNameAction::UseNickname: {
-            if (!RenameCurrentProfile(nickname)) {
-                LOG_WARNING(Frontend, "Failed to rename the user profile to the lobby nickname");
-            }
-            break;
-        }
-        case NetworkMessage::DefaultNameAction::ChangeName: {
-            if (!profile_is_default) {
-                // Only the nickname is a default one, so let the user type a new one here
-                ui->nickname->setFocus();
-                ui->nickname->selectAll();
-                return false;
-            }
-
-            emit RequestProfileConfiguration();
-
-            // Carry a profile name picked in that dialog over to the lobby nickname, unless the
-            // user chose a nickname of their own
-            const QString updated_profile_name = QString::fromStdString(GetProfileUsername());
-            const bool nickname_is_default =
-                !default_nickname.isEmpty() ||
-                nickname.compare(profile_name, Qt::CaseInsensitive) == 0;
-            if (updated_profile_name.compare(profile_name) != 0 && nickname_is_default &&
-                IsNicknameAcceptable(updated_profile_name)) {
-                ui->nickname->setText(updated_profile_name);
-            }
-            break;
-        }
-        }
-    }
-}
 
 void Lobby::OnExpandRoom(const QModelIndex& index) {
     QModelIndex member_index = proxy->index(index.row(), Column::MEMBER);
@@ -287,7 +170,8 @@ void Lobby::OnJoinRoom(const QModelIndex& source) {
         return;
     }
 
-    if (!ConfirmDisplayName()) {
+    if (!NetworkMessage::ConfirmDisplayName(this, system, ui->nickname,
+                                            [this] { emit RequestProfileConfiguration(); })) {
         return;
     }
 
@@ -431,25 +315,6 @@ void Lobby::OnRefreshLobby() {
     }
 
     ui->room_list->sortByColumn(Column::GAME_NAME, Qt::AscendingOrder);
-}
-
-std::string Lobby::GetProfileUsername() {
-    const auto& current_user =
-        system.GetProfileManager().GetUser(Settings::values.current_user.GetValue());
-    Service::Account::ProfileBase profile{};
-
-    if (!current_user.has_value()) {
-        return "";
-    }
-
-    if (!system.GetProfileManager().GetProfileBase(*current_user, profile)) {
-        return "";
-    }
-
-    const auto text = Common::StringFromFixedZeroTerminatedBuffer(
-        reinterpret_cast<const char*>(profile.username.data()), profile.username.size());
-
-    return text;
 }
 
 LobbyFilterProxyModel::LobbyFilterProxyModel(QWidget* parent, QStandardItemModel* list)

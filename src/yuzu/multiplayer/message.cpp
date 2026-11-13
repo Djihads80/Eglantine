@@ -1,11 +1,22 @@
 // SPDX-FileCopyrightText: Copyright 2017 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <functional>
+#include <string>
+
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QString>
+#include <QValidator>
 
+#include "common/settings.h"
+#include "common/string_util.h"
+#include "core/core.h"
+#include "core/hle/service/acc/profile_manager.h"
 #include "yuzu/multiplayer/message.h"
+#include "yuzu/multiplayer/validation.h"
 
 namespace NetworkMessage {
 const ConnectionError ErrorManager::USERNAME_NOT_VALID(
@@ -83,6 +94,48 @@ bool WarnDisconnect() {
         QT_TR_NOOP("You are about to leave the room. Any network connections will be closed."));
 }
 
+namespace {
+/// What the user chose when warned about a default profile name or nickname.
+enum class DefaultNameAction {
+    Continue,    ///< Use the name as it is
+    ChangeName,  ///< Fix the name in the settings the button pointed at
+    UseNickname, ///< Rename the user profile to the current nickname
+    Cancel,      ///< Do not join, host or connect
+};
+
+/// Which of the two names a default-name warning is about.
+enum class DefaultNameKind {
+    ProfileName, ///< The user profile name
+    Nickname,    ///< The lobby nickname
+};
+
+/// A name the emulator projects ship as a default, and whether this one shipped it as the nickname.
+struct DefaultDisplayName {
+    const char* name;
+    bool shipped_as_nickname;
+};
+
+constexpr std::array<DefaultDisplayName, 8> DEFAULT_DISPLAY_NAMES{{
+    {"Eglantine", true},
+    {"Eden", true},
+    {"Lichii", false},
+    {"Suyu", false},
+    {"Citron", false},
+    {"Yuzu", false},
+    {"Torzu", false},
+    {"Sudachii", false},
+}};
+
+const DefaultDisplayName* FindDefaultDisplayName(const QString& name) {
+    const QString trimmed_name = name.trimmed();
+    for (const auto& default_name : DEFAULT_DISPLAY_NAMES) {
+        if (trimmed_name.compare(QLatin1String(default_name.name), Qt::CaseInsensitive) == 0) {
+            return &default_name;
+        }
+    }
+    return nullptr;
+}
+
 DefaultNameAction WarnDefaultName(QWidget* parent, const QString& name, DefaultNameKind kind,
                                   bool offer_nickname) {
     const bool profile_name = kind == DefaultNameKind::ProfileName;
@@ -125,6 +178,112 @@ DefaultNameAction WarnDefaultName(QWidget* parent, const QString& name, DefaultN
         return DefaultNameAction::Continue;
     }
     return DefaultNameAction::Cancel;
+}
+} // Anonymous namespace
+
+std::string GetProfileUsername(Core::System& system) {
+    const auto& current_user =
+        system.GetProfileManager().GetUser(Settings::values.current_user.GetValue());
+    Service::Account::ProfileBase profile{};
+
+    if (!current_user.has_value()) {
+        return "";
+    }
+
+    if (!system.GetProfileManager().GetProfileBase(*current_user, profile)) {
+        return "";
+    }
+
+    return Common::StringFromFixedZeroTerminatedBuffer(
+        reinterpret_cast<const char*>(profile.username.data()), profile.username.size());
+}
+
+QString GetDefaultDisplayName(const QString& name) {
+    const auto* default_name = FindDefaultDisplayName(name);
+    return default_name != nullptr ? QString::fromLatin1(default_name->name) : QString();
+}
+
+bool IsShippedDefaultNickname(const QString& name) {
+    const auto* default_name = FindDefaultDisplayName(name);
+    return default_name != nullptr && default_name->shipped_as_nickname;
+}
+
+bool RenameCurrentProfile(Core::System& system, const QString& new_name) {
+    const auto current_user =
+        system.GetProfileManager().GetUser(Settings::values.current_user.GetValue());
+    if (!current_user.has_value()) {
+        return false;
+    }
+
+    return system.GetProfileManager().SetProfileUsername(*current_user, new_name.toStdString());
+}
+
+bool ConfirmDisplayName(QWidget* parent, Core::System& system, QLineEdit* nickname,
+                        const std::function<void()>& open_profile_settings) {
+    const Validation validation;
+
+    while (true) {
+        const QString profile_name = QString::fromStdString(GetProfileUsername(system));
+        const QString nickname_text = nickname->text();
+
+        const QString default_profile_name = GetDefaultDisplayName(profile_name);
+        const QString default_nickname = GetDefaultDisplayName(nickname_text);
+        if (default_profile_name.isEmpty() && default_nickname.isEmpty()) {
+            return true;
+        }
+
+        const bool profile_is_default = !default_profile_name.isEmpty();
+        // Only useful when the nickname is a name of the user's own
+        const bool offer_nickname = profile_is_default && default_nickname.isEmpty() &&
+                                    nickname_text.compare(profile_name, Qt::CaseInsensitive) != 0;
+        const QString detected = profile_is_default ? default_profile_name : default_nickname;
+
+        switch (WarnDefaultName(parent, detected,
+                                profile_is_default ? DefaultNameKind::ProfileName
+                                                   : DefaultNameKind::Nickname,
+                                offer_nickname)) {
+        case DefaultNameAction::Cancel:
+            return false;
+        case DefaultNameAction::Continue:
+            return true;
+        case DefaultNameAction::UseNickname: {
+            if (!RenameCurrentProfile(system, nickname_text)) {
+                QMessageBox::warning(
+                    parent, QObject::tr("Could Not Rename User Profile"),
+                    QObject::tr("The user profile could not be renamed to \"%1\". Pick a different "
+                                "name, or change it in the user profile settings.")
+                        .arg(nickname_text));
+            }
+            break;
+        }
+        case DefaultNameAction::ChangeName: {
+            if (!profile_is_default) {
+                // Only the nickname is a default one, so let the user type a new one here
+                nickname->setFocus();
+                nickname->selectAll();
+                return false;
+            }
+
+            open_profile_settings();
+
+            // Carry a profile name picked in that dialog over to the nickname, unless the user
+            // chose a nickname of their own
+            const QString updated_profile_name = QString::fromStdString(GetProfileUsername(system));
+            const bool nickname_is_default =
+                !default_nickname.isEmpty() ||
+                nickname_text.compare(profile_name, Qt::CaseInsensitive) == 0;
+            if (updated_profile_name.compare(profile_name) != 0 && nickname_is_default) {
+                QString candidate = updated_profile_name;
+                int position = 0;
+                if (validation.GetNickname()->validate(candidate, position) ==
+                    QValidator::Acceptable) {
+                    nickname->setText(updated_profile_name);
+                }
+            }
+            break;
+        }
+        }
+    }
 }
 
 } // namespace NetworkMessage

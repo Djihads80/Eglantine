@@ -366,6 +366,24 @@ bool ProfileManager::RemoveUser(UUID uuid) {
     return RemoveProfileAtIndex(*index);
 }
 
+bool ProfileManager::SetProfileUsername(UUID uuid, const std::string& username) {
+    if (username.empty() || username.size() > profile_username_size) {
+        LOG_ERROR(Service_ACC, "Refusing a {}-byte profile name, the field holds {} bytes",
+                  username.size(), profile_username_size);
+        return false;
+    }
+
+    ProfileBase profile{};
+    if (!GetProfileBase(uuid, profile)) {
+        return false;
+    }
+
+    std::fill(profile.username.begin(), profile.username.end(), '\0');
+    std::copy(username.begin(), username.end(), profile.username.begin());
+
+    return SetProfileBase(uuid, profile);
+}
+
 bool ProfileManager::SetProfileBase(UUID uuid, const ProfileBase& profile_new) {
     const auto index = GetUserIndex(uuid);
     if (!index || profile_new.user_uuid.IsInvalid()) {

@@ -2057,19 +2057,7 @@ JNIEXPORT jboolean JNICALL Java_org_yuzu_yuzu_1emu_NativeLibrary_updateUserUsern
     const auto username = Common::Android::GetJString(env, jusername);
     const auto uuid = Common::UUID{uuid_string};
 
-    Service::Account::ProfileBase profile{};
-    if (!manager.GetProfileBase(uuid, profile)) {
-        return false;
-    }
-
-    std::fill(profile.username.begin(), profile.username.end(), '\0');
-    std::copy(username.begin(), username.end(), profile.username.begin());
-
-    if (manager.SetProfileBase(uuid, profile)) {
-        manager.WriteUserSaveFile();
-        return true;
-    }
-    return false;
+    return manager.SetProfileUsername(uuid, username);
 }
 
 JNIEXPORT jboolean JNICALL Java_org_yuzu_yuzu_1emu_NativeLibrary_removeUser(

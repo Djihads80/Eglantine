@@ -34,6 +34,8 @@ signals:
      */
     void Closed();
     void SaveConfig();
+    /// Asks the main window to open Configuration > System > Profiles.
+    void RequestProfileConfiguration();
 
 private slots:
     void OnConnection();

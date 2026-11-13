@@ -3,11 +3,18 @@
 
 #pragma once
 
+#include <functional>
+#include <string>
 #include <utility>
 #include <QObject>
 #include <QString>
 
+class QLineEdit;
 class QWidget;
+
+namespace Core {
+class System;
+}
 
 namespace NetworkMessage {
 
@@ -73,29 +80,37 @@ bool WarnCloseRoom();
  */
 bool WarnDisconnect();
 
-/// What the user chose when warned about a default profile name or nickname.
-enum class DefaultNameAction {
-    Continue,    ///< Use the name as it is
-    ChangeName,  ///< Fix the name in the settings the button pointed at
-    UseNickname, ///< Rename the user profile to the current lobby nickname
-    Cancel,      ///< Do not join the room
-};
-
-/// Which of the two names a default-name warning is about.
-enum class DefaultNameKind {
-    ProfileName, ///< The user profile name, which is what other players see in the room
-    Nickname,    ///< The lobby nickname
-};
+/**
+ * The name the current user profile has, or an empty string when it cannot be read.
+ */
+std::string GetProfileUsername(Core::System& system);
 
 /**
- * Show a warning about a default name being visible to other players, and offer to change it.
- * \param parent Parent widget of the message box.
- * \param name The default name that was detected.
- * \param kind Whether the profile name or the nickname is the one that needs changing.
- * \param offer_nickname Whether to offer renaming the profile to the lobby nickname.
- * \return The action chosen by the user.
+ * Returns the default name that matches, ignoring case and surrounding spaces, or an empty string
+ * when the name is the user's own.
  */
-DefaultNameAction WarnDefaultName(QWidget* parent, const QString& name, DefaultNameKind kind,
-                                  bool offer_nickname);
+QString GetDefaultDisplayName(const QString& name);
+
+/**
+ * Whether the emulator itself shipped this name as its default nickname, meaning a stored value was
+ * never picked by the user and can be replaced.
+ */
+bool IsShippedDefaultNickname(const QString& name);
+
+/**
+ * Renames the current user profile. Returns false when the name does not fit the profile field or
+ * the profile cannot be saved.
+ */
+bool RenameCurrentProfile(Core::System& system, const QString& new_name);
+
+/**
+ * Warns about a default user profile name or nickname before joining, hosting or connecting to a
+ * room, and applies the fix the user picked. Returns false when the user cancelled.
+ *
+ * \param nickname The lobby nickname field, kept in sync when the profile name is changed.
+ * \param open_profile_settings Opens the settings page that edits the user profile name.
+ */
+bool ConfirmDisplayName(QWidget* parent, Core::System& system, QLineEdit* nickname,
+                        const std::function<void()>& open_profile_settings);
 
 } // namespace NetworkMessage
