@@ -204,9 +204,14 @@ jobs:
       - name: Build
         shell: bash
         run: |
+          # debug the stupid cache
+          export CCACHE_DEBUG=1
+          export CCACHE_DEBUGDIR="$PWD/ccache-debug"
           ccache --zero-stats
           cmake --build build/release --target yuzu yuzu-cmd --parallel
-          ccache --show-stats
+          ccache --show-stats -vv
+          # one file should be enough
+          find ccache-debug -name '*main_window.cpp*input-text' | head -1 | xargs cat
 
       # Plain tar.gz with the two programs. GitHub artifacts drop the executable bit, so a tar is
       # what keeps it. This one is not self-contained: it needs Qt 6 and the usual libraries
@@ -275,3 +280,10 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ccache-debug-${{ env.PLATFORM }}
+          path: ccache-debug
+          retention-days: 2
