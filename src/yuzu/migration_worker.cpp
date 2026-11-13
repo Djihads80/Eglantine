@@ -185,7 +185,7 @@ void MigrationWorker::process() {
     // Delete and re-create shader dir
     if (clear_shader_cache) {
         fs::remove_all(shader_dir);
-        fs::create_directory(shader_dir);
+        fs::create_directories(shader_dir);
     }
 
     emit finished(success_text, legacy_user_dir.string());
