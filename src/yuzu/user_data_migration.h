@@ -8,6 +8,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include "qt_common/config/qt_config.h"
 #include "yuzu/migration_worker.h"
 
 // TODO(crueter): Quick implementation
@@ -16,6 +17,10 @@ public:
     UserDataMigrator(QMainWindow* main_window);
 
     bool migrated{false};
+
+    /// Offers to move data paths that a previous migration left pointing at the old emulator's
+    /// folders over to Eglantine. Call after the config has been read.
+    static void ReconcileLegacyPaths(QMainWindow* main_window, QtConfig& config);
     Emulator selected_emu;
 
 private:
