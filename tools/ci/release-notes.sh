@@ -60,7 +60,7 @@ commits() { git log --no-merges --pretty='- %s (`%h`)' "$@" 2>/dev/null | head -
     cat <<'EOF2'
 ## Linux
 
-The AppImage is self-contained (needs glibc 2.39 or newer: Ubuntu 24.04, Fedora 40, Debian 13, Arch): make it executable with `chmod +x` and run it. The tar.gz uses your system libraries, so Qt 6 and the usual libraries must be installed.
+The AppImage is self-contained (needs glibc 2.39 or newer: Ubuntu 24.04, Fedora 40, Debian 13, Arch): make it executable with `chmod +x` and run it. The tar.gz uses your system Qt and needs Qt 6.8 or newer (Arch, Fedora 41, Debian 13, Ubuntu 25.04 or newer). On Ubuntu 24.04, use the AppImage.
 
 | Build Type | Standard | PGO (Recommended) | Notes |
 | --- | --- | --- | --- |
