@@ -16,6 +16,7 @@ namespace Settings {
 inline constexpr u64 MarioKartWorldProgramId = 0x0400C3F00006E000ULL;
 inline constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
 inline constexpr u64 HyruleWarriorsProgramId = 0x04003F40232DE000ULL;
+inline constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
 
 struct RecommendedSetting {
     std::string key;
@@ -67,6 +68,24 @@ inline const std::map<u64, GamePreset> game_presets{
        {"use_docked_mode", ConsoleMode::Docked},
        {"scaling_filter", ScalingFilter::ScaleForce},
        {"anti_aliasing", AntiAliasing::Fxaa}}}},
+    // Its dynamic resolution follows the GPU time it measures: with Boost it reads ~4x too little
+    // and keeps 2096x1179 in busy areas (host GPU at 99%); with Normal it steps down to 1440x810
+    // there, as the console does. Sync memory operations waited for a GPU fence 7-8 times a frame.
+    {DonkeyKongBananzaProgramId,
+     {"Donkey Kong Bananza",
+      {{"backend", RendererBackend::Vulkan},
+       {"resolution_setup", ResolutionSetup::Res1X},
+       {"gpu_accuracy", GpuAccuracy::Low},
+       {"use_asynchronous_shaders", true},
+       {"astc_recompression", AstcRecompression::Bc3},
+       {"vram_usage_mode", VramUsageMode::Conservative},
+       {"use_reactive_flushing", true},
+       {"use_vsync", VSyncMode::Mailbox},
+       {"use_docked_mode", ConsoleMode::Docked},
+       {"scaling_filter", ScalingFilter::ScaleForce},
+       {"anti_aliasing", AntiAliasing::Fxaa},
+       {"fast_gpu_time", GpuClock::Normal},
+       {"sync_memory_operations", false}}}},
 };
 
 // Settings that only affect one game. Per-game configuration shows them in that game's Tweaks tab.
