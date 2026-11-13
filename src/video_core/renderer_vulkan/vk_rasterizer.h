@@ -109,6 +109,8 @@ public:
     GpuWrittenList ReadGpuWrittenCommandList(DAddr addr, std::span<u8> out, bool past_sync,
                                              u64* pending_tick = nullptr) override;
     bool IsGpuTickDone(u64 tick) override;
+    bool Nx2ListSpeculationAllowed(DAddr page) override;
+    void Nx2CheckSpeculatedList(DAddr addr, u32 size, u64 hash) override;
     void NoteGpuWrittenCommandListSynced(DAddr page) override;
     bool MustFlushRegion(DAddr addr, u64 size,
                          VideoCommon::CacheType which = VideoCommon::CacheType::All) override;

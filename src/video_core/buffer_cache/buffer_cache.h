@@ -2562,6 +2562,87 @@ void BufferCache<P>::Nx2NoteListWrite(BufferId buffer_id, DAddr device_addr, u64
 }
 
 template <class P>
+bool BufferCache<P>::Nx2ListSpeculationAllowed(DAddr page) {
+    if constexpr (IS_OPENGL) {
+        return false;
+    } else {
+        std::scoped_lock lock{nx2_list_mutex};
+        const auto it = nx2_list_pages.find(page);
+        return it == nx2_list_pages.end() || !it->second.speculation_hazard;
+    }
+}
+
+template <class P>
+void BufferCache<P>::Nx2CheckSpeculatedList(DAddr addr, u32 size, u64 hash) {
+    if constexpr (!IS_OPENGL) {
+        constexpr DAddr page_size = DAddr{1} << Tegra::Nx2WrittenPageBits;
+        const DAddr page = addr & ~(page_size - 1);
+        const u32 offset = static_cast<u32>(addr - page);
+        {
+            std::scoped_lock lock{nx2_list_mutex};
+            const auto it = nx2_list_pages.find(page);
+            // The writers before the read ran: a page they wrote has a copy made after them.
+            if (it == nx2_list_pages.end() || !it->second.copy ||
+                it->second.copy_writes != it->second.writes || offset < it->second.copy_begin ||
+                offset + size > it->second.copy_end) {
+                ++nx2_list_checks_unverifiable;
+            } else if (nx2_list_checks.size() < 8192) {
+                nx2_list_checks.push_back(
+                    {page, offset, size, hash, it->second.copy_tick, it->second.writes});
+            } else {
+                ++nx2_list_checks_unverifiable;
+            }
+        }
+        Nx2ProcessListChecks();
+    }
+}
+
+template <class P>
+void BufferCache<P>::Nx2ProcessListChecks() {
+    if constexpr (!IS_OPENGL) {
+        std::scoped_lock lock{nx2_list_mutex};
+        std::erase_if(nx2_list_checks, [this](const Nx2ListCheck& check) {
+            if (!runtime.IsFree(check.tick)) {
+                return false;
+            }
+            const auto it = nx2_list_pages.find(check.page);
+            if (it == nx2_list_pages.end() || !it->second.copy ||
+                it->second.copy_tick != check.tick || it->second.copy_writes != check.writes) {
+                ++nx2_list_checks_unverifiable; // a newer copy replaced it
+                return true;
+            }
+            const u8* const words = it->second.copy->mapped_span.data() + check.offset;
+            if (Common::CityHash64(reinterpret_cast<const char*>(words), check.size) ==
+                check.hash) {
+                ++nx2_list_checks_matched;
+                return true;
+            }
+            ++nx2_list_checks_differed;
+            it->second.speculation_hazard = true;
+            Nx2Profile::Add(Nx2Profile::Counter::ListSpeculationHazards, 1);
+            if (nx2_list_checks_differed <= 32) {
+                LOG_ERROR(HW_GPU,
+                          "List speculation hazard: the list at {:#x}+{:#x} read from guest "
+                          "memory differs from the GPU's copy; its page waits from now on",
+                          check.page + check.offset, check.size);
+            }
+            return true;
+        });
+        const u64 total =
+            nx2_list_checks_matched + nx2_list_checks_differed + nx2_list_checks_unverifiable;
+        static u64 last_logged{};
+        if (total >= last_logged + 20000) {
+            last_logged = total;
+            LOG_INFO(HW_GPU,
+                     "List speculation checks: {} matched the GPU's copy, {} differed, {} "
+                     "unverifiable",
+                     nx2_list_checks_matched, nx2_list_checks_differed,
+                     nx2_list_checks_unverifiable);
+        }
+    }
+}
+
+template <class P>
 bool BufferCache<P>::Nx2CopyListPages(u64 tick) {
     if constexpr (IS_OPENGL) {
         return false;

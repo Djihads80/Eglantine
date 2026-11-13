@@ -244,6 +244,15 @@ public:
     /// the writers a command list fetched now is ordered after. Returns whether any of it was
     /// still queued.
     bool WaitForSyncedWriters();
+    /// Whether WaitForSyncedWriters / WaitForWriters would wait now.
+    [[nodiscard]] bool SyncedWritersQueued() const {
+        return consumed.load(std::memory_order_acquire) <
+               std::min({last_writer_position, last_sync_position, write_position});
+    }
+    [[nodiscard]] bool WritersQueued() const {
+        return consumed.load(std::memory_order_acquire) <
+               std::min(last_writer_position, write_position);
+    }
     /// Diagnostics: bit k set when the last writer of kind k is still queued and before the last
     /// NoteSync (WaitForSyncedWriters waits for it); bit 7 when only earlier writers of a kind
     /// whose last one came after the sync can be.

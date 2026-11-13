@@ -24,6 +24,7 @@
 #include <boost/container/static_vector.hpp>
 #include "common/container/unordered_map.h"
 
+#include "common/cityhash.h"
 #include "common/common_types.h"
 #include "common/div_ceil.h"
 #include "common/literals.h"
@@ -479,6 +480,10 @@ public:
     }
     /// True when it recorded copies, which the GPU completes at `tick` (the caller submits).
     bool Nx2CopyListPages(u64 tick);
+    /// EDEN_NX2_LIST_SPECULATE: see RasterizerInterface::Nx2ListSpeculationAllowed and
+    /// Nx2CheckSpeculatedList.
+    [[nodiscard]] bool Nx2ListSpeculationAllowed(DAddr page);
+    void Nx2CheckSpeculatedList(DAddr addr, u32 size, u64 hash);
     enum class Nx2ListRead { Unknown, Copied, Synced, NeedsSync, Pending };
     /// Front thread: Synced when guest memory holds the page `device_addr` lies in (flushed and
     /// written by no GPU work since), else Copied with `out` filled from the copy of its last
@@ -1059,11 +1064,26 @@ private:
             u64 size{};
             s8 stage{-1}; ///< Graphics stage writing it, -1 outside draws (compute, copies)
         };
+        bool speculation_hazard{}; ///< A speculated read of it differed from its copy
         std::array<Origin, 4> seed_origins{};
         u32 seed_at_write{}; ///< `writes` when last seeded
         std::array<Note, 4> notes{};
         u32 note_count{};
     };
+    /// EDEN_NX2_LIST_SPECULATE: speculated list reads waiting for their copy (back only).
+    struct Nx2ListCheck {
+        DAddr page;
+        u32 offset;
+        u32 size;
+        u64 hash;
+        u64 tick;
+        u64 writes;
+    };
+    std::vector<Nx2ListCheck> nx2_list_checks;
+    u64 nx2_list_checks_matched{};
+    u64 nx2_list_checks_differed{};
+    u64 nx2_list_checks_unverifiable{};
+    void Nx2ProcessListChecks();
     std::mutex nx2_list_mutex; ///< nx2_list_pages: the split's front reads the copies
     std::unordered_map<DAddr, Nx2ListPage> nx2_list_pages;
     /// Copies replaced while the GPU may still write them: freed once it is past their tick.

@@ -2058,6 +2058,14 @@ VideoCore::RasterizerInterface::GpuWrittenList RasterizerVulkan::ReadGpuWrittenC
     }
 }
 
+bool RasterizerVulkan::Nx2ListSpeculationAllowed(DAddr page) {
+    return buffer_cache.Nx2ListSpeculationAllowed(page);
+}
+
+void RasterizerVulkan::Nx2CheckSpeculatedList(DAddr addr, u32 size, u64 hash) {
+    buffer_cache.Nx2CheckSpeculatedList(addr, size, hash);
+}
+
 bool RasterizerVulkan::IsGpuTickDone(u64 tick) {
     if (scheduler.IsFree(tick)) {
         return true;

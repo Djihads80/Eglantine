@@ -221,6 +221,12 @@ public:
     void CheckSubmitHash(const CommandListHeader& header, u64 submit_hash);
     void RecordParsedEntry(const CommandListHeader& header, std::span<const CommandHeader> commands);
     /// Whether the entry lies on device pages the GPU has written (NX2).
+    /// EDEN_NX2_LIST_SPECULATE: parse the list without waiting for its possible writers; the
+    /// back reports a hazard if they wrote its pages. Whether it did.
+    bool SpeculateList(GPUVAddr address, size_t size);
+    /// EDEN_NX2_LIST_SPECULATE: a GPU-written list read from guest memory without waiting for
+    /// its writers; the back checks it against the page's copy. Whether it did.
+    bool ReadSpeculatedGpuWrittenCommands(GPUVAddr address, u32 count);
     bool IsGpuWrittenCommands(GPUVAddr address, size_t size);
     /// Copies the list's words from memory again, as of suspension count `now`.
     void RefreshSnapshot(CommandList& list, u64 now);

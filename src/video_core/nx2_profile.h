@@ -334,6 +334,11 @@ enum class Counter : u32 {
     /// GPU-written command list pages whose lists the front read from guest memory: GPU work
     /// wrote the page, but not the list's bytes (Nx2ListPage::GpuWrote)
     ListGuestReads,
+    /// EDEN_NX2_LIST_SPECULATE: command lists the front parsed without waiting for the compute
+    /// and copy work before them, and of those, lists whose pages that work turned out to write
+    /// (counted by the back when it reaches the list)
+    ListsSpeculated,
+    ListSpeculationHazards,
     /// Acquire trigger drains by reason (puller.cpp AcquireDrainReason, same order): count, time
     /// in ns, and how many the drain met
     AcquireDrainNotGequal,
@@ -557,6 +562,12 @@ inline void Report(const char* thread_name = "GPU thread") {
         if (!drains.empty()) {
             line += fmt::format(" | acquire trigger drains by reason:{}", drains);
         }
+    }
+    if (data.counters[static_cast<size_t>(Counter::ListsSpeculated)] != 0 ||
+        data.counters[static_cast<size_t>(Counter::ListSpeculationHazards)] != 0) {
+        line += fmt::format(" | lists parsed without waiting for writers {:.0f} ({:.0f} hazards)",
+                            per_second(Counter::ListsSpeculated),
+                            per_second(Counter::ListSpeculationHazards));
     }
     if (data.counters[static_cast<size_t>(Counter::ListGuestReads)] != 0) {
         line += fmt::format(" | lists read from guest memory past GPU writes {:.0f}",

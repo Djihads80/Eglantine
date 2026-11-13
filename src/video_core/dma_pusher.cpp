@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/cityhash.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -424,8 +425,11 @@ bool DmaPusher::Step() {
                                 static_cast<u32>(header.size));
             }
         };
-        if (auto& split = VideoCommon::GpuSplit::Get();
-            !skip_record_read && !gpu_written && split.Active()) {
+        auto& split_for_list = VideoCommon::GpuSplit::Get();
+        const bool speculated = !skip_record_read && !gpu_written && split_for_list.Active() &&
+                                SpeculateList(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+        if (auto& split = split_for_list;
+            !speculated && !skip_record_read && !gpu_written && split.Active()) {
             const bool stats = ListStats::Enabled();
             const u32 kinds = stats ? split.SyncedWriterKinds() : 0;
             const auto wait_start = stats ? std::chrono::steady_clock::now()
@@ -1080,6 +1084,58 @@ void DmaPusher::RefreshDeferredEntries(CommandList& list) {
     list.deferred_entries.clear();
 }
 
+namespace {
+bool ListSpeculation() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_LIST_SPECULATE");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+} // Anonymous namespace
+
+bool DmaPusher::SpeculateList(GPUVAddr address, size_t size) {
+    // EDEN_NX2_LIST_SPECULATE=1 (opt-in, not proven safe): parse a command list on pages no GPU
+    // work has written without waiting for the compute and copy work sent before the last host
+    // sync. In Donkey Kong Bananza that work never wrote one of the lists it held up (0 of
+    // 11,000), while the waits cost the front ~20 ms a frame and left the back idle. The back
+    // checks the list's pages once it ran that work (the GPU-written bits are set as it records
+    // writes and never clear): a page set by then is a hazard, logged and counted, and the page's
+    // lists take the GPU-written path from then on.
+    if (!ListSpeculation() || size == 0 ||
+        !VideoCommon::GpuSplit::Get().SyncedWritersQueued()) {
+        return false; // nothing to wait for: read it as before
+    }
+    const GPUVAddr first_page = address & ~GPUVAddr{0xfff};
+    const GPUVAddr last_page = (address + size - 1) & ~GPUVAddr{0xfff};
+    if (last_page - first_page > 0x1000) {
+        return false; // more than two pages: wait as before
+    }
+    const auto first = memory_manager.GpuToCpuAddress(first_page);
+    const auto last = memory_manager.GpuToCpuAddress(last_page);
+    if (!first || !last) {
+        return false;
+    }
+    VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::ListsSpeculated, 1);
+    VideoCommon::GpuSplit::Get().Defer(
+        [first = *first, last = *last, address, size, channel = channel_state.bind_id] {
+            if (!Tegra::Nx2IsGpuWritten(first) && !Tegra::Nx2IsGpuWritten(last)) {
+                return;
+            }
+            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::ListSpeculationHazards,
+                                         1);
+            static std::atomic<u32> logged{};
+            if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
+                LOG_ERROR(HW_GPU,
+                          "List speculation hazard: channel {} parsed {:#x}+{:#x} before the "
+                          "work that writes its pages (device {:#x}) ran",
+                          channel, address, size, first);
+            }
+        },
+        VideoCommon::GpuSplit::Effect::None);
+    return true;
+}
+
 bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
     if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || size == 0) {
         return false;
@@ -1091,6 +1147,52 @@ bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
         }
     }
     return false;
+}
+
+bool DmaPusher::ReadSpeculatedGpuWrittenCommands(GPUVAddr address, u32 count) {
+    // EDEN_NX2_LIST_SPECULATE=1: read a list on GPU-written pages from guest memory instead of
+    // waiting for the queued writers and the GPU's copy of the page. Donkey Kong Bananza's
+    // texture binding lists share pages with storage the GPU writes, and guest memory held the
+    // same words as the copy in every check (26,000 of 26,000). The back compares each read with
+    // the page's copy once the GPU made it; a page that differed once waits from then on.
+    const GPUVAddr end = address + u64{count} * sizeof(u32);
+    if (((end - 1) & ~GPUVAddr{0xfff}) - (address & ~GPUVAddr{0xfff}) > 0x1000) {
+        return false; // more than two pages
+    }
+    struct Part {
+        DAddr device;
+        u32 size;
+    };
+    std::array<Part, 2> parts{};
+    size_t num_parts = 0;
+    for (GPUVAddr chunk = address; chunk < end;) {
+        const GPUVAddr chunk_end = (std::min)(end, (chunk & ~GPUVAddr{0xfff}) + 0x1000);
+        const auto device = memory_manager.GpuToCpuAddress(chunk);
+        if (!device || !rasterizer->Nx2ListSpeculationAllowed(*device & ~DAddr{0xfff})) {
+            return false;
+        }
+        parts[num_parts++] = {*device, static_cast<u32>(chunk_end - chunk)};
+        chunk = chunk_end;
+    }
+    command_headers.resize_destructive(count);
+    u8* const out = reinterpret_cast<u8*>(command_headers.data());
+    memory_manager.ReadBlockUnsafe(address, out, size_t{count} * sizeof(u32));
+    VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::ListsSpeculated, 1);
+    size_t offset = 0;
+    for (size_t i = 0; i < num_parts; ++i) {
+        const Part part = parts[i];
+        const u64 hash = Common::CityHash64(reinterpret_cast<const char*>(out + offset), part.size);
+        offset += part.size;
+        if (!Tegra::Nx2IsGpuWritten(part.device)) {
+            continue;
+        }
+        VideoCommon::GpuSplit::Get().Defer(
+            [rasterizer = rasterizer, part, hash] {
+                rasterizer->Nx2CheckSpeculatedList(part.device, part.size, hash);
+            },
+            VideoCommon::GpuSplit::Effect::None);
+    }
+    return true;
 }
 
 bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count, bool* pending) {
@@ -1123,6 +1225,10 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count, bool* pendin
     // meanwhile too.
     const bool resumed = std::exchange(resumed_list_read, false);
     if (split.Active() && !resumed) {
+        if (ListSpeculation() && split.WritersQueued() &&
+            ReadSpeculatedGpuWrittenCommands(address, count)) {
+            return true;
+        }
         split.WaitForWriters();
     }
     bool past_sync = !split.Active();
