@@ -117,6 +117,32 @@ std::vector<Feature> FeaturesFor(Platform platform) {
                     "instead when the driver refuses. On by default with the NVIDIA proprietary "
                     "driver on Linux; add EDEN_NX2_HOST_IMPORT=0 to turn it off there."),
          host_import_recommended, HostImportVerdict});
+    const auto measured_on_nvidia = [](const Context& context) {
+        Verdict verdict;
+        if (context.device == nullptr || context.device->capabilities.vendor_id != VendorNvidia ||
+            !context.linux_os) {
+            verdict.note = QObject::tr("Only measured on NVIDIA on Linux so far.");
+        }
+        return verdict;
+    };
+    features.push_back(
+        {"EDEN_NX2_LIST_SPECULATE", "1",
+         QT_TR_NOOP("Parse command lists without waiting for their writers"),
+         QT_TR_NOOP("The GPU thread reads a command list as soon as it is submitted instead of "
+                    "waiting for the GPU work queued before it, and checks afterwards that the "
+                    "work did not change it. Removed about 20 ms of waiting per frame in Donkey "
+                    "Kong Bananza's busy areas. A list that did change is only reported, not "
+                    "undone, so a game could misread commands. Not part of the recommended "
+                    "defaults."),
+         false, measured_on_nvidia});
+    features.push_back(
+        {"EDEN_NX2_ACQ_BACK_CHECK", "1",
+         QT_TR_NOOP("Check GPU channel handovers without stalling"),
+         QT_TR_NOOP("When one GPU channel waits for another (an equal or mask semaphore acquire), "
+                    "the wait is checked in order on the second GPU thread instead of stopping "
+                    "the first to catch up. Halved those stalls in Donkey Kong Bananza. Not part "
+                    "of the recommended defaults."),
+         false, measured_on_nvidia});
     if (platform == Platform::Nvidia) {
         features.push_back(
             {"EDEN_NX2_BANK_REUPLOAD", "0", QT_TR_NOOP("Skip the once-per-frame bank re-upload"),
