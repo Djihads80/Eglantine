@@ -94,6 +94,7 @@
 #include <QEventLoop>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QInputDialog>
@@ -456,6 +457,7 @@ MainWindow::MainWindow(bool has_broken_vulkan)
 
     QtCommon::SetupHID();
     controller_dialog->refreshConfiguration();
+    WatchControlsReloadRequests();
 
     UpdateWindowTitle();
 
@@ -3721,6 +3723,58 @@ void MainWindow::OnExecuteProgram(std::size_t program_index) {
 
 void MainWindow::OnExit() {
     ShutdownGame();
+}
+
+// Other programs, such as launchers that edit the controls, can have them applied without a
+// restart: they write a "reload-controls" file in the config folder, with the [Controls] keys of
+// the players to change, in the same format as qt-config.ini. The emulator applies them, saves
+// them in its configuration, and removes the file.
+static std::filesystem::path ControlsReloadRequestPath() {
+    return Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir) / "reload-controls";
+}
+
+static std::filesystem::path ControlsReloadApplyingPath() {
+    return Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir) / "reload-controls.applying";
+}
+
+void MainWindow::WatchControlsReloadRequests() {
+    // A request left from a previous run is stale: the program that wrote it has given up on it.
+    Common::FS::RemoveFile(ControlsReloadRequestPath());
+    Common::FS::RemoveFile(ControlsReloadApplyingPath());
+    controls_reload_watcher = new QFileSystemWatcher(this);
+    controls_reload_watcher->addPath(QString::fromStdString(
+        Common::FS::PathToUTF8String(ControlsReloadRequestPath().parent_path())));
+    connect(controls_reload_watcher, &QFileSystemWatcher::directoryChanged, this,
+            &MainWindow::OnControlsReloadRequested);
+}
+
+void MainWindow::OnControlsReloadRequested() {
+    if (!Common::FS::Exists(ControlsReloadRequestPath())) {
+        return;
+    }
+    // While a settings window is open, it owns the controls: try again once it is closed.
+    if (QApplication::activeModalWidget() != nullptr) {
+        if (!controls_reload_queued) {
+            controls_reload_queued = true;
+            QTimer::singleShot(1000, this, [this] {
+                controls_reload_queued = false;
+                OnControlsReloadRequested();
+            });
+        }
+        return;
+    }
+    // Take the request first, so the program that wrote it cannot change or remove it while it
+    // is read.
+    Common::FS::RemoveFile(ControlsReloadApplyingPath());
+    if (!Common::FS::RenameFile(ControlsReloadRequestPath(), ControlsReloadApplyingPath())) {
+        return;
+    }
+    LOG_INFO(Frontend, "Applying the controls sent by another program");
+    const auto players = config->ApplyPlayerValuesFromFile(
+        Common::FS::PathToUTF8String(ControlsReloadApplyingPath()), emulation_running);
+    Common::FS::RemoveFile(ControlsReloadApplyingPath());
+    QtCommon::system->HIDCore().ReloadInputMappings(players);
+    controller_dialog->refreshConfiguration();
 }
 
 void MainWindow::OnSaveConfig() {

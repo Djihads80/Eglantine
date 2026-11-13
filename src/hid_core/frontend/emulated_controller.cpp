@@ -120,10 +120,44 @@ void EmulatedController::ReloadFromSettings() {
     }
 
     Disconnect();
+    npad_type_in_settings = npad_id_type == NpadIdType::Other
+                                ? NpadStyleIndex::Fullkey
+                                : MapSettingsTypeToNPad(player.controller_type);
+    connected_in_settings = player.connected;
     if (player.connected) {
         Connect();
     }
 
+    ReloadInput();
+}
+
+void EmulatedController::ReloadMappingsFromSettings() {
+    if (is_configuring) {
+        // The controls window owns the mappings while it is open.
+        return;
+    }
+    const auto player_index = Service::HID::NpadIdTypeToIndex(npad_id_type);
+    const auto& player = Settings::values.players.GetValue()[player_index];
+    const auto style = npad_id_type == NpadIdType::Other
+                           ? NpadStyleIndex::Fullkey
+                           : MapSettingsTypeToNPad(player.controller_type);
+    // Compared with the configuration loaded before, not with the current state: the game may
+    // have changed the style or connection of the controller itself.
+    if (style != npad_type_in_settings.load() || player.connected != connected_in_settings.load()) {
+        ReloadFromSettings();
+        return;
+    }
+
+    for (std::size_t index = 0; index < player.buttons.size(); ++index) {
+        button_params[index] = Common::ParamPackage(player.buttons[index]);
+    }
+    for (std::size_t index = 0; index < player.analogs.size(); ++index) {
+        stick_params[index] = Common::ParamPackage(player.analogs[index]);
+    }
+    for (std::size_t index = 0; index < player.motions.size(); ++index) {
+        motion_params[index] = Common::ParamPackage(player.motions[index]);
+    }
+    ring_params[0] = Common::ParamPackage(Settings::values.ringcon_analogs);
     ReloadInput();
 }
 

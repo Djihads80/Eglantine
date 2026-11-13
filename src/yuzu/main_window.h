@@ -45,6 +45,7 @@
 #include "common/net/net.h"
 #endif
 
+class QFileSystemWatcher;
 class QtConfig;
 class EmuThread;
 class GameList;
@@ -422,6 +423,8 @@ private slots:
 #endif
     void OnGameListRefresh();
     void InitializeHotkeys();
+    void WatchControlsReloadRequests();
+    void OnControlsReloadRequested();
     void ToggleFullscreen();
     bool UsingExclusiveFullscreen();
     void ShowFullscreen();
@@ -564,6 +567,8 @@ private:
 
     UserDataMigrator user_data_migrator;
     std::unique_ptr<QtConfig> config;
+    QFileSystemWatcher* controls_reload_watcher = nullptr;
+    bool controls_reload_queued = false;
 
     // Whether emulation is currently running in yuzu.
     bool emulation_running = false;

@@ -4,6 +4,9 @@
 // SPDX-FileCopyrightText: 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <string_view>
+
 #include "common/game_presets.h"
 #include "common/logging.h"
 #include "input_common/main.h"
@@ -619,6 +622,64 @@ void QtConfig::ReadQtControlPlayerValues(std::size_t player_index) {
     ReadQtPlayerValues(player_index);
 
     EndGroup();
+}
+
+std::vector<std::size_t> QtConfig::ApplyPlayerValuesFromFile(const std::string& path,
+                                                             bool game_running) {
+    // The file uses the same [Controls] keys as this configuration. Only the players that have
+    // keys in it are read, every other player is left as it is.
+    const std::string own_path = config_loc;
+    config_loc = path;
+    SetUpIni();
+    config_loc = own_path;
+
+    const std::string section = Settings::TranslateCategory(Settings::Category::Controls);
+    CSimpleIniA::TNamesDepend keys;
+    config->GetAllKeys(section.c_str(), keys);
+    std::vector<std::size_t> players_in_file;
+    for (std::size_t p = 0; p < Settings::values.players.GetValue().size(); ++p) {
+        const std::string prefix = "player_" + std::to_string(p) + "_";
+        const bool found = std::any_of(keys.begin(), keys.end(), [&prefix](const auto& key) {
+            return std::string_view(key.pItem).starts_with(prefix);
+        });
+        if (found) {
+            players_in_file.push_back(p);
+        }
+    }
+
+    const bool players_global = Settings::values.players.UsingGlobal();
+    Settings::values.players.SetGlobal(true);
+    for (const std::size_t p : players_in_file) {
+        ReadQtControlPlayerValues(p);
+    }
+
+    // Keep the new controls in this configuration file right away.
+    SetUpIni();
+    BeginGroup(section);
+    for (const std::size_t p : players_in_file) {
+        SavePlayerValues(p);
+        SaveQtPlayerValues(p);
+    }
+    EndGroup();
+    WriteToIni();
+
+    // During a game, the game's copy of the players is the one in use, even when the setting is
+    // switched back to its global value. A player with the game's own input profile keeps it, the
+    // others take the new controls.
+    std::vector<std::size_t> players_to_apply;
+    Settings::values.players.SetGlobal(false);
+    auto& game_players = Settings::values.players.GetValue();
+    const auto& global_players = Settings::values.players.GetValue(true);
+    for (const std::size_t p : players_in_file) {
+        if (game_running && !game_players[p].profile_name.empty()) {
+            continue;
+        }
+        game_players[p] = global_players[p];
+        game_players[p].profile_name = "";
+        players_to_apply.push_back(p);
+    }
+    Settings::values.players.SetGlobal(players_global);
+    return players_to_apply;
 }
 
 void QtConfig::SaveQtControlPlayerValues(std::size_t player_index) {

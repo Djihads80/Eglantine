@@ -273,6 +273,12 @@ public:
     /// Overrides current mapped devices with the stored configuration and reloads all input devices
     void ReloadFromSettings();
 
+    /**
+     * Applies the mappings stored in the configuration. When the controller type and connection
+     * did not change, the controller stays connected, so a running game does not see it unplugged.
+     */
+    void ReloadMappingsFromSettings();
+
     /// Updates current colors with the ones stored in the configuration
     void ReloadColorsFromSettings();
 
@@ -605,6 +611,10 @@ private:
     // Atomically synched values
     std::atomic<HID::NpadStyleIndex> npad_type{HID::NpadStyleIndex::None};
     std::atomic<HID::NpadStyleIndex> original_npad_type{HID::NpadStyleIndex::None};
+    // The style and connection of the configuration when it was last loaded. The game and its
+    // controller applet may change both since, which is not a change of the configuration.
+    std::atomic<HID::NpadStyleIndex> npad_type_in_settings{HID::NpadStyleIndex::None};
+    std::atomic<bool> connected_in_settings{false};
     // Temporary values to avoid doing changes while the controller is in configuring mode
     std::atomic<HID::NpadStyleIndex> tmp_npad_type{HID::NpadStyleIndex::None};
     std::atomic<bool> tmp_is_connected{false};
