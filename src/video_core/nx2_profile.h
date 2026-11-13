@@ -352,6 +352,8 @@ enum class Counter : u32 {
     ListSpeculationLong,
     ListSpeculationUnmapped,
     ListSpeculationHazardPage,
+    /// Acquires suspended without a drain whose polls drained again after 32 ms
+    AcquireDrainFallbacks,
     /// Acquire trigger drains by reason (puller.cpp AcquireDrainReason, same order): count, time
     /// in ns, and how many the drain met
     AcquireDrainNotGequal,
@@ -590,6 +592,10 @@ inline void Report(const char* thread_name = "GPU thread") {
                             per_second(Counter::ListSpeculationLong),
                             per_second(Counter::ListSpeculationUnmapped),
                             per_second(Counter::ListSpeculationHazardPage));
+    }
+    if (data.counters[static_cast<size_t>(Counter::AcquireDrainFallbacks)] != 0) {
+        line += fmt::format(" | acquire drain fallbacks {:.0f}",
+                            per_second(Counter::AcquireDrainFallbacks));
     }
     if (data.counters[static_cast<size_t>(Counter::ListGuestReads)] != 0) {
         line += fmt::format(" | lists read from guest memory past GPU writes {:.0f}",

@@ -687,6 +687,23 @@ public:
         count.store(waiters.size(), std::memory_order_release);
     }
 
+    /// Registers a waiter where the GPU reaches its acquire (the split's back, in order), with
+    /// the word as it is there: only that value and writes after it can meet the acquire, not
+    /// a value left from an earlier round that the front could read too early.
+    void AddChecked(const void* owner, u64 device_address, u32 value, u32 operation, u32 current) {
+        Waiter waiter{owner, device_address, value, operation, false, 0, 0};
+        waiter.latched = Matches(waiter, current);
+        {
+            std::scoped_lock lk{mutex};
+            std::erase_if(waiters, [owner](const Waiter& w) { return w.owner == owner; });
+            waiters.push_back(waiter);
+            count.store(waiters.size(), std::memory_order_release);
+        }
+        if (waiter.latched && Nx2PendingWake::On()) {
+            Nx2PendingWake::Wake(Nx2PendingWake::latch_seq, Nx2PendingWake::ByLatch);
+        }
+    }
+
     void Remove(const void* owner) {
         if (count.load(std::memory_order_acquire) == 0) {
             return;

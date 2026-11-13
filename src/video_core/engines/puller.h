@@ -82,6 +82,8 @@ public:
         bool reported;
         bool stats{}; ///< EDEN_NX2_ACQ_STATS: counted from its suspension
         bool no_drain{}; ///< Suspended without a drain: polls check it without one at first
+        bool fell_back{}; ///< Its polls drain again (32 ms without being met)
+        bool back_check{}; ///< EDEN_NX2_ACQ_BACK_CHECK: the back registers and checks it in order
 
         [[nodiscard]] bool Matches(u32 current) const;
         /// Whether it waits for the word to reach `value` (greater or equal).

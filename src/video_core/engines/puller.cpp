@@ -10,6 +10,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <optional>
 #include <vector>
 
 #include "common/assert.h"
@@ -227,6 +228,31 @@ bool AcquireNoDrain() {
     return on;
 }
 
+// EDEN_NX2_ACQ_BACK_CHECK=1: an equal or mask acquire suspends its channel without a drain, and
+// the back registers the waiter and reads the word where it reaches the acquire. Only that value
+// and the writes after it resume the channel; the front never decides from its own read, which
+// can be a value an earlier round left (Donkey Kong Bananza's flag words cycle 1, 2, 3 and
+// 0xffffffff, 0, 2 every frame). Returns the word's device address when it applies.
+std::optional<DAddr> BackCheckDevice(DmaPusher& dma_pusher, const Puller::PendingAcquire& acquire) {
+    static const bool on = [] {
+        const char* value = std::getenv("EDEN_NX2_ACQ_BACK_CHECK");
+        return value != nullptr && value[0] == '1';
+    }();
+    auto& split = VideoCommon::GpuSplit::Get();
+    if (!on || acquire.WaitsToReach() || !split.Active() || !split.FrontMacros() ||
+        !ReleasesLandAtOnce()) {
+        return std::nullopt;
+    }
+    const auto device = dma_pusher.memory_manager.GpuToCpuAddress(acquire.address);
+    // A word the buffer cache may hold newer than memory, or one a release the front sent may
+    // still write: drain as before.
+    if (!device || Nx2MayBeGpuWritten(*device, sizeof(u32)) ||
+        split.QueuedSemaphoreWriteAt(*device)) {
+        return std::nullopt;
+    }
+    return *device;
+}
+
 AcquireCheck CheckWithoutDrain(DmaPusher& dma_pusher, const Puller::PendingAcquire& acquire,
                                AcquireDrainReason& reason) {
     auto& split = VideoCommon::GpuSplit::Get();
@@ -312,9 +338,23 @@ bool Puller::PollAcquire(DmaPusher& dma_pusher) {
     if (Nx2SemaphoreWaiters::Get().Latched(this) && rescued.load(std::memory_order_relaxed) >= 64) {
         return true;
     }
+    // Checked on the back: resumed only by its latch. After 32 ms, drain and read as before (the
+    // drain also runs the back's check).
+    if (pending_acquire->back_check && !pending_acquire->fell_back) {
+        if (Nx2SemaphoreWaiters::Get().Latched(this)) {
+            return true;
+        }
+        if (std::chrono::steady_clock::now() - pending_acquire->since <
+            std::chrono::milliseconds{32}) {
+            return false;
+        }
+        pending_acquire->fell_back = true;
+        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireDrainFallbacks, 1);
+    }
     // Suspended without a drain: the word changes only once a release is sent to it (or the CPU
     // writes it). Drain as before once that took 2 ms, in case a writer the front can't see does.
-    if (pending_acquire->no_drain && !Nx2SemaphoreWaiters::Get().Latched(this) &&
+    if (pending_acquire->no_drain && !pending_acquire->back_check &&
+        !Nx2SemaphoreWaiters::Get().Latched(this) &&
         std::chrono::steady_clock::now() - pending_acquire->since < std::chrono::milliseconds{2}) {
         AcquireDrainReason reason{};
         switch (CheckWithoutDrain(dma_pusher, *pending_acquire, reason)) {
@@ -379,7 +419,9 @@ bool Puller::PollAcquire(DmaPusher& dma_pusher) {
         LOG_WARNING(HW_GPU, "Channel {} stuck acquire: {} GPU writes to the word while suspended "
                     "(last {:#x}), suspended {}",
                     dma_pusher.channel_state.bind_id, writes, last_written,
-                    pending_acquire->no_drain ? "without a drain" : "after a drain");
+                    pending_acquire->back_check ? "for a check on the back"
+                    : pending_acquire->no_drain ? "without a drain"
+                                                : "after a drain");
     }
     return false;
 }
@@ -581,6 +623,30 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                 // release (GpuSplit::NoteSync).
                 VideoCommon::GpuSplit::Get().NoteSync();
             }
+            return;
+        }
+        if (const auto device = BackCheckDevice(dma_pusher, acquire)) {
+            pending_acquire = acquire;
+            pending_acquire->since = std::chrono::steady_clock::now();
+            pending_acquire->no_drain = true;
+            pending_acquire->back_check = true;
+            OnBack(
+                [this, &memory_manager = dma_pusher.memory_manager, address = acquire.address,
+                 device = *device, value = acquire.value, operation = acquire.operation] {
+                    Nx2SemaphoreWaiters::Get().AddChecked(this, device, value, operation,
+                                                          memory_manager.Read<u32>(address));
+                },
+                VideoCommon::GpuSplit::Effect::None);
+            if (AcquireStats::On()) [[unlikely]] {
+                pending_acquire->stats = true;
+                AcquireStats::Get().NoteSuspended(acquire.address, false);
+            }
+            if (watched && Nx2SemWatchLog()) [[unlikely]] {
+                LOG_INFO(HW_GPU, "Sem watch: channel {} suspended for a check on the back",
+                         dma_pusher.channel_state.bind_id);
+            }
+            dma_pusher.suspensions.fetch_add(1, std::memory_order_release);
+            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireWaits, 1);
             return;
         }
         if (AcquireNoDrain() && drain_reason == AcquireDrainReason::NotMet) {
