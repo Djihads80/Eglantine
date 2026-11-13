@@ -10,6 +10,7 @@
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/nca_metadata.h"
 #include "core/file_sys/romfs.h"
+#include "core/hle/service/acc/profile_manager.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "new_user_dialog.h"
 #include "qt_common/qt_common.h"
@@ -93,8 +94,8 @@ void NewUserDialog::setup(Common::UUID uuid, const std::string& username, const 
     setImage(GetIcon(uuid));
     updateRevertButton();
 
-    // Validators
-    // Capped at the 20 characters a lobby nickname allows, so the name can always be copied over
+    // 20 characters to match the lobby nickname limit; verifyUser() also holds the name to the
+    // 32 byte profile field, because a character can take more than one byte
     QRegularExpressionValidator* username_validator =
         new QRegularExpressionValidator(QRegularExpression(QStringLiteral(".{1,20}")), this);
     ui->username->setValidator(username_validator);
@@ -330,7 +331,11 @@ void NewUserDialog::verifyUser() {
     const QPixmap failed = QIcon::fromTheme(QStringLiteral("failed")).pixmap(16);
 
     const bool uuid_good = ui->uuid->hasAcceptableInput();
-    const bool username_good = ui->username->hasAcceptableInput();
+    const bool username_shape_good = ui->username->hasAcceptableInput();
+    // The name is stored in a fixed 32 byte field, and one character is not always one byte
+    const bool username_fits = static_cast<std::size_t>(ui->username->text().toUtf8().size()) <=
+                               Service::Account::profile_username_size;
+    const bool username_good = username_shape_good && username_fits;
 
     auto ok_button = ui->buttonBox->button(QDialogButtonBox::Ok);
     ok_button->setEnabled(username_good && uuid_good);
@@ -348,7 +353,11 @@ void NewUserDialog::verifyUser() {
         ui->usernameVerified->setToolTip(tr("All Good", "Tooltip"));
     } else {
         ui->usernameVerified->setPixmap(failed);
-        ui->usernameVerified->setToolTip(tr("Must be between 1 and 20 characters", "Tooltip"));
+        ui->usernameVerified->setToolTip(
+            username_shape_good
+                ? tr("Too long: the profile field holds 32 bytes, use fewer or shorter characters",
+                     "Tooltip")
+                : tr("Must be between 1 and 20 characters", "Tooltip"));
     }
 }
 

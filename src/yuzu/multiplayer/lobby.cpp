@@ -86,9 +86,13 @@ Lobby::Lobby(QWidget* parent, QStandardItemModel* list,
     ui->nickname->setText(
         QString::fromStdString(UISettings::values.multiplayer_nickname.GetValue()));
 
-    // Try find the best nickname by default
-    if (ui->nickname->text().isEmpty() || ui->nickname->text() == QStringLiteral("Eden") ||
-        ui->nickname->text() == QStringLiteral("Eglantine")) {
+    // Try find the best nickname by default. Only the name the emulator itself shipped as a default
+    // is replaced here; any other default name was picked by the user and is caught by the join
+    // warning instead of being overwritten behind their back.
+    const QString stored_nickname = ui->nickname->text().trimmed();
+    if (stored_nickname.isEmpty() ||
+        stored_nickname.compare(QLatin1String("Eden"), Qt::CaseInsensitive) == 0 ||
+        stored_nickname.compare(QLatin1String("Eglantine"), Qt::CaseInsensitive) == 0) {
         if (!Settings::values.eden_username.GetValue().empty()) {
             ui->nickname->setText(
                 QString::fromStdString(Settings::values.eden_username.GetValue()));
@@ -166,10 +170,14 @@ bool Lobby::RenameCurrentProfile(const QString& new_name) {
     }
 
     const std::string new_username = new_name.toStdString();
+    if (new_username.size() > profile.username.size()) {
+        LOG_WARNING(Frontend, "Profile name is {} bytes, over the {} byte profile field",
+                    new_username.size(), profile.username.size());
+        return false;
+    }
+
     std::fill(profile.username.begin(), profile.username.end(), '\0');
-    std::copy(new_username.begin(),
-              new_username.begin() + std::min(new_username.size(), profile.username.size()),
-              profile.username.begin());
+    std::copy(new_username.begin(), new_username.end(), profile.username.begin());
 
     return profile_manager.SetProfileBase(*current_user, profile);
 }
@@ -196,7 +204,8 @@ bool Lobby::ConfirmDisplayName() {
 
         switch (NetworkMessage::WarnDefaultName(
             this, detected,
-            profile_is_default ? tr("Change Profile Name") : tr("Change Nickname"),
+            profile_is_default ? NetworkMessage::DefaultNameKind::ProfileName
+                               : NetworkMessage::DefaultNameKind::Nickname,
             offer_nickname)) {
         case NetworkMessage::DefaultNameAction::Cancel:
             return false;

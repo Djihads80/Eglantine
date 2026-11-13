@@ -83,17 +83,26 @@ bool WarnDisconnect() {
         QT_TR_NOOP("You are about to leave the room. Any network connections will be closed."));
 }
 
-DefaultNameAction WarnDefaultName(QWidget* parent, const QString& name,
-                                  const QString& change_button_text, bool offer_nickname) {
+DefaultNameAction WarnDefaultName(QWidget* parent, const QString& name, DefaultNameKind kind,
+                                  bool offer_nickname) {
+    const bool profile_name = kind == DefaultNameKind::ProfileName;
+
     QMessageBox message_box(parent);
     message_box.setIcon(QMessageBox::Warning);
     message_box.setWindowTitle(QObject::tr("Default Name Detected"));
-    message_box.setText(QObject::tr("A default user profile name \"%1\" has been detected, to not "
-                                    "cause confusion and allow other players to recognize you, "
-                                    "please change your user profile name")
-                            .arg(name));
+    message_box.setText(
+        profile_name
+            ? QObject::tr("A default user profile name \"%1\" has been detected, to not cause "
+                          "confusion and allow other players to recognize you, please change your "
+                          "user profile name")
+                  .arg(name)
+            : QObject::tr("A default nickname \"%1\" has been detected, to not cause confusion and "
+                          "allow other players to recognize you, please change your nickname")
+                  .arg(name));
 
-    QPushButton* change_name = message_box.addButton(change_button_text, QMessageBox::AcceptRole);
+    QPushButton* change_name = message_box.addButton(
+        profile_name ? QObject::tr("Change Profile Name") : QObject::tr("Change Nickname"),
+        QMessageBox::AcceptRole);
     QPushButton* use_nickname = offer_nickname
                                     ? message_box.addButton(QObject::tr("Use My Nickname"),
                                                             QMessageBox::ActionRole)
