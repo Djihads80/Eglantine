@@ -2524,6 +2524,16 @@ void BufferCache<P>::Nx2NoteListWrite(BufferId buffer_id, DAddr device_addr, u64
                     std::scoped_lock lock{nx2_list_mutex};
                     Nx2ListPage& entry = nx2_list_pages[page_addr];
                     ++entry.writes;
+                    if (!entry.gpu_ranges.known) {
+                        // Writes before the page became a list page were not noted: start from
+                        // what guest memory may not hold (this write among it).
+                        entry.gpu_ranges = Nx2StaleListRanges(page_addr);
+                    }
+                    constexpr DAddr list_page_size = DAddr{1} << page_bits;
+                    const DAddr write_begin = (std::max)(device_addr, page_addr);
+                    const DAddr write_end = (std::min)(device_addr + size, page_addr + list_page_size);
+                    entry.gpu_ranges.Note(static_cast<u32>(write_begin - page_addr),
+                                          static_cast<u32>(write_end - page_addr));
                     if (!nx2_collect_list_copies && !entry.draw_written) {
                         entry.draw_written = true;
                         LOG_INFO(HW_GPU, "Command list page {:#x} is written by draws too: its "
@@ -2594,6 +2604,8 @@ bool BufferCache<P>::Nx2CopyListPages(u64 tick) {
                 nx2_retired_list_copies.emplace_back(entry.copy_tick, std::move(*entry.copy));
             }
             entry.copy = staging;
+            // Exact again now: noted writes only add up, while downloads make guest memory current.
+            entry.gpu_ranges = Nx2StaleListRanges(page);
             entry.copy_writes = entry.writes;
             entry.copy_tick = tick;
             entry.copy_time = Nx2Profile::Enabled() ? Nx2Profile::Now() : 0;
@@ -2647,11 +2659,22 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out, bool 
                 if (!past_sync) {
                     return Nx2ListRead::NeedsSync;
                 }
-                return entry.synced_writes == entry.writes ? Nx2ListRead::Synced
-                                                           : Nx2ListRead::Unknown;
+                if (entry.synced_writes == entry.writes) {
+                    return Nx2ListRead::Synced;
+                }
+                if (!entry.gpu_ranges.Wrote(offset, offset + out.size())) {
+                    Nx2Profile::Add(Nx2Profile::Counter::ListGuestReads, 1);
+                    return Nx2ListRead::Synced;
+                }
+                return Nx2ListRead::Unknown;
             }
             // Pages the CPU writes the lists of (GPU-written once, long before) stay synced.
             if (entry.synced_writes == entry.writes) {
+                return Nx2ListRead::Synced;
+            }
+            // GPU work wrote the page since, but not these bytes: guest memory holds the list.
+            if (!entry.gpu_ranges.Wrote(offset, offset + out.size())) {
+                Nx2Profile::Add(Nx2Profile::Counter::ListGuestReads, 1);
                 return Nx2ListRead::Synced;
             }
             if (!current(entry)) {
@@ -2688,11 +2711,35 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out, bool 
 }
 
 template <class P>
+Nx2ListRanges BufferCache<P>::Nx2StaleListRanges(DAddr page) const {
+    Nx2ListRanges result;
+    result.Reset();
+    constexpr DAddr page_size = DAddr{1} << Tegra::Nx2WrittenPageBits;
+    const auto note = [&result, page](DAddr begin, DAddr end) {
+        begin = (std::max)(begin, page);
+        end = (std::min)(end, page + page_size);
+        if (begin < end) {
+            result.Note(static_cast<u32>(begin - page), static_cast<u32>(end - page));
+        }
+    };
+    gpu_modified_ranges.ForEachInRange(page, page_size, note);
+    uncommitted_gpu_modified_ranges.ForEachInRange(page, page_size, note);
+    for (const auto& ranges : committed_gpu_modified_ranges) {
+        ranges.ForEachInRange(page, page_size, note);
+    }
+    for (const auto& ranges : pending_download_ranges) {
+        ranges.ForEachInRange(page, page_size, note);
+    }
+    return result;
+}
+
+template <class P>
 void BufferCache<P>::Nx2NoteListSynced(DAddr page) {
     if constexpr (!IS_OPENGL) {
         std::scoped_lock lock{nx2_list_mutex};
         Nx2ListPage& entry = nx2_list_pages[page];
         entry.synced_writes = entry.writes;
+        entry.gpu_ranges.Reset();
     }
 }
 

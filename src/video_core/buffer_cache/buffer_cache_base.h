@@ -35,6 +35,7 @@
 #include "common/spin_recursive_mutex.h"
 #include "shader_recompiler/shader_info.h"
 #include "video_core/buffer_cache/buffer_base.h"
+#include "video_core/buffer_cache/nx2_list_ranges.h"
 #include "video_core/buffer_cache/read_trap_tracker.h"
 #include "video_core/buffer_cache/virtual_range_cache.h"
 #include "video_core/control/channel_state_cache.h"
@@ -727,6 +728,9 @@ private:
     /// Counts a GPU write to the command list pages in the range (invalidating their copies) and,
     /// while collecting, asks for new copies.
     void Nx2NoteListWrite(BufferId buffer_id, DAddr device_addr, u64 size);
+    /// Back: the bytes of the list page at `page` whose guest memory may be older than the GPU's
+    /// (GPU-modified, committed or being downloaded), as Nx2ListRanges.
+    Nx2ListRanges Nx2StaleListRanges(DAddr page) const;
 
     [[nodiscard]] BufferId FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible);
 
@@ -1036,6 +1040,7 @@ private:
         /// the page's lists read guest memory once the back ran the work before the last such
         /// wait and no write came since the front flushed the page (Nx2ReadListCopy).
         bool draw_written{};
+        Nx2ListRanges gpu_ranges; ///< GPU-written bytes since the front last flushed the page
         std::optional<Nx2Staging> copy;
     };
     std::mutex nx2_list_mutex; ///< nx2_list_pages: the split's front reads the copies

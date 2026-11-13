@@ -331,6 +331,9 @@ enum class Counter : u32 {
     IndirectRecords,
     /// Of those, drawn after storage writes no barrier ordered yet (RasterizerVulkan::DrawIndirect)
     IndirectRecordsUnordered,
+    /// GPU-written command list pages whose lists the front read from guest memory: GPU work
+    /// wrote the page, but not the list's bytes (Nx2ListPage::GpuWrote)
+    ListGuestReads,
     Count,
 };
 
@@ -513,6 +516,10 @@ inline void Report(const char* thread_name = "GPU thread") {
         line += fmt::format(" | front 3D writes: direct {:.0f}, from macros {:.0f}",
                             static_cast<double>(data.counters[static_cast<size_t>(Counter::DirectWrites)]) * 1e9 / window,
                             static_cast<double>(data.counters[static_cast<size_t>(Counter::MacroWrites)]) * 1e9 / window);
+    }
+    if (data.counters[static_cast<size_t>(Counter::ListGuestReads)] != 0) {
+        line += fmt::format(" | lists read from guest memory past GPU writes {:.0f}",
+                            per_second(Counter::ListGuestReads));
     }
     if (data.counters[static_cast<size_t>(Counter::IndirectRecords)] != 0 ||
         data.counters[static_cast<size_t>(Counter::IndirectRecordsUnordered)] != 0) {

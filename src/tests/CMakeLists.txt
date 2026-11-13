@@ -15,6 +15,7 @@ add_executable(tests
     video_core/maxwell_fast_method.cpp
     video_core/split_write_tracker.cpp
     video_core/nx2_written_pages.cpp
+    video_core/nx2_list_ranges.cpp
     video_core/frame_dump_schedule.cpp
     core/nx2_debug_server.cpp
     core/system_test_context.h
