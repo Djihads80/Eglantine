@@ -227,9 +227,12 @@ public:
     /// Waits until the back executed everything sent so far.
     void Drain(DrainSite site = DrainSite::Other);
 
+    /// What a noted writer is (EDEN_NX2_LIST_STATS: which kinds a command list waits for).
+    enum class WriterKind : u8 { Draw, Compute, Copy, Count };
     /// Compute or copy work was just sent: what can write GPU-written command lists.
-    void NoteWriter() {
+    void NoteWriter(WriterKind kind = WriterKind::Draw) {
         last_writer_position = write_position;
+        last_writer_by_kind[static_cast<size_t>(kind)] = write_position;
         if (eager_publish) {
             Publish(); // the fetch that waits for this entry usually follows within microseconds
         }
@@ -241,6 +244,21 @@ public:
     /// the writers a command list fetched now is ordered after. Returns whether any of it was
     /// still queued.
     bool WaitForSyncedWriters();
+    /// Diagnostics: bit k set when the last writer of kind k is still queued and before the last
+    /// NoteSync (WaitForSyncedWriters waits for it); bit 7 when only earlier writers of a kind
+    /// whose last one came after the sync can be.
+    [[nodiscard]] u32 SyncedWriterKinds() const {
+        const u64 done = consumed.load(std::memory_order_acquire);
+        const u64 target = std::min({last_writer_position, last_sync_position, write_position});
+        u32 kinds = 0;
+        for (size_t kind = 0; kind < last_writer_by_kind.size(); ++kind) {
+            const u64 position = last_writer_by_kind[kind];
+            if (position > done && position <= target) {
+                kinds |= 1U << kind;
+            }
+        }
+        return kinds != 0 || target <= done ? kinds : 1U << 7;
+    }
     /// A host-level wait was just sent (a syncpoint acquire, a host WFI, a GP entry with its sync
     /// bit; semaphore acquires drain, or note it when a release still queued meets them): the
     /// guest's GPU work before it is complete before the commands after it are fetched.
@@ -434,6 +452,7 @@ private:
     u64 write_position{};
     u64 last_writer_position{};
     u64 last_sync_position{};
+    std::array<u64, static_cast<size_t>(WriterKind::Count)> last_writer_by_kind{};
     struct SemaphoreWrite {
         u64 position; ///< write_position once it was sent
         u32 payload;

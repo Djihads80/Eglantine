@@ -172,6 +172,7 @@ void GpuSplit::Stop() {
     ring.reset();
     write_position = 0;
     last_writer_position = 0;
+    last_writer_by_kind = {};
     last_sync_position = 0;
     last_function_position = 0;
     semaphore_writes.clear();

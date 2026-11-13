@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <map>
 #include <bit>
 #include <cstdlib>
 #include <cstdio>
@@ -35,6 +37,163 @@ namespace Tegra {
 
 
 constexpr u32 MacroRegistersStart = 0xE00;
+
+namespace {
+// EDEN_NX2_LIST_STATS=1: which entries the front waits on (a GPU-written list's copy still on the
+// GPU, the compute and copy work before an entry, a drain and flush), by the method the entry
+// continues, its words left and the entry size. The top keys are logged every 4000 waits, and the
+// guest words of each key's first entries.
+namespace ListStats {
+enum class Wait : u8 { CopyPending, WritersWaited, Flushed };
+constexpr std::array<const char*, 3> wait_names{"copy pending", "writers waited", "flushed"};
+struct Key {
+    u8 wait;
+    u8 engine;
+    u32 method;
+    u32 left;
+    u32 size;
+    auto operator<=>(const Key&) const = default;
+};
+
+bool Enabled() {
+    static const bool enabled = std::getenv("EDEN_NX2_LIST_STATS") != nullptr;
+    return enabled;
+}
+
+void Note(MemoryManager& memory, Wait wait, u8 engine, u32 method, u32 left, GPUVAddr address,
+          u32 size) {
+    static std::map<Key, u64> counts;
+    static u64 total{};
+    const Key key{static_cast<u8>(wait), engine, left != 0 ? method : 0, left, size};
+    const u64 count = ++counts[key];
+    if (count <= 3) {
+        std::array<u32, 12> words{};
+        memory.ReadBlockUnsafe(address, words.data(),
+                               std::min<size_t>(size, words.size()) * sizeof(u32));
+        LOG_INFO(HW_GPU,
+                 "List stats sample: {} at {:#x}, size {}, continues method {:#x} of engine {} "
+                 "({} left): {:08x}",
+                 wait_names[key.wait], address, size, key.method, engine, left,
+                 fmt::join(std::span{words.data(), std::min<size_t>(size, words.size())}, " "));
+    }
+    if (++total % 4000 != 0) {
+        return;
+    }
+    std::vector<std::pair<u64, Key>> sorted;
+    for (const auto& [entry_key, entry_count] : counts) {
+        sorted.emplace_back(entry_count, entry_key);
+    }
+    std::ranges::sort(sorted, std::greater{}, &std::pair<u64, Key>::first);
+    std::string line;
+    for (size_t i = 0; i < sorted.size() && i < 16; ++i) {
+        const auto& [entry_count, entry_key] = sorted[i];
+        line += fmt::format(" | {} {}: method {:#x} engine {} left {} size {}", entry_count,
+                            wait_names[entry_key.wait], entry_key.method, entry_key.engine,
+                            entry_key.left, entry_key.size);
+    }
+    LOG_INFO(HW_GPU, "List stats after {} waits:{}", total, line);
+}
+
+/// The entry that last waited for its copy (resumed when it is read next), and the words guest
+/// memory held for it then.
+GPUVAddr pending_address{};
+std::vector<u32> pending_guest;
+
+// Writers waits by the kinds of queued work they waited for (GpuSplit::SyncedWriterKinds:
+// bit 0 draws, 1 compute, 2 copies, 7 earlier writers only), with their time.
+void NoteWritersWait(u32 kinds, u64 ns, bool became_written) {
+    static std::map<u32, std::pair<u64, u64>> by_kinds;
+    static u64 total{};
+    static u64 written{};
+    auto& [count, time] = by_kinds[kinds];
+    ++count;
+    time += ns;
+    written += became_written ? 1 : 0;
+    if (++total % 1000 != 0) {
+        return;
+    }
+    std::string line = fmt::format(" {} found the entry GPU-written after the wait", written);
+    for (const auto& [entry_kinds, entry] : by_kinds) {
+        line += fmt::format(" | {}{}{}{}: {} waits, {:.1f} ms total, {:.0f} us each",
+                            (entry_kinds & 1) ? "draw " : "", (entry_kinds & 2) ? "compute " : "",
+                            (entry_kinds & 4) ? "copy " : "",
+                            (entry_kinds & 0x80) ? "earlier " : "", entry.first,
+                            static_cast<double>(entry.second) / 1e6,
+                            static_cast<double>(entry.second) / 1e3 /
+                                static_cast<double>(entry.first));
+    }
+    LOG_INFO(HW_GPU, "List stats writers after {} waits:{}", total, line);
+}
+
+// GPU-written lists read from their copies: would the words guest memory held (what reading
+// without the wait gives) or the previous list of that size or address have been the same?
+void NoteListRead(MemoryManager& memory, GPUVAddr address, std::span<const u32> words) {
+    struct Counts {
+        u64 lists{};
+        u64 resumed{};
+        u64 guest_same{};
+        u64 size_same{};
+        u64 address_same{};
+        u64 resumed_guest_same{};
+        u64 resumed_size_same{};
+        u64 resumed_address_same{};
+        u64 resumed_guest_before_same{};
+    };
+    static Counts counts;
+    static std::map<size_t, std::vector<u32>> by_size;
+    static std::map<GPUVAddr, std::vector<u32>> by_address;
+    static std::vector<u32> guest;
+    const bool resumed = std::exchange(pending_address, GPUVAddr{}) == address;
+    guest.resize(words.size());
+    memory.ReadBlockUnsafe(address, guest.data(), words.size() * sizeof(u32));
+    const auto same = [&words](const std::vector<u32>& other) {
+        return std::ranges::equal(other, words);
+    };
+    const bool guest_same = same(guest);
+    auto& size_entry = by_size[words.size()];
+    const bool size_same = same(size_entry);
+    if (by_address.size() > 65536) {
+        by_address.clear();
+    }
+    auto& address_entry = by_address[address];
+    const bool address_same = same(address_entry);
+    ++counts.lists;
+    counts.guest_same += guest_same ? 1 : 0;
+    counts.size_same += size_same ? 1 : 0;
+    counts.address_same += address_same ? 1 : 0;
+    if (resumed) {
+        ++counts.resumed;
+        counts.resumed_guest_same += guest_same ? 1 : 0;
+        counts.resumed_size_same += size_same ? 1 : 0;
+        counts.resumed_address_same += address_same ? 1 : 0;
+        counts.resumed_guest_before_same += same(pending_guest) ? 1 : 0;
+        if (!size_same && counts.resumed - counts.resumed_size_same <= 4 && !size_entry.empty()) {
+            std::string diff;
+            for (size_t i = 0; i < words.size() && diff.size() < 400; ++i) {
+                if (words[i] != size_entry[i]) {
+                    diff += fmt::format(" [{}] {:08x}->{:08x}", i, size_entry[i], words[i]);
+                }
+            }
+            LOG_INFO(HW_GPU, "List stats change: size {} at {:#x}:{}", words.size(), address,
+                     diff);
+        }
+    }
+    size_entry.assign(words.begin(), words.end());
+    address_entry.assign(words.begin(), words.end());
+    if (counts.lists % 2000 != 0) {
+        return;
+    }
+    LOG_INFO(HW_GPU,
+             "List stats copies after {} lists: same as guest memory {}, as the last of its size "
+             "{}, as the last at its address {} | of the {} that waited: {}, {}, {}, as guest "
+             "memory before the wait {}",
+             counts.lists, counts.guest_same, counts.size_same, counts.address_same,
+             counts.resumed, counts.resumed_guest_same, counts.resumed_size_same,
+             counts.resumed_address_same, counts.resumed_guest_before_same);
+}
+} // namespace ListStats
+
+} // Anonymous namespace
 
 // Compute dispatches, uploads and reports and DMA copies write the command lists
 // ReadGpuWrittenCommands reads. Plain native compute state (Frizti 99b3b49) does not.
@@ -257,10 +416,33 @@ bool DmaPusher::Step() {
         // queued before it. The GPU fetches the list after that work only past a host-level wait
         // (NoteSync): later work is not ordered before the fetch, and the list does not wait for
         // it (nor for draws, which write memory too; draw-written lists wait for the last sync).
-        if (!skip_record_read && !gpu_written && VideoCommon::GpuSplit::Get().Active() &&
-            VideoCommon::GpuSplit::Get().WaitForSyncedWriters()) {
-            gpu_written =
-                IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+        const auto note_wait = [&](ListStats::Wait wait) {
+            if (ListStats::Enabled()) [[unlikely]] {
+                ListStats::Note(memory_manager, wait,
+                                static_cast<u8>(subchannel_type[dma_state.subchannel]),
+                                dma_state.method, dma_state.method_count, dma_state.dma_get,
+                                static_cast<u32>(header.size));
+            }
+        };
+        if (auto& split = VideoCommon::GpuSplit::Get();
+            !skip_record_read && !gpu_written && split.Active()) {
+            const bool stats = ListStats::Enabled();
+            const u32 kinds = stats ? split.SyncedWriterKinds() : 0;
+            const auto wait_start = stats ? std::chrono::steady_clock::now()
+                                           : std::chrono::steady_clock::time_point{};
+            if (split.WaitForSyncedWriters()) {
+                note_wait(ListStats::Wait::WritersWaited);
+                gpu_written =
+                    IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+                if (stats) [[unlikely]] {
+                    ListStats::NoteWritersWait(
+                        kinds,
+                        static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                             std::chrono::steady_clock::now() - wait_start)
+                                             .count()),
+                        gpu_written);
+                }
+            }
         }
         // The words as submitted, unless this is a resumed entry or the GPU has newer ones the
         // safe read below would flush (with the split, the front can't tell: it reads memory
@@ -360,13 +542,29 @@ bool DmaPusher::Step() {
                    pending) {
             if (pending) {
                 // Parsed again once the GPU copied the list; other channels run meanwhile.
+                note_wait(ListStats::Wait::CopyPending);
+                ListStats::pending_address = dma_state.dma_get;
+                if (ListStats::Enabled()) [[unlikely]] {
+                    ListStats::pending_guest.resize(header.size);
+                    memory_manager.ReadBlockUnsafe(dma_state.dma_get,
+                                                   ListStats::pending_guest.data(),
+                                                   size_t{header.size} * sizeof(u32));
+                }
                 return false;
+            }
+            if (ListStats::Enabled()) [[unlikely]] {
+                ListStats::NoteListRead(
+                    memory_manager, dma_state.dma_get,
+                    std::span{reinterpret_cast<const u32*>(command_headers.data()), header.size});
             }
             const std::span<const CommandHeader> commands{command_headers.data(), header.size};
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else {
+            if (gpu_written) {
+                note_wait(ListStats::Wait::Flushed);
+            }
             FlushGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
@@ -712,7 +910,9 @@ void DmaPusher::CallMethod(u32 argument) {
                                 : VideoCommon::GpuSplit::Effect::Unknown;
         SCOPE_EXIT {
             if (writer) {
-                split.NoteWriter();
+                split.NoteWriter(engine_type == Engines::EngineTypes::KeplerCompute
+                                     ? VideoCommon::GpuSplit::WriterKind::Compute
+                                     : VideoCommon::GpuSplit::WriterKind::Copy);
             }
         };
         if (split.Active()) {
@@ -779,7 +979,9 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
                                 : VideoCommon::GpuSplit::Effect::Unknown;
         SCOPE_EXIT {
             if (writer) {
-                split.NoteWriter();
+                split.NoteWriter(engine_type == Engines::EngineTypes::KeplerCompute
+                                     ? VideoCommon::GpuSplit::WriterKind::Compute
+                                     : VideoCommon::GpuSplit::WriterKind::Copy);
             }
         };
         if (split.Active()) {
