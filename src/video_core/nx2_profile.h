@@ -334,6 +334,26 @@ enum class Counter : u32 {
     /// GPU-written command list pages whose lists the front read from guest memory: GPU work
     /// wrote the page, but not the list's bytes (Nx2ListPage::GpuWrote)
     ListGuestReads,
+    /// Acquire trigger drains by reason (puller.cpp AcquireDrainReason, same order): count, time
+    /// in ns, and how many the drain met
+    AcquireDrainNotGequal,
+    AcquireDrainSetup,
+    AcquireDrainGpuWritten,
+    AcquireDrainQueuedUnknown,
+    AcquireDrainQueuedLower,
+    AcquireDrainNotMet,
+    AcquireDrainNotGequalNs,
+    AcquireDrainSetupNs,
+    AcquireDrainGpuWrittenNs,
+    AcquireDrainQueuedUnknownNs,
+    AcquireDrainQueuedLowerNs,
+    AcquireDrainNotMetNs,
+    AcquireDrainNotGequalMet,
+    AcquireDrainSetupMet,
+    AcquireDrainGpuWrittenMet,
+    AcquireDrainQueuedUnknownMet,
+    AcquireDrainQueuedLowerMet,
+    AcquireDrainNotMetMet,
     Count,
 };
 
@@ -516,6 +536,27 @@ inline void Report(const char* thread_name = "GPU thread") {
         line += fmt::format(" | front 3D writes: direct {:.0f}, from macros {:.0f}",
                             static_cast<double>(data.counters[static_cast<size_t>(Counter::DirectWrites)]) * 1e9 / window,
                             static_cast<double>(data.counters[static_cast<size_t>(Counter::MacroWrites)]) * 1e9 / window);
+    }
+    {
+        static constexpr std::array reasons{"not >=",  "setup",       "GPU-written word",
+                                            "queued ?", "queued lower", "not met"};
+        std::string drains;
+        for (size_t i = 0; i < reasons.size(); ++i) {
+            const size_t count = static_cast<size_t>(Counter::AcquireDrainNotGequal) + i;
+            if (data.counters[count] == 0) {
+                continue;
+            }
+            const double ms = static_cast<double>(data.counters[count + reasons.size()]) * 1e3 /
+                              static_cast<double>(window);
+            drains += fmt::format("{} {} {:.0f}/s {:.1f} ms ({:.0f} met)", drains.empty() ? "" : ",",
+                                  reasons[i], static_cast<double>(data.counters[count]) * 1e9 / window,
+                                  ms,
+                                  static_cast<double>(data.counters[count + 2 * reasons.size()]) *
+                                      1e9 / window);
+        }
+        if (!drains.empty()) {
+            line += fmt::format(" | acquire trigger drains by reason:{}", drains);
+        }
     }
     if (data.counters[static_cast<size_t>(Counter::ListGuestReads)] != 0) {
         line += fmt::format(" | lists read from guest memory past GPU writes {:.0f}",

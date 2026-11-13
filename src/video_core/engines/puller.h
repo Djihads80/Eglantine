@@ -80,6 +80,8 @@ public:
         std::chrono::steady_clock::time_point since;
         std::chrono::steady_clock::time_point last_fences; ///< When it last released fences
         bool reported;
+        bool stats{}; ///< EDEN_NX2_ACQ_STATS: counted from its suspension
+        bool no_drain{}; ///< Suspended without a drain: polls check it without one at first
 
         [[nodiscard]] bool Matches(u32 current) const;
         /// Whether it waits for the word to reach `value` (greater or equal).
