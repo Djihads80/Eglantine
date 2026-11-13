@@ -236,6 +236,10 @@ public:
     /// Waits until the back executed the compute and copy work sent so far (not what came after).
     /// Returns whether any of it was still queued.
     bool WaitForWriters();
+    /// Waits until the back executed the compute and copy work sent before the last NoteSync:
+    /// the writers a command list fetched now is ordered after. Returns whether any of it was
+    /// still queued.
+    bool WaitForSyncedWriters();
     /// A host-level wait was just sent (a syncpoint acquire, a host WFI, a GP entry with its sync
     /// bit; semaphore acquires drain): the guest's GPU work before it is complete before the
     /// commands after it are fetched.
