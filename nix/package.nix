@@ -93,13 +93,17 @@ buildEdenEmulator (
       #    (not downloaded, but Cachix is integrated in CI)
       # 4. Nixpkgs currently ships GCC 16, which is stricter than
       #    Ubuntu's GCC 13, so -Werror is disabled to avoid build failures
-      # 5. FFmpeg is the system one, not upstream's bundled static build.
-      #    Upstream selects ffmpeg-ci-av1-linux, which carries no hash in
-      #    cpmfile.json, and this builder only fetches hashed, non-ci
-      #    entries. Setting YUZU_USE_BUNDLED_FFMPEG=ON here would make
-      #    configure try to download in the sandbox. Give that manifest
-      #    entry a hash first, then flip this.
+      # 5. FFmpeg is the nixpkgs build, not upstream's bundled static one.
+      #    Upstream bundles 9.0.2 because its tar.gz linked Ubuntu's
+      #    libavcodec.so.60 (absent on users' machines), needed libva 2.20
+      #    instead of 2.21+, and wanted dav1d on aarch64. None of that
+      #    transfers: nixpkgs' ffmpeg-headless IS ffmpeg_9-headless, 9.0.2
+      #    with dav1d, and the store path is baked into the binary. Do not set
+      #    YUZU_USE_BUNDLED_FFMPEG=ON: it selects ffmpeg-ci-av1-linux, a `ci`
+      #    entry with no hash that this builder cannot fetch, so configure
+      #    would try to download in the sandbox.
       #    (Same trap for -DYUZU_USE_BUNDLED_SDL3=ON -> sdl3-ci.)
+      #    Watch it if nixpkgs moves its unversioned ffmpeg default.
 
       "-DENABLE_WERROR=OFF"
     ]

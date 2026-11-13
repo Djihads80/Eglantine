@@ -45,6 +45,13 @@
       packages = forAllSystems (system: {
         eglantine = mkEglantine system { };
         eglantine-pgo = mkEglantine system { pgo = true; };
+        # NIGHTLY_BUILD changes the version banner and the update-checker
+        # endpoints, so it cannot be a per-run flag: it is a separate output.
+        eglantine-nightly = mkEglantine system { nightly = true; };
+        eglantine-nightly-pgo = mkEglantine system {
+          nightly = true;
+          pgo = true;
+        };
         default = self.packages.${system}.eglantine;
       });
 

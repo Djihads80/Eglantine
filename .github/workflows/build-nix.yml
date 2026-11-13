@@ -18,6 +18,26 @@ on:
         description: Build aarch64-darwin
         type: boolean
         default: true
+      # The four values .github/actions/setup-build writes as GIT-* files. Nix
+      # only sees tracked files in a git checkout, so the build job writes and
+      # stages them itself; without them GetSCMRev has no .git to ask and the
+      # binary reports its no-git fallback.
+      refspec:
+        description: Value for GIT-REFSPEC (branch or daily build label)
+        type: string
+        default: ""
+      tag:
+        description: Value for GIT-TAG
+        type: string
+        default: ""
+      release:
+        description: Write GIT-RELEASE, which makes this a release build
+        type: boolean
+        default: false
+      nightly:
+        description: Build the eglantine-nightly* outputs
+        type: boolean
+        default: false
 
     secrets:
       CACHIX_AUTH_TOKEN:
@@ -41,7 +61,7 @@ jobs:
         uses: DeterminateSystems/flake-checker-action@v14
 
   build:
-    name: nix-${{ matrix.system }}${{ matrix.pgo && '-pgo' || '' }}
+    name: nix-${{ matrix.system }}${{ inputs.nightly && '-nightly' || '' }}${{ matrix.pgo && '-pgo' || '' }}
     needs: flake
     runs-on: ${{ matrix.system == 'aarch64-darwin' && (vars.MACOS_RUNNER || 'macos-26') || (matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'ubuntu-24.04') }}
     strategy:
@@ -59,6 +79,30 @@ jobs:
         with:
           ref: ${{ inputs.sha }}
           persist-credentials: false
+
+      # Same files .github/actions/setup-build writes for every other platform.
+      # GetSCMRev prefers them over git; the Nix build has no .git, so without
+      # them the binary falls back to the GIT-NOTFOUND values (1.0.0/stable).
+      # `git add -f` because Nix only copies tracked files out of a git tree.
+      - name: Write SCM files
+        shell: bash
+        env:
+          SCM_SHA: ${{ inputs.sha }}
+          SCM_REFSPEC: ${{ inputs.refspec }}
+          SCM_TAG: ${{ inputs.tag }}
+          SCM_RELEASE: ${{ inputs.release }}
+        run: |
+          set -uo pipefail
+          printf '%s\n' "$SCM_SHA" > GIT-COMMIT
+          if [ -n "$SCM_REFSPEC" ]; then printf '%s\n' "$SCM_REFSPEC" > GIT-REFSPEC; fi
+          if [ -n "$SCM_TAG" ]; then
+            printf '%s\n' "$SCM_TAG" > GIT-TAG
+            if [ "$SCM_RELEASE" = "true" ]; then printf '%s\n' "$SCM_TAG" > GIT-RELEASE; fi
+          fi
+          for f in GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE; do
+            [ -f "$f" ] && git add -f "$f"
+          done
+          head -v GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE 2> /dev/null || true
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
@@ -141,7 +185,7 @@ jobs:
             | grep -E 'Cacheable|Hits|Misses|Cache size' || echo 'no statistics'
 
       - name: Build
-        run: nix build -L .#packages.${{ matrix.system }}.eglantine${{ matrix.pgo && '-pgo' || '' }}
+        run: nix build -L .#packages.${{ matrix.system }}.eglantine${{ inputs.nightly && '-nightly' || '' }}${{ matrix.pgo && '-pgo' || '' }}
 
       - name: Open the ccache tree for the save
         if: always()
