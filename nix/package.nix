@@ -52,44 +52,35 @@ let
     "-DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld"
   ];
 
-  # nixpkgs' eden pins httplib to 0.30.2 locally (newer releases break it) and
-  # the inherited list used that pin. Reproduced verbatim so step one changes
-  # nothing; the trim in the next commit drops it, because this tree takes
-  # httplib from cpmfile.json.
-  httplibPinned = pkgs.httplib.overrideAttrs (finalAttrs: {
-    version = "0.30.2";
-
-    src = pkgs.fetchFromGitHub {
-      owner = "yhirose";
-      repo = "cpp-httplib";
-      rev = "v${finalAttrs.version}";
-      hash = "sha256-psVyn14QHMXG/x9SOOiR7ZBt8dHqa2A/w92WQQDukKM=";
-    };
-  });
-
-  # Eglantine's dependency list, written out rather than inherited from
-  # pkgs.eden.
+  # Eglantine's dependency list. Written out rather than inherited from
+  # pkgs.eden: that made this package's dependencies another emulator's
+  # decision (Eden links SDL2 where this tree is SDL3-only, fmt_11 where
+  # cpmfile.json asks for 12.1.0), made it fail outright if nixpkgs ever
+  # renamed `eden`, and cannot be submitted to nixpkgs, where a derivation
+  # cannot inherit from a sibling one.
   #
-  # These were `pkgs.eden.{nativeBuildInputs,buildInputs}` with a throw if the
-  # attribute was ever absent. That borrowed another emulator's packaging
-  # decisions: Eden still links SDL2 where this tree is SDL3-only through the
-  # CPM manifest, fmt_11 where the manifest asks for 12.1.0, and KDE
-  # Frameworks' quazip, so parts of the list were versions of libraries that
-  # cpmfile.json also supplies. It also made this package fail outright if
-  # nixpkgs ever renamed or dropped `eden`, and it cannot be submitted to
-  # nixpkgs at all, where you cannot inherit from a derivation in the same tree.
+  # What is left is only what CPM cannot supply. The builder passes
+  # -DCPMUTIL_FORCE_SYSTEM=OFF and points every cpmfile.json entry at a
+  # pre-fetched store path, so a nixpkgs copy of a manifest library is shadowed
+  # at best and the wrong version at worst.
   #
-  # Order is kept identical to what was inherited, because buildInputs order
-  # decides which copy of a library wins when two are on the prefix path.
-  # The three linux-only entries are now conditional instead of being filtered
-  # out by pname on darwin.
+  #   ffmpeg-headless  deliberately the system build, see the FFmpeg note below
+  #   openssl          upstream's Linux build links the system OpenSSL too
+  #   gamemode         Linux only, and loaded by the running process rather
+  #                    than linked; upstream installs the distro's dev package
+  #   qt6.qtbase       Core, Gui, Widgets and Concurrent all live here
+  #   qt6.qtcharts     listed in YUZU_QT_COMPONENTS, so required unconditionally
+  #   qt6.qtwayland    the wayland platform plugin the wrapper hook needs
   #
-  # One deliberate difference: pkgs.eden.buildInputs is 35 entries because
-  # nixpkgs folds that package's checkInputs (catch2, oaknut on x86_64) into it
-  # when doCheck is on. This build sets doCheck = false -- BUILD_TESTING=OFF, no
-  # test suite -- so those two are not carried. Verified by diffing the two
-  # derivations: apart from the output path, catch2 and oaknut are the only
-  # inputs that differ.
+  # Dropped from the inherited list because cpmfile.json supplies them:
+  #   boost cpp-jwt cubeb enet fmt_11 frozen-containers httplib quazip libopus
+  #   libusb1 lz4 nlohmann_json simpleini sirit spirv-headers vulkan-headers
+  #   vulkan-memory-allocator vulkan-utility-libraries zlib zstd xbyak oaknut
+  # Dropped because nothing here uses them:
+  #   SDL2 (SDL3 comes from the manifest), stb (vendored in externals/stb,
+  #   which defines the stb target), unordered_dense (no reference anywhere in
+  #   the tree), qt6.qtmultimedia and qt6.qtwebengine (YUZU_USE_QT_MULTIMEDIA
+  #   and YUZU_USE_QT_WEB_ENGINE both default OFF and are never set here)
   nativeDeps = with pkgs; [
     cmake
     ninja
@@ -101,49 +92,53 @@ let
     wrapGAppsHook3
   ];
 
+  # SDL3 is compiled from source inside this derivation: the manifest pins
+  # 3.4.8 and the builder hands CPM the source tree, so SDL3's own configure
+  # runs here and its dependencies have to be ours. They used to arrive by
+  # accident, transitively through SDL2 and qt6.qtwebengine -- dropping those
+  # is what broke the first trimmed build, with SDL3 failing on XSCRNSAVER.
+  # This is nixpkgs' SDL3 build dependency set for Linux, minus the optional
+  # tray/ibus/jack/pipewire bits, which SDL3 autodetects rather than requires.
+  sdl3Deps = with pkgs; [
+    alsa-lib
+    dbus
+    libGL
+    libdecor
+    libdrm
+    libgbm
+    libpulseaudio
+    libusb1
+    libx11
+    libxcb
+    libxcursor
+    libxext
+    libxfixes
+    libxi
+    libxkbcommon
+    libxrandr
+    libxscrnsaver
+    libxtst
+    systemdLibs
+    vulkan-headers
+    vulkan-loader
+    wayland
+  ];
+
   deps =
     with pkgs;
     [
-      boost
-      cpp-jwt
-      cubeb
-      enet
       ffmpeg-headless
-      fmt_11
-      frozen-containers
-    ]
-    ++ lib.optionals (!isDarwin) [ gamemode ]
-    ++ [
-      httplibPinned
-      kdePackages.quazip
-      libopus
-      libusb1
-      lz4
-      nlohmann_json
       openssl
       qt6.qtbase
-      qt6.qtmultimedia
-    ]
-    ++ lib.optionals (!isDarwin) [ qt6.qtwayland ]
-    ++ [
-      qt6.qtwebengine
       qt6.qtcharts
-      SDL2
-      stb
-      simpleini
-      spirv-headers
-      vulkan-headers
-      vulkan-memory-allocator
-      vulkan-utility-libraries
     ]
-    ++ lib.optionals (!isDarwin) [ sirit ]
-    ++ [
-      unordered_dense
-      zlib
-      zstd
-    ]
-    ++ lib.optionals pkgs.stdenv.hostPlatform.isx86_64 [ xbyak ]
-    ++ lib.optionals pkgs.stdenv.hostPlatform.isAarch64 [ oaknut ];
+    ++ lib.optionals (!isDarwin) (
+      [
+        gamemode
+        qt6.qtwayland
+      ]
+      ++ sdl3Deps
+    );
 in
 buildEdenEmulator (
   {
