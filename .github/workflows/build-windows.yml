@@ -249,7 +249,7 @@ jobs:
         shell: msys2 {0}
         run: |
           ccache --version | head -1
-          ccache -p | grep -E '^(cache_dir|compiler_check|base_dir|hash_dir|sloppiness|max_size)' || true
+          ccache -p | grep -vE '^#' | grep -E '(cache_dir|compiler_check|base_dir|hash_dir|sloppiness|max_size|umask)' || true
 
       - name: Build
         shell: msys2 {0}
