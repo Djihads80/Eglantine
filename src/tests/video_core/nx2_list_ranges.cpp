@@ -30,6 +30,25 @@ TEST_CASE("List ranges tell lists apart from GPU writes on the same page",
     CHECK_FALSE(ranges.Wrote(0x180, 0x190));
 }
 
+TEST_CASE("Bytes guest memory got leave the list ranges", "[video_core][nx2_list_ranges]") {
+    Nx2ListRanges ranges;
+    ranges.Clear(0x100, 0x200); // unknown: nothing to take back
+    CHECK(ranges.Wrote(0x100, 0x200));
+    ranges.Reset();
+    ranges.Note(0x000, 0x400);
+    ranges.Clear(0x100, 0x200);
+    CHECK_FALSE(ranges.Wrote(0x100, 0x200));
+    CHECK(ranges.Wrote(0x0ff, 0x101));
+    CHECK(ranges.Wrote(0x1ff, 0x201));
+    REQUIRE(ranges.ranges.size() == 2);
+    // A later GPU write takes them again.
+    ranges.Note(0x180, 0x190);
+    CHECK(ranges.Wrote(0x180, 0x184));
+    CHECK_FALSE(ranges.Wrote(0x100, 0x180));
+    ranges.Clear(0x000, 0x1000);
+    CHECK(ranges.ranges.empty());
+}
+
 TEST_CASE("List ranges join touching writes and bound too many", "[video_core][nx2_list_ranges]") {
     Nx2ListRanges ranges;
     ranges.Reset();

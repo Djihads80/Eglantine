@@ -52,6 +52,31 @@ struct Nx2ListRanges {
         ranges.assign(1, {first, last});
     }
 
+    /// Guest memory got [begin, end) (a CPU write, an inline upload): its bytes are current
+    /// there until GPU work writes them again. Left as it is when splitting a range would need
+    /// more than MaxRanges.
+    void Clear(u32 begin, u32 end) {
+        if (!known || begin >= end) {
+            return;
+        }
+        boost::container::small_vector<std::pair<u32, u32>, 4> result;
+        for (const auto& range : ranges) {
+            if (end <= range.first || range.second <= begin) {
+                result.push_back(range);
+                continue;
+            }
+            if (range.first < begin) {
+                result.emplace_back(range.first, begin);
+            }
+            if (end < range.second) {
+                result.emplace_back(end, range.second);
+            }
+        }
+        if (result.size() <= MaxRanges) {
+            ranges = std::move(result);
+        }
+    }
+
     /// Whether GPU work may have written any of [begin, end) since the last flush.
     [[nodiscard]] bool Wrote(u64 begin, u64 end) const {
         if (!known) {

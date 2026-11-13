@@ -2677,6 +2677,21 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out, bool 
                 Nx2Profile::Add(Nx2Profile::Counter::ListGuestReads, 1);
                 return Nx2ListRead::Synced;
             }
+            if (static const bool stats = std::getenv("EDEN_NX2_LIST_STATS") != nullptr;
+                stats) [[unlikely]] {
+                static u32 logged{};
+                if (logged < 24) {
+                    ++logged;
+                    std::string ranges;
+                    for (const auto& [begin, end] : entry.gpu_ranges.ranges) {
+                        ranges += fmt::format(" [{:#x}, {:#x})", begin, end);
+                    }
+                    LOG_INFO(HW_GPU,
+                             "List stats: list at {:#x}+{:#x} on page {:#x} overlaps GPU ranges "
+                             "(known {}):{}",
+                             offset, out.size(), page, entry.gpu_ranges.known, ranges);
+                }
+            }
             if (!current(entry)) {
                 return Nx2ListRead::Unknown;
             }
@@ -2769,6 +2784,24 @@ void BufferCache<P>::Nx2NoteListHostWrite(DAddr device_addr, u64 size, std::span
             const bool synced = entry.synced_writes == entry.writes;
             const bool copy_valid = entry.copy && entry.copy_writes == entry.writes;
             ++entry.writes;
+            {
+                constexpr u64 list_page_size = u64{1} << Tegra::Nx2WrittenPageBits;
+                const u64 clear_begin = (std::max<u64>)(device_addr, page_addr);
+                const u64 clear_end = (std::min<u64>)(device_addr + size, page_addr + list_page_size);
+                if (clear_begin < clear_end) {
+                    entry.gpu_ranges.Clear(static_cast<u32>(clear_begin - page_addr),
+                                           static_cast<u32>(clear_end - page_addr));
+                }
+                if (static const bool stats = std::getenv("EDEN_NX2_LIST_STATS") != nullptr;
+                    stats) [[unlikely]] {
+                    static std::atomic<u64> host_writes{};
+                    const u64 count = host_writes.fetch_add(1, std::memory_order_relaxed) + 1;
+                    if ((count & 0x3fff) == 0 || count <= 4) {
+                        LOG_INFO(HW_GPU, "List stats: {} host writes to list pages (last {:#x}+{:#x})",
+                                 count, device_addr, size);
+                    }
+                }
+            }
             if (synced) {
                 entry.synced_writes = entry.writes;
             }
