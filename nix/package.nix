@@ -79,6 +79,11 @@ buildEdenEmulator (
       "-DVulkanUtilityLibraries_FORCE_BUNDLED=ON"
       "-DNIGHTLY_BUILD=${onOff nightly}"
 
+      # Matching upstream's build-linux.yml, which has always passed this for
+      # the Linux release. discord-rpc comes from cpmfile.json like everything
+      # else, so this costs a link step, not a new input.
+      "-DUSE_DISCORD_PRESENCE=ON"
+
       # Nix deviations:
       # 1. QT6 is found through the setup hook,
       #    so no prefix path is needed
@@ -88,6 +93,13 @@ buildEdenEmulator (
       #    (not downloaded, but Cachix is integrated in CI)
       # 4. Nixpkgs currently ships GCC 16, which is stricter than
       #    Ubuntu's GCC 13, so -Werror is disabled to avoid build failures
+      # 5. FFmpeg is the system one, not upstream's bundled static build.
+      #    Upstream selects ffmpeg-ci-av1-linux, which carries no hash in
+      #    cpmfile.json, and this builder only fetches hashed, non-ci
+      #    entries. Setting YUZU_USE_BUNDLED_FFMPEG=ON here would make
+      #    configure try to download in the sandbox. Give that manifest
+      #    entry a hash first, then flip this.
+      #    (Same trap for -DYUZU_USE_BUNDLED_SDL3=ON -> sdl3-ci.)
 
       "-DENABLE_WERROR=OFF"
     ]
@@ -109,7 +121,7 @@ buildEdenEmulator (
 
     meta = {
       description = "Experimental Nintendo Switch 2 emulator";
-      homepage = "https://github.com/Djihads80/Eglantine";
+      homepage = "https://github.com/Eglantine-Community/Eglantine";
       mainProgram = "eglantine";
       license = lib.licenses.gpl3Plus;
       platforms = [
