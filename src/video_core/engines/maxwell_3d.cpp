@@ -2762,8 +2762,10 @@ void Maxwell3D::BackDrawIndexedIndirect(Core::System& system, u32 topology, GPUV
     params.buffer_size = 5 * sizeof(u32);
     params.max_draw_counts = 1;
     params.stride = 0;
+    params.from_record = true;
     draw_manager.DrawIndexedIndirect(*this, static_cast<Regs::PrimitiveTopology>(topology), 0,
                                      estimate);
+    params.from_record = false;
     if (replace) {
         engine_state = EngineHint::None;
         replace_table.clear();

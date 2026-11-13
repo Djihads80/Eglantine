@@ -3097,6 +3097,8 @@ public:
             size_t buffer_size;
             size_t max_draw_counts;
             size_t stride;
+            /// The arguments are a GPU-written record the host GPU reads (FrontTakeIndirectRecord).
+            bool from_record;
         };
         void ProcessMethodCall(Maxwell3D& maxwell3d, u32 method, u32 argument);
         void Clear(Maxwell3D& maxwell3d, u32 layer_count);

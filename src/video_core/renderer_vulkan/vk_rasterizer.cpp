@@ -1473,6 +1473,36 @@ void RasterizerVulkan::DrawIndirect() {
             return;
         }
     }
+    if (params.from_record && scheduler.StorageWritesUnordered()) {
+        // The record may come from the stores of earlier draws (DK Bananza's terrain culling
+        // geometry shader, its reset vertex shader): nothing orders the host's argument fetch
+        // after them unless the guest's own wait for idle recorded a barrier since.
+        // EDEN_NX2_INDIRECT_BARRIER=0: draw without it.
+        static const bool barrier = [] {
+            const char* value = std::getenv("EDEN_NX2_INDIRECT_BARRIER");
+            return value == nullptr || value[0] != '0';
+        }();
+        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::IndirectRecordsUnordered,
+                                     1);
+        if (barrier) {
+            scheduler.RequestOutsideRenderPassOperationContext();
+            scheduler.Record([](vk::CommandBuffer cmdbuf) {
+                static constexpr VkMemoryBarrier STORES_TO_ARGUMENTS{
+                    .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                    .pNext = nullptr,
+                    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                    .dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT |
+                                     VK_ACCESS_INDEX_READ_BIT |
+                                     VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT |
+                                     VK_ACCESS_SHADER_READ_BIT,
+                };
+                cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
+                                       VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, 0,
+                                       STORES_TO_ARGUMENTS);
+            });
+            scheduler.NoteStorageWritesOrdered();
+        }
+    }
     buffer_cache.SetDrawIndirect(&params);
     PrepareDraw(params.is_indexed, [this, &params] {
         if (mesh_draw) {
@@ -2391,6 +2421,7 @@ void RasterizerVulkan::WaitForIdle() {
 
     scheduler.RequestOutsideRenderPassOperationContext();
     if (SyncFixEnabled()) {
+        scheduler.NoteStorageWritesOrdered();
         scheduler.Record([flags](vk::CommandBuffer cmdbuf) {
             // Later work waits for the earlier work and sees its writes.
             static constexpr VkMemoryBarrier WFI_BARRIER{

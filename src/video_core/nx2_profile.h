@@ -329,6 +329,8 @@ enum class Counter : u32 {
     /// DrawIndexedIndirect calls the host GPU drew from their GPU-written records
     /// (Maxwell3D::FrontTakeIndirectRecord)
     IndirectRecords,
+    /// Of those, drawn after storage writes no barrier ordered yet (RasterizerVulkan::DrawIndirect)
+    IndirectRecordsUnordered,
     Count,
 };
 
@@ -512,8 +514,11 @@ inline void Report(const char* thread_name = "GPU thread") {
                             static_cast<double>(data.counters[static_cast<size_t>(Counter::DirectWrites)]) * 1e9 / window,
                             static_cast<double>(data.counters[static_cast<size_t>(Counter::MacroWrites)]) * 1e9 / window);
     }
-    if (data.counters[static_cast<size_t>(Counter::IndirectRecords)] != 0) {
-        line += fmt::format(" | indirect records {:.0f}", per_second(Counter::IndirectRecords));
+    if (data.counters[static_cast<size_t>(Counter::IndirectRecords)] != 0 ||
+        data.counters[static_cast<size_t>(Counter::IndirectRecordsUnordered)] != 0) {
+        line += fmt::format(" | indirect records {:.0f} ({:.0f} after unordered stores)",
+                            per_second(Counter::IndirectRecords),
+                            per_second(Counter::IndirectRecordsUnordered));
     }
     if (data.counters[static_cast<size_t>(Counter::DrawBeginCoalesced)] != 0) {
         line += fmt::format(" | draw.begin coalesced {:.0f}",
