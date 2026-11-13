@@ -27,6 +27,10 @@ on:
         description: none or both
         type: string
         default: none
+      save_cache:
+        description: Force-save the compiler and CPM caches at the end of the job
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -42,8 +46,6 @@ jobs:
     name: linux-${{ matrix.arch }}${{ matrix.pgo && '-pgo' || '' }}
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 1000M
       PLATFORM: linux-${{ matrix.arch }}${{ matrix.pgo && '-pgo' || '' }}
       SHA: ${{ inputs.sha }}
 
@@ -69,6 +71,7 @@ jobs:
           refspec: ${{ inputs.refspec }}
           tag: ${{ inputs.tag }}
           release: ${{ inputs.release }}
+          save-cache: ${{ inputs.save_cache }}
 
       - name: Setup build from compatibility pin
         if: hashFiles('.github/actions/setup-build/action.yml') == ''
@@ -79,6 +82,7 @@ jobs:
           refspec: ${{ inputs.refspec }}
           tag: ${{ inputs.tag }}
           release: ${{ inputs.release }}
+          save-cache: ${{ inputs.save_cache }}
 
       - name: Cache APT packages
         uses: actions/cache@v6
@@ -200,6 +204,7 @@ jobs:
       - name: Build
         shell: bash
         run: |
+          ccache --zero-stats
           cmake --build build/release --target yuzu yuzu-cmd --parallel
           ccache --show-stats
 

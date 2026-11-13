@@ -1,7 +1,8 @@
 name: Setup build
 description: >-
   Writes the GIT-* files GetSCMRev reads (so the build embeds the version this run was given instead
-  of asking git), and restores the CPM and compiler-object caches. Run after actions/checkout.
+  of asking git), exports the compiler-cache environment, and restores the CPM and compiler-object
+  caches. Run after actions/checkout.
 
 inputs:
   platform:
@@ -21,9 +22,11 @@ inputs:
     required: false
     default: "false"
   save-cache:
-    description: Save the caches at the end of the job (they are always restored)
+    description: >-
+      Force-save the caches at the end of the job (they are always restored). Saving otherwise
+      happens only on the nightly schedule and on refs/heads/nx2 - see "Decide cache saving".
     required: false
-    default: ${{ github.event_name == 'schedule' || github.ref == 'refs/heads/nx2' }}
+    default: "false"
 
 runs:
   using: composite
@@ -48,8 +51,46 @@ runs:
         echo "GetSCMRev inputs:"
         head -v GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE 2> /dev/null || true
 
+    # One definition of the compiler-cache environment, for every platform and every ref.
+    # ccache hashes these settings into every key, so a platform (or a branch) that sets them
+    # differently cannot read another's objects: it restores a cache and misses all of it, in both
+    # direct and preprocessed mode. Keep them here, not in the workflow files.
+    #   COMPILERCHECK=content  identify the compiler by hashing the binary, not by its mtime, so a
+    #                          rebuilt runner image does not invalidate the whole cache
+    #   BASEDIR                rewrite paths under the workspace to relative ones before hashing
+    #   NOHASHDIR              keep the working directory out of the key
+    - name: Compiler cache environment
+      shell: bash
+      run: |
+        set -euo pipefail
+        {
+          echo "CCACHE_DIR=${{ github.workspace }}/.ccache"
+          echo "CCACHE_MAXSIZE=1000M"
+          echo "CCACHE_COMPILERCHECK=content"
+          echo "CCACHE_BASEDIR=${{ github.workspace }}"
+          echo "CCACHE_NOHASHDIR=true"
+        } >> "$GITHUB_ENV"
+
+    # Saving is a cost and a budget decision: every saving run writes a fresh entry (actions/cache
+    # never overwrites a key), caches are scoped to the ref that wrote them, and the repository
+    # shares one 10 GB pool. So by default the canonical producers save and everyone else only
+    # restores - plus an explicit opt-in, so a branch with a changed configuration can warm itself
+    # instead of staying cold until it merges.
+    - name: Decide cache saving
+      shell: bash
+      run: |
+        set -euo pipefail
+        save=false
+        if [ '${{ inputs.save-cache }}' = 'true' ] ||
+           [ '${{ github.event_name }}' = 'schedule' ] ||
+           [ '${{ github.ref }}' = 'refs/heads/nx2' ]; then
+          save=true
+        fi
+        echo "CACHE_SAVE=$save" >> "$GITHUB_ENV"
+        echo "compiler cache will be saved: $save"
+
     - name: Cache CPM downloads (restore and save)
-      if: inputs.save-cache == 'true'
+      if: env.CACHE_SAVE == 'true'
       uses: actions/cache@v6
       with:
         path: .cache/cpm
@@ -58,7 +99,7 @@ runs:
           cpm-v1-${{ runner.os }}-
 
     - name: Cache CPM downloads (restore only)
-      if: inputs.save-cache != 'true'
+      if: env.CACHE_SAVE != 'true'
       uses: actions/cache/restore@v6
       with:
         path: .cache/cpm
@@ -67,26 +108,29 @@ runs:
           cpm-v1-${{ runner.os }}-
 
     # --- Compiler objects (ccache or sccache, whichever the job uses) ---
-    # The "--" after the platform stops linux-x86_64 from matching linux-x86_64-pgo.
+    # The "-" after the platform stops linux-x86_64 from matching linux-x86_64-pgo.
+    # The action's own hash means a ref running a different cache configuration computes a
+    # different name: it then reports "cache not found" (cold, and honestly labelled) instead of
+    # restoring an entry it cannot use and compiling everything while printing "cache restored".
     # The sha makes every saving run write a fresh entry; restore-keys seeds it from the newest.
     - name: Cache compiler objects (restore and save)
-      if: inputs.save-cache == 'true'
+      if: env.CACHE_SAVE == 'true'
       uses: actions/cache@v6
       with:
         path: |
           .ccache
           .sccache
-        key: objects-v1-${{ inputs.platform }}--${{ inputs.sha }}
+        key: objects-v2-${{ inputs.platform }}-${{ hashFiles('.github/actions/setup-build/action.yml') }}-${{ inputs.sha }}
         restore-keys: |
-          objects-v1-${{ inputs.platform }}--
+          objects-v2-${{ inputs.platform }}-${{ hashFiles('.github/actions/setup-build/action.yml') }}-
 
     - name: Cache compiler objects (restore only)
-      if: inputs.save-cache != 'true'
+      if: env.CACHE_SAVE != 'true'
       uses: actions/cache/restore@v6
       with:
         path: |
           .ccache
           .sccache
-        key: objects-v1-${{ inputs.platform }}--${{ inputs.sha }}
+        key: objects-v2-${{ inputs.platform }}-${{ hashFiles('.github/actions/setup-build/action.yml') }}-${{ inputs.sha }}
         restore-keys: |
-          objects-v1-${{ inputs.platform }}--
+          objects-v2-${{ inputs.platform }}-${{ hashFiles('.github/actions/setup-build/action.yml') }}-
