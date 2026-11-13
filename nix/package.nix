@@ -52,17 +52,107 @@ let
     "-DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld"
   ];
 
-  linuxOnlyInputs = [
-    "qtwayland"
-    "gamemode"
-    "sirit"
+  # nixpkgs' eden pins httplib to 0.30.2 locally (newer releases break it) and
+  # the inherited list used that pin. Reproduced verbatim so step one changes
+  # nothing; the trim in the next commit drops it, because this tree takes
+  # httplib from cpmfile.json.
+  httplibPinned = pkgs.httplib.overrideAttrs (finalAttrs: {
+    version = "0.30.2";
+
+    src = pkgs.fetchFromGitHub {
+      owner = "yhirose";
+      repo = "cpp-httplib";
+      rev = "v${finalAttrs.version}";
+      hash = "sha256-psVyn14QHMXG/x9SOOiR7ZBt8dHqa2A/w92WQQDukKM=";
+    };
+  });
+
+  # Eglantine's dependency list, written out rather than inherited from
+  # pkgs.eden.
+  #
+  # These were `pkgs.eden.{nativeBuildInputs,buildInputs}` with a throw if the
+  # attribute was ever absent. That borrowed another emulator's packaging
+  # decisions: Eden still links SDL2 where this tree is SDL3-only through the
+  # CPM manifest, fmt_11 where the manifest asks for 12.1.0, and KDE
+  # Frameworks' quazip, so parts of the list were versions of libraries that
+  # cpmfile.json also supplies. It also made this package fail outright if
+  # nixpkgs ever renamed or dropped `eden`, and it cannot be submitted to
+  # nixpkgs at all, where you cannot inherit from a derivation in the same tree.
+  #
+  # Order is kept identical to what was inherited, because buildInputs order
+  # decides which copy of a library wins when two are on the prefix path.
+  # The three linux-only entries are now conditional instead of being filtered
+  # out by pname on darwin.
+  #
+  # One deliberate difference: pkgs.eden.buildInputs is 35 entries because
+  # nixpkgs folds that package's checkInputs (catch2, oaknut on x86_64) into it
+  # when doCheck is on. This build sets doCheck = false -- BUILD_TESTING=OFF, no
+  # test suite -- so those two are not carried. Verified by diffing the two
+  # derivations: apart from the output path, catch2 and oaknut are the only
+  # inputs that differ.
+  nativeDeps = with pkgs; [
+    cmake
+    ninja
+    glslang
+    pkg-config
+    python3
+    qt6.qttools
+    qt6.wrapQtAppsHook
+    wrapGAppsHook3
   ];
+
+  deps =
+    with pkgs;
+    [
+      boost
+      cpp-jwt
+      cubeb
+      enet
+      ffmpeg-headless
+      fmt_11
+      frozen-containers
+    ]
+    ++ lib.optionals (!isDarwin) [ gamemode ]
+    ++ [
+      httplibPinned
+      kdePackages.quazip
+      libopus
+      libusb1
+      lz4
+      nlohmann_json
+      openssl
+      qt6.qtbase
+      qt6.qtmultimedia
+    ]
+    ++ lib.optionals (!isDarwin) [ qt6.qtwayland ]
+    ++ [
+      qt6.qtwebengine
+      qt6.qtcharts
+      SDL2
+      stb
+      simpleini
+      spirv-headers
+      vulkan-headers
+      vulkan-memory-allocator
+      vulkan-utility-libraries
+    ]
+    ++ lib.optionals (!isDarwin) [ sirit ]
+    ++ [
+      unordered_dense
+      zlib
+      zstd
+    ]
+    ++ lib.optionals pkgs.stdenv.hostPlatform.isx86_64 [ xbyak ]
+    ++ lib.optionals pkgs.stdenv.hostPlatform.isAarch64 [ oaknut ];
 in
 buildEdenEmulator (
   {
     inherit src version;
 
     pname = "eglantine";
+
+    nativeBuildInputs = nativeDeps;
+    buildInputs = deps;
 
     stdenv = if pgo then llvmPackages_23.stdenv else pkgs.stdenv;
 
@@ -136,13 +226,6 @@ buildEdenEmulator (
     };
   }
     // lib.optionalAttrs isDarwin {
-
-    # filter out linux-only inputs
-    buildInputs = lib.filter
-      (
-        p: !(builtins.elem (p.pname or "") linuxOnlyInputs)
-      )
-      pkgs.eden.buildInputs;
 
     # dynarmic dependencies on darwin
     extraNativeBuildInputs = pgoBintools ++ [
