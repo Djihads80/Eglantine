@@ -2891,6 +2891,7 @@ private:
         u32 height;
         u64 pts;
         bool end;
+        bool after_drop; // decoded frames were dropped just before this one
     };
     struct Fence {
         u32 syncpoint;
@@ -2906,6 +2907,9 @@ private:
     static constexpr s64 PauseGap = 1'000'000;   // us
     static constexpr s64 MaxCatchUp = 3'000'000; // us
     static constexpr u32 MaxDroppedInARow = 30;
+    // A client holding more output images than this queues frames and shows each at its own
+    // time (Hyrule Warriors holds all of them): it keeps pace itself, so nothing is dropped.
+    static constexpr size_t MaxHeldForPacing = 2;
 
     void Log(HLERequestContext& ctx, std::string_view what) {
         const auto* w = ctx.CommandBuffer();
@@ -3031,6 +3035,7 @@ private:
         {
             std::scoped_lock lk{m_mutex};
             m_free.push_back(image);
+            m_registered.insert(image);
             if (release_fence) {
                 m_release_fences[image] = *release_fence;
             }
@@ -3076,6 +3081,7 @@ private:
         {
             std::scoped_lock lk{m_mutex};
             std::erase(m_free, image);
+            m_registered.erase(image);
             m_release_fences.erase(image);
         }
         TipcReplyWords(ctx, {});
@@ -3152,12 +3158,16 @@ private:
     }
 
     // Starts or corrects the movie clock from a frame the client just acquired (m_mutex held).
-    // The clock never runs behind a frame the client already shows.
-    void AnchorClock(u64 pts) {
+    // The clock never runs behind a frame the client already shows, except one handed out right
+    // after a drop: it is early only because of the drop. Clients that queue frames ahead of
+    // showing them (Hyrule Warriors holds all its images) would otherwise pull the clock earlier
+    // with every drop, and the drops feed themselves until about every other frame goes.
+    void AnchorClock(u64 pts, bool after_drop) {
         const s64 now = HostTimeUs();
         const s64 offset = now - static_cast<s64>(pts);
         if (!m_clock_offset || now - m_last_acquire > PauseGap || pts < m_last_acquired_pts ||
-            offset < *m_clock_offset || offset - *m_clock_offset > MaxCatchUp) {
+            (offset < *m_clock_offset && !after_drop) ||
+            offset - *m_clock_offset > MaxCatchUp) {
             m_clock_offset = offset;
         }
         m_last_acquire = now;
@@ -3188,7 +3198,10 @@ private:
             return false;
         }
         const auto due = DuePts();
-        if (!due) {
+        // A frame before the last one the client took: the movie looped or jumped back. The
+        // clock restarts when the client takes it; until then every frame would look late.
+        if (!due || m_decoded.front().pts < m_last_acquired_pts ||
+            ClientHeldImages() > MaxHeldForPacing) {
             m_dropped_in_a_row = 0;
             return false;
         }
@@ -3205,6 +3218,12 @@ private:
         const Decoded& front = m_decoded.front();
         return m_decoded.size() == 1 && !m_inputs.empty() && !front.end &&
                m_dropped_in_a_row < MaxDroppedInARow && front.pts + m_frame_interval < *due;
+    }
+
+    // Output images the client has acquired and not given back yet (m_mutex held).
+    size_t ClientHeldImages() const {
+        const size_t ours = m_free.size() + m_outputs.size();
+        return m_registered.size() > ours ? m_registered.size() - ours : 0;
     }
 
     // Advances the decoder's syncpoint to the last value handed out (m_mutex held).
@@ -3229,7 +3248,7 @@ private:
             if (!m_outputs.empty()) {
                 output = m_outputs.front();
                 m_outputs.pop_front();
-                AnchorClock(output->pts);
+                AnchorClock(output->pts, output->after_drop);
             }
         }
         if (!output) {
@@ -3277,6 +3296,7 @@ private:
                 continue;
             }
             if (!m_decoded.empty() && !m_free.empty() && !DropOvertakenFrames()) {
+                const bool after_drop = m_dropped_in_a_row > 0;
                 m_dropped_in_a_row = 0;
                 Decoded frame = std::move(m_decoded.front());
                 m_decoded.pop_front();
@@ -3298,7 +3318,7 @@ private:
                     MkwMovieActivity::IsLargeMovie(m_movie_program_id, frame.picture->width)) {
                     m_objects->mkw_movie_activity.RecordFrame(std::chrono::steady_clock::now());
                 }
-                m_outputs.push_back({image, width, height, frame.pts, frame.end});
+                m_outputs.push_back({image, width, height, frame.pts, frame.end, after_drop});
                 if (frame.end) {
                     m_stream_ended = true;
                     m_ready->room.store(false, std::memory_order_relaxed);
@@ -3307,9 +3327,11 @@ private:
                 ++m_frames_out;
                 if (m_frames_out == 1 || (m_frames_out % 600) == 0 || frame.end) {
                     LOG_INFO(Service,
-                             "{} frame {} ({}x{}, pts {} us{}) in image {}, {} late dropped",
+                             "{} frame {} ({}x{}, pts {} us{}) in image {}, {} late dropped, "
+                             "client holds {} of {} images",
                              GetServiceName(), m_frames_out, width, height, frame.pts,
-                             frame.end ? ", end of stream" : "", image, m_frames_dropped);
+                             frame.end ? ", end of stream" : "", image, m_frames_dropped,
+                             ClientHeldImages(), m_registered.size());
                 }
                 continue;
             }
@@ -3495,6 +3517,7 @@ private:
     std::deque<u32> m_free;            ///< Output images, in the order the client acquires them
     std::map<u32, Fence> m_release_fences;
     std::deque<Output> m_outputs;      ///< Finished, for 213
+    std::set<u32> m_registered;        ///< Output images the client has registered
     bool m_stream_ended{};             ///< End-of-stream frame handed out, nothing submitted since
     bool m_flush{};
     bool m_quit{};
