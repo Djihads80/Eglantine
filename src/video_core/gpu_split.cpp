@@ -174,6 +174,8 @@ void GpuSplit::Stop() {
     last_writer_position = 0;
     last_sync_position = 0;
     last_function_position = 0;
+    semaphore_writes.clear();
+    semaphore_writes_limit = 1024;
     writes.Reset();
     async_writes.clear();
     cb_words.clear();
@@ -277,6 +279,28 @@ void GpuSplit::Drain(DrainSite site) {
 
 bool GpuSplit::WaitForWriters() {
     return WaitFor(std::min(last_writer_position, write_position), DrainSite::ListWriters);
+}
+
+void GpuSplit::NoteSemaphoreWrite(u64 device_address, u32 payload, bool known) {
+    if (semaphore_writes.size() >= semaphore_writes_limit) {
+        // The words of releases the back ran hold their values in memory.
+        const u64 done = consumed.load(std::memory_order_acquire);
+        std::erase_if(semaphore_writes,
+                      [done](const auto& entry) { return entry.second.position <= done; });
+        semaphore_writes_limit = std::max<size_t>(1024, semaphore_writes.size() * 2);
+    }
+    semaphore_writes.insert_or_assign(device_address & ~u64{3},
+                                      SemaphoreWrite{write_position, payload, known});
+}
+
+std::optional<GpuSplit::QueuedSemaphoreWrite> GpuSplit::QueuedSemaphoreWriteAt(
+    u64 device_address) const {
+    const auto it = semaphore_writes.find(device_address & ~u64{3});
+    if (it == semaphore_writes.end() ||
+        it->second.position <= consumed.load(std::memory_order_acquire)) {
+        return std::nullopt;
+    }
+    return QueuedSemaphoreWrite{it->second.payload, it->second.known};
 }
 
 bool GpuSplit::WaitForSyncedWriters() {
