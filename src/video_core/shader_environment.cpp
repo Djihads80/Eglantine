@@ -143,7 +143,19 @@ static Shader::TextureType ConvertTextureType(const Tegra::Texture::TICEntry& en
     }
 }
 
-static Shader::TexturePixelFormat ConvertTexturePixelFormat(const Tegra::Texture::TICEntry& entry) {
+static Shader::TexturePixelFormat ConvertTexturePixelFormat(const Tegra::Texture::TICEntry& entry,
+                                                            u32 handle) {
+    if (static_cast<u32>(entry.format.Value()) == 0) {
+        // Known benign case: a null/placeholder TIC (address 0, 1x1x1) bound to handle 0; the
+        // lookup falls back to A8B8G8R8. Log the raw words to distinguish it from a real
+        // unmapped NX2 format when something does read through it.
+        LOG_WARNING(Shader,
+                    "TIC with INVALID format bound to handle {:#x}: raw={{{:016x} {:016x} {:016x} "
+                    "{:016x}}} addr={:#x} {}x{}x{} type={} hv={}",
+                    handle, entry.raw[0], entry.raw[1], entry.raw[2], entry.raw[3], entry.Address(),
+                    entry.Width(), entry.Height(), entry.Depth(), entry.texture_type.Value(),
+                    entry.header_version.Value());
+    }
     return static_cast<Shader::TexturePixelFormat>(
         PixelFormatFromTextureInfo(entry.format, entry.r_type, entry.g_type, entry.b_type,
                                    entry.a_type, entry.srgb_conversion));
@@ -858,7 +870,7 @@ Shader::TextureType GraphicsEnvironment::ReadTextureType(u32 handle) {
 
 Shader::TexturePixelFormat GraphicsEnvironment::ReadTexturePixelFormat(u32 handle) {
     const auto entry{ReadTextureDescriptor(handle)};
-    const Shader::TexturePixelFormat result(ConvertTexturePixelFormat(entry));
+    const Shader::TexturePixelFormat result(ConvertTexturePixelFormat(entry, handle));
     texture_pixel_formats.emplace(handle, result);
     return result;
 }
@@ -1002,7 +1014,7 @@ GraphicsEnvironment::TexturePoolCheck GraphicsEnvironment::CheckTextureReads(
     for (const auto& [handle, format] : texture_pixel_formats) {
         ++check.reads;
         check.changed +=
-            ConvertTexturePixelFormat(ReadSnapshotDescriptor(handle)) != format ? 1 : 0;
+            ConvertTexturePixelFormat(ReadSnapshotDescriptor(handle), handle) != format ? 1 : 0;
     }
     return check;
 }
@@ -1055,7 +1067,7 @@ Shader::TexturePixelFormat ComputeEnvironment::ReadTexturePixelFormat(u32 handle
     const auto& regs{kepler_compute->regs};
     const auto& qmd{kepler_compute->launch_description};
     auto entry = ReadTextureInfo(regs.tic.Address(), regs.tic.limit, qmd.linked_tsc != 0, handle);
-    const Shader::TexturePixelFormat result(ConvertTexturePixelFormat(entry));
+    const Shader::TexturePixelFormat result(ConvertTexturePixelFormat(entry, handle));
     texture_pixel_formats.emplace(handle, result);
     return result;
 }
