@@ -50,6 +50,7 @@ ImageInfo::ImageInfo(const TICEntry& config) noexcept {
             .height = config.block_height,
             .depth = config.block_depth,
         };
+        maxwell_gob_layout = config.UsesMaxwellGobLayout();
     }
     rescaleable = false;
     is_sparse = config.is_sparse != 0;
