@@ -27,10 +27,48 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # build-nix.yml takes the display identity as an input, exactly like every
+  # other reusable workflow. A manual dispatch has no ci.yml prepare job, so it
+  # gets its own, running the same script over the same values.
+  prepare:
+    name: prepare
+    runs-on: ubuntu-24.04
+    outputs:
+      display: ${{ steps.display.outputs.display }}
+      display_pgo: ${{ steps.display.outputs.display_pgo }}
+      display_store: ${{ steps.display.outputs.display_store }}
+      display_pgo_store: ${{ steps.display.outputs.display_pgo_store }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compose the display identity
+        id: display
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--owner "$GITHUB_REPOSITORY_OWNER" --repo "${GITHUB_REPOSITORY##*/}"
+                --branch "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" --sha "$(git rev-parse HEAD)")
+          {
+            printf 'display=%s\n' "$(tools/ci/display-version.sh "${args[@]}")"
+            printf 'display_pgo=%s\n' "$(tools/ci/display-version.sh "${args[@]}" --pgo)"
+            printf 'display_store=%s\n' "$(tools/ci/display-version.sh "${args[@]}" --store)"
+            printf 'display_pgo_store=%s\n' "$(tools/ci/display-version.sh "${args[@]}" --pgo --store)"
+          } >> "$GITHUB_OUTPUT"
+
   nix:
+    needs: prepare
     uses: ./.github/workflows/build-nix.yml
     with:
       sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      display: ${{ needs.prepare.outputs.display }}
+      display_pgo: ${{ needs.prepare.outputs.display_pgo }}
+      display_store: ${{ needs.prepare.outputs.display_store }}
+      display_pgo_store: ${{ needs.prepare.outputs.display_pgo_store }}
       linux: ${{ inputs.os == 'all' || inputs.os == 'linux' }}
       macos: ${{ inputs.os == 'all' || inputs.os == 'macos' }}
       # A manual run has no prepare job; label it with the ref it was started on.

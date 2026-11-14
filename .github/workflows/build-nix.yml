@@ -6,6 +6,26 @@ on:
       sha:
         type: string
         required: true
+      # The identity every leg shows. Composed once in prepare; never here. Two
+      # variants because whether a matrix row is PGO is decided per leg, and two
+      # store-safe renderings because a Nix store path name cannot carry slashes
+      # or parentheses and the flake uses that form as the derivation version.
+      display:
+        description: Human-facing build identity (plain variant)
+        type: string
+        default: ""
+      display_pgo:
+        description: Human-facing build identity (PGO variant)
+        type: string
+        default: ""
+      display_store:
+        description: Store-path-safe form of display
+        type: string
+        default: ""
+      display_pgo_store:
+        description: Store-path-safe form of display_pgo
+        type: string
+        default: ""
       pgo:
         description: none, both or only
         type: string
@@ -99,6 +119,8 @@ jobs:
           SCM_TAG: ${{ inputs.tag }}
           SCM_RELEASE: ${{ inputs.release }}
           SCM_NIGHTLY: ${{ inputs.nightly }}
+          SCM_DISPLAY: ${{ matrix.pgo && inputs.display_pgo || inputs.display }}
+          SCM_DISPLAY_STORE: ${{ matrix.pgo && inputs.display_pgo_store || inputs.display_store }}
         run: |
           set -uo pipefail
           printf '%s\n' "$SCM_SHA" > GIT-COMMIT
@@ -110,10 +132,15 @@ jobs:
           # CMakeLists.txt turns NIGHTLY_BUILD on when this file exists, so a
           # nightly is a tree property rather than a second package output.
           if [ "$SCM_NIGHTLY" = "true" ]; then printf 'nightly\n' > GIT-NIGHTLY; fi
-          for f in GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE GIT-NIGHTLY; do
+          # The display identity rides in the tree like the GIT-* files: CMake
+          # reads the human form for the title and the About dialog, the flake
+          # reads the store-safe form as its version.
+          if [ -n "$SCM_DISPLAY" ]; then printf '%s\n' "$SCM_DISPLAY" > GIT-DISPLAY; fi
+          if [ -n "$SCM_DISPLAY_STORE" ]; then printf '%s\n' "$SCM_DISPLAY_STORE" > GIT-DISPLAY-STORE; fi
+          for f in GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE GIT-NIGHTLY GIT-DISPLAY GIT-DISPLAY-STORE; do
             [ -f "$f" ] && git add -f "$f"
           done
-          head -v GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE GIT-NIGHTLY 2> /dev/null || true
+          head -v GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE GIT-NIGHTLY GIT-DISPLAY GIT-DISPLAY-STORE 2> /dev/null || true
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
