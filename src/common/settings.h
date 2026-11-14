@@ -703,6 +703,9 @@ struct Values {
                                           true,
                                           true};
 
+    SwitchableSetting<u32, true> wonder_fps{linkage, 60, 1, 1000, "wonder_fps_target",
+                                           Category::System, Specialization::Countable};
+
     SwitchableSetting<bool> skip_cpu_inner_invalidation{linkage,
                                                         false,
                                                         "skip_cpu_inner_invalidation",

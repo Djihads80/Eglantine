@@ -38,7 +38,7 @@ public:
     explicit ConfigureSystem(Core::System& system_,
                              std::shared_ptr<std::vector<ConfigurationShared::Tab*>> group,
                              const ConfigurationShared::Builder& builder,
-                             QWidget* parent = nullptr);
+                             QWidget* parent = nullptr, u64 program_id = 0);
     ~ConfigureSystem() override;
 
     void ApplyConfiguration() override;
@@ -58,6 +58,7 @@ private:
     bool enabled = false;
 
     Core::System& system;
+    const u64 program_id;
 
     QComboBox* combo_region;
     QComboBox* combo_language;

@@ -135,6 +135,7 @@ add_library(
     spin_recursive_mutex.h
     scratch_buffer.h
     settings.cpp
+    game_fps.h
     settings.h
     settings_common.cpp
     settings_common.h

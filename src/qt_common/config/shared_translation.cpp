@@ -264,6 +264,10 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, gpu_clock, tr("GPU Clocks"),
            tr("Makes the game believe GPU work finishes faster than it does, so it stops lowering "
               "resolution and render distance to fit the Switch's clocks."));
+    INSERT(Settings, wonder_fps, tr("Frame rate (FPS, game patch)"),
+           tr("Sets Wonder's frame rate and simulation rate together. Requires a supported game "
+              "version and a restart. This target controls frame pacing; above 60 FPS, presentation "
+              "is allowed to run ahead of the display. Higher rates require sufficient performance."));
     INSERT(Settings, gpu_unswizzle_enabled, tr("GPU Unswizzle"),
            tr("Accelerates BCn 3D texture decoding using GPU compute.\n"
               "Disable if experiencing crashes or graphical glitches."));

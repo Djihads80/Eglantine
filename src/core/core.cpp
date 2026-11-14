@@ -16,6 +16,7 @@
 #include "common/fs/fs.h"
 #include "common/logging.h"
 #include "common/adpf.h"
+#include "common/game_fps.h"
 #include "common/settings.h"
 #include "common/settings_enums.h"
 #include "common/string_util.h"
@@ -425,6 +426,8 @@ struct System::Impl {
     }
 
     SystemResultStatus Load(System& system, Frontend::EmuWindow& emu_window, const std::string& filepath, Service::AM::FrontendAppletParameters& params) {
+        Settings::wonder_fps_active.store(0, std::memory_order_relaxed);
+        Settings::wonder_dynamic_fps_active.store(false, std::memory_order_relaxed);
         if (params.launch_type == Service::AM::LaunchType::FrontendInitiated) {
             fs_controller.InitTempStorage();
         }
