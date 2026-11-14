@@ -405,7 +405,7 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Whether or not to check for updates upon startup."));
     INSERT(UISettings, update_channel, tr("Update channel"),
            tr("Stable only offers finished releases.\nRelease candidate also offers release "
-              "candidates of upcoming versions."));
+              "candidates of upcoming versions.\nDaily offers the automatic daily builds."));
 
     // Linux
     INSERT(UISettings, enable_gamemode, tr("Enable Gamemode"), QString());
@@ -728,6 +728,7 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                           {
                               PAIR(UpdateChannel, Stable, tr("Stable")),
                               PAIR(UpdateChannel, ReleaseCandidate, tr("Release candidate")),
+                              PAIR(UpdateChannel, Daily, tr("Daily")),
                           }});
     translations->insert({Settings::EnumMetadata<Settings::GpuClock>::Index(),
                           {

@@ -385,6 +385,20 @@ inline static bool isDarkMode() {
 }
 #endif // _WIN32
 
+#ifdef ENABLE_UPDATE_CHECKER
+static Settings::UpdateChannel ToSettingsChannel(UpdateChecker::Channel channel) {
+    switch (channel) {
+    case UpdateChecker::Channel::ReleaseCandidate:
+        return Settings::UpdateChannel::ReleaseCandidate;
+    case UpdateChecker::Channel::Daily:
+        return Settings::UpdateChannel::Daily;
+    case UpdateChecker::Channel::Stable:
+        break;
+    }
+    return Settings::UpdateChannel::Stable;
+}
+#endif
+
 MainWindow::MainWindow(bool has_broken_vulkan)
     : ui{std::make_unique<Ui::MainWindow>()},
       input_subsystem{std::make_shared<InputCommon::InputSubsystem>()}, user_data_migrator{this} {
@@ -466,12 +480,10 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     connect(&update_watcher, &QFutureWatcher<UpdateChecker::CheckResult>::finished, this,
             &MainWindow::OnEmulatorUpdateAvailable);
     if (const auto build_channel = UpdateChecker::BuildChannel()) {
-        // The first tagged release build to run picks the channel, and it stays until changed.
+        // The first tagged release or daily build to run picks the channel, and it stays until
+        // changed.
         if (UISettings::values.update_channel.GetValue() == Settings::UpdateChannel::Unset) {
-            UISettings::values.update_channel.SetValue(
-                *build_channel == UpdateChecker::Channel::Stable
-                    ? Settings::UpdateChannel::Stable
-                    : Settings::UpdateChannel::ReleaseCandidate);
+            UISettings::values.update_channel.SetValue(ToSettingsChannel(*build_channel));
             config->SaveAllValues();
         }
         if (UISettings::values.check_for_updates) {
@@ -5148,10 +5160,17 @@ void MainWindow::CheckForUpdates(bool manual) {
         return;
     }
 
-    update_check_channel = UISettings::values.update_channel.GetValue() ==
-                                   Settings::UpdateChannel::ReleaseCandidate
-                               ? UpdateChecker::Channel::ReleaseCandidate
-                               : UpdateChecker::Channel::Stable;
+    switch (UISettings::values.update_channel.GetValue()) {
+    case Settings::UpdateChannel::ReleaseCandidate:
+        update_check_channel = UpdateChecker::Channel::ReleaseCandidate;
+        break;
+    case Settings::UpdateChannel::Daily:
+        update_check_channel = UpdateChecker::Channel::Daily;
+        break;
+    default:
+        update_check_channel = UpdateChecker::Channel::Stable;
+        break;
+    }
     update_check_running = true;
     update_check_manual = manual;
     update_future = QtConcurrent::run(
@@ -5163,8 +5182,8 @@ void MainWindow::OnCheckForUpdates() {
     if (!UpdateChecker::BuildChannel()) {
         QMessageBox::information(
             this, tr("Check for Updates"),
-            tr("This build was not made from a tagged release, so it does not check for "
-               "updates."));
+            tr("This build is not a tagged release or a daily build, so it does not check "
+               "for updates."));
         return;
     }
     CheckForUpdates(true);
@@ -5198,8 +5217,8 @@ void MainWindow::OnEmulatorUpdateAvailable() {
         case UpdateChecker::Failure::NotReleaseBuild:
             QMessageBox::information(
                 this, title,
-                tr("This build was not made from a tagged release, so it does not check for "
-                   "updates."));
+                tr("This build is not a tagged release or a daily build, so it does not check "
+                   "for updates."));
             break;
         default:
             QMessageBox::warning(

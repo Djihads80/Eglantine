@@ -164,7 +164,7 @@ ENUM(GameListMode, TreeView, GridView, CarouselView);
 ENUM(SpeedMode, Standard, Turbo, Slow);
 ENUM(FrameGenType, Lsfg, Fsr3);
 ENUM(ColdHintMode, Off, WhenRamIsLow, Always);
-ENUM(UpdateChannel, Unset, Stable, ReleaseCandidate);
+ENUM(UpdateChannel, Unset, Stable, ReleaseCandidate, Daily);
 
 template <typename Type>
 inline std::string_view CanonicalizeEnum(Type id) {

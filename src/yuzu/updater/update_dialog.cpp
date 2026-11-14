@@ -38,7 +38,15 @@
 #undef GetSaveFileName
 
 QString UpdateDialog::ChannelName(UpdateChecker::Channel channel) {
-    return channel == UpdateChecker::Channel::Stable ? tr("Stable") : tr("Release candidate");
+    switch (channel) {
+    case UpdateChecker::Channel::Stable:
+        return tr("Stable");
+    case UpdateChecker::Channel::ReleaseCandidate:
+        return tr("Release candidate");
+    case UpdateChecker::Channel::Daily:
+        return tr("Daily");
+    }
+    return {};
 }
 
 UpdateDialog::UpdateDialog(const Common::Net::Release& release, UpdateChecker::Channel channel,
