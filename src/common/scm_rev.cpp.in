@@ -6,6 +6,8 @@
 
 #include "common/scm_rev.h"
 
+#include <string>
+
 #define GIT_REV "@GIT_COMMIT@"
 #define GIT_BRANCH "@GIT_REFSPEC@"
 #define GIT_DESC "@GIT_DESC@"
@@ -13,6 +15,8 @@
 #define BUILD_DATE "@BUILD_DATE@"
 #define BUILD_FULLNAME "@BUILD_FULLNAME@"
 #define BUILD_VERSION "@BUILD_VERSION@"
+#define EGLANTINE_DISPLAY_VERSION "@EGLANTINE_DISPLAY_VERSION@"
+#define EGLANTINE_BUILD_FLAVOUR "@EGLANTINE_BUILD_FLAVOUR@"
 #undef BUILD_ID
 #define BUILD_ID "@BUILD_ID@"
 #define TITLE_BAR_FORMAT_IDLE "@TITLE_BAR_FORMAT_IDLE@"
@@ -37,6 +41,8 @@ constexpr const char g_build_name[] = BUILD_NAME;
 constexpr const char g_build_date[] = BUILD_DATE;
 constexpr const char g_build_fullname[] = BUILD_FULLNAME;
 constexpr const char g_build_version[] = BUILD_VERSION;
+constexpr const char g_display_version[] = EGLANTINE_DISPLAY_VERSION;
+constexpr const char g_build_flavour[] = EGLANTINE_BUILD_FLAVOUR;
 constexpr const char g_build_id[] = BUILD_ID;
 constexpr const char g_title_bar_format_idle[] = TITLE_BAR_FORMAT_IDLE;
 constexpr const char g_title_bar_format_running[] = TITLE_BAR_FORMAT_RUNNING;
@@ -52,5 +58,28 @@ constexpr const char g_build_auto_update_repo[] = BUILD_AUTO_UPDATE_REPO;
 constexpr const char g_build_auto_update_stable_api[] = BUILD_AUTO_UPDATE_STABLE_API;
 constexpr const char g_build_auto_update_stable_api_path[] = BUILD_AUTO_UPDATE_STABLE_API_PATH;
 constexpr const char g_build_auto_update_stable_repo[] = BUILD_AUTO_UPDATE_STABLE_REPO;
+
+// What the window title and the About dialog show: the identity CI handed this
+// build, plus the packaging flavour when there is one. Falls back to the version
+// composed from the GIT-* files for builds that were given no identity at all.
+std::string BuildDisplayName() {
+    if (g_display_version[0] != '\0') {
+        std::string name{g_build_name};
+        name += ' ';
+        name += g_display_version;
+        if (g_build_flavour[0] != '\0') {
+            name += " (";
+            name += g_build_flavour;
+            name += ')';
+        }
+        return name;
+    }
+    std::string fallback{g_build_name};
+    fallback += " | ";
+    fallback += g_build_version;
+    fallback += " | ";
+    fallback += g_compiler_id;
+    return fallback;
+}
 
 } // namespace Common

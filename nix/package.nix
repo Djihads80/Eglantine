@@ -320,8 +320,10 @@ buildEdenEmulator (
 
     # opt-in build-identity, see above
     env = lib.optionalAttrs nixBuildIdentity {
-      TITLEBARFORMATIDLE = "eglantine | ${version} (nix) {}";
-      TITLEBARFORMATRUNNING = "eglantine | ${version} (nix) | {}";
+      # The identity in the title bar and the About dialog comes from GIT-DISPLAY
+      # (branch, commit date, sha, PGO), so the only thing left to say is which
+      # packaging layer produced this binary.
+      EGLANTINE_FLAVOUR = "nix";
     };
 
     meta = {

@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <string>
+
 namespace Common {
 
 extern const char g_scm_rev[];
@@ -15,6 +17,8 @@ extern const char g_build_name[];
 extern const char g_build_date[];
 extern const char g_build_fullname[];
 extern const char g_build_version[];
+extern const char g_display_version[];
+extern const char g_build_flavour[];
 extern const char g_build_id[];
 extern const char g_title_bar_format_idle[];
 extern const char g_title_bar_format_running[];
@@ -31,5 +35,9 @@ extern const char g_build_auto_update_repo[];
 extern const char g_build_auto_update_stable_api[];
 extern const char g_build_auto_update_stable_api_path[];
 extern const char g_build_auto_update_stable_repo[];
+
+// g_build_name plus the identity CI composed for this build (g_display_version),
+// with the packaging flavour in parentheses when there is one.
+std::string BuildDisplayName();
 
 } // namespace Common
