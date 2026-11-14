@@ -1520,6 +1520,13 @@ void Maxwell3D::ReleaseFront() {
 void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 method,
                            u32 argument, bool is_last_call, bool from_macro) {
     namespace Profile = VideoCommon::Nx2Profile;
+    if (Profile::Enabled()) [[unlikely]] {
+        // The uniform stream is the bulk of what a native title writes: count it separately.
+        constexpr u32 cb_first = MAXWELL3D_REG_INDEX(const_buffer.buffer);
+        if (method >= cb_first && method < cb_first + 16) {
+            Profile::Add(Profile::Counter::CbWords, 1);
+        }
+    }
     if (fs.unknown_count != 0 && fs.unknown_regs[method]) [[unlikely]] {
         // dma_forward: a tracked write sets both the register and its shadow copy again; any
         // other mode keeps or reads one of them, so take the back's values first.
@@ -1545,6 +1552,7 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
                 Profile::Add(from_macro ? Profile::Counter::MacroWrites
                                         : Profile::Counter::DirectWrites, 1);
                 Profile::Add(Profile::Counter::SameValueWrites, 1);
+                Profile::Add(Profile::Counter::DroppedSameFirst, 1);
             }
             return;
         }

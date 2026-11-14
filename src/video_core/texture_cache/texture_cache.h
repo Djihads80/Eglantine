@@ -307,8 +307,22 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
     // driver's budget (GetDeviceLocalMemory is capped near 7 GiB): at 5 GiB title 1's races
     // recreate and upload ~8 MiB of render targets a frame.
     // What the device budget allows (budget minus margins), before that cap.
-    const u64 budget_critical = critical_memory;
-    const u64 budget_expected = expected_memory;
+    //
+    // The overrides below are clamped against the card instead of these thresholds: the dynamic
+    // budget re-read in TickFrame lowers critical_memory as this cache's own images fill VRAM, so
+    // clamping to it pulled a set override down mid-race (Mario Kart World on an 8 GB card: 6000
+    // MiB at boot, 5418 MiB two minutes in, then an eviction and re-upload every frame). The
+    // defaults still follow the budget; only an explicit override may sit above it, never above
+    // the card's own memory minus a fixed margin.
+    u64 card_critical = critical_memory;
+    if constexpr (requires { runtime.GetDeviceLocalMemory(); }) {
+        const u64 device_local = runtime.GetDeviceLocalMemory();
+        if (device_local > 2_GiB) {
+            card_critical = (std::max)(card_critical, device_local - u64{1_GiB});
+        }
+    }
+    const u64 budget_critical = card_critical;
+    const u64 budget_expected = card_critical;
     u64 max_critical = MaxCriticalMemory;
     if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
         max_critical = (std::max)(max_critical, runtime.GetDeviceMemoryBudget() / 8 * 5);
@@ -329,7 +343,11 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
             *target = (std::min)(static_cast<u64>(std::strtoull(value, nullptr, 10)) << 20, limit);
         }
     }
-    expected_memory = (std::min)(expected_memory, critical_memory);
+    // Keep a working band between the two thresholds. An override pair that closes the gap makes
+    // the collector evict every frame instead of at the expected threshold (measured on an 8 GB
+    // card: expected 6000 / critical 6011 MiB ran 19 fps against 29 fps with a 500 MiB band).
+    const u64 band = (std::min)(critical_memory, u64{512_MiB});
+    expected_memory = (std::min)(expected_memory, critical_memory - band);
     if (log) {
         LOG_INFO(HW_GPU,
                  "Texture cache thresholds: expected {} MiB, critical {} MiB, minimum {} MiB",

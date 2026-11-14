@@ -329,6 +329,10 @@ enum class Counter : u32 {
     PendingWakePush,
     PendingWakeLatch,
     PendingWakeTimeout,
+    /// Of MethodWrites: constant buffer words (const_buffer.buffer .. +16), the uniform stream
+    CbWords,
+    /// Of MethodWrites: writes the front dropped as a same-value state write before any other work
+    DroppedSameFirst,
     Count,
 };
 
@@ -619,6 +623,17 @@ inline void Report(const char* thread_name = "GPU thread") {
         for (size_t i = 0; i < counter_names.size(); ++i) {
             snap.counters.emplace_back(counter_names[i],
                                        static_cast<double>(data.counters[i]) * per_s);
+        }
+        // Counters added after the first nine, named here so the array above keeps its order.
+        for (const auto& [name, counter] : {
+                 std::pair{"direct_writes", Counter::DirectWrites},
+                 std::pair{"macro_writes", Counter::MacroWrites},
+                 std::pair{"same_executable_writes", Counter::SameExecutableWrites},
+                 std::pair{"cb_words", Counter::CbWords},
+                 std::pair{"dropped_same_first", Counter::DroppedSameFirst},
+             }) {
+            snap.counters.emplace_back(
+                name, static_cast<double>(data.counters[static_cast<size_t>(counter)]) * per_s);
         }
         std::scoped_lock lock{SnapshotMutex()};
         Snapshots()[thread_name] = std::move(snap);

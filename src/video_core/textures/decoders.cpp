@@ -66,6 +66,14 @@ void SwizzleImpl(std::span<u8> output, std::span<const u8> input, u32 width, u32
     const u32 block_depth_mask = (1U << block_depth) - 1;
     const u32 x_shift = GOB_SIZE_SHIFT + block_height + block_depth;
 
+    // Both swizzle masks and the native GOB twist only touch bits 4 and up of the byte offset, so
+    // a 16-byte run that starts on a 16-byte boundary in one layout stays one 16-byte run in the
+    // other. Copy whole chunks instead of one pixel at a time: a 4-bytes-per-pixel tile drops from
+    // four offset computations and four 4-byte copies to one of each per 16 bytes.
+    constexpr u32 CHUNK_BYTES = 16;
+    constexpr bool CAN_CHUNK = BYTES_PER_PIXEL <= CHUNK_BYTES && CHUNK_BYTES % BYTES_PER_PIXEL == 0;
+    constexpr u32 CHUNK_COLUMNS = CAN_CHUNK ? CHUNK_BYTES / BYTES_PER_PIXEL : 1;
+
     for (u32 slice = 0; slice < depth; ++slice) {
         const u32 z = slice + origin_z;
         const u32 offset_z = (z >> block_depth) * slice_size +
@@ -77,18 +85,37 @@ void SwizzleImpl(std::span<u8> output, std::span<const u8> input, u32 width, u32
             const u32 block_y = y >> GOB_SIZE_Y_SHIFT;
             const u32 offset_y = (block_y >> block_height) * block_size +
                                  ((block_y & block_height_mask) << GOB_SIZE_SHIFT);
+            const u32 line_offset = slice * pitch * height + line * pitch;
 
             u32 swizzled_x = pdep<SWIZZLE_X_BITS>(origin_x * BYTES_PER_PIXEL);
-            for (u32 column = 0; column < width;
-                 ++column, incrpdep<SWIZZLE_X_BITS, BYTES_PER_PIXEL>(swizzled_x)) {
+            u32 column = 0;
+            if constexpr (CAN_CHUNK) {
+                const u32 chunk_end = width - width % CHUNK_COLUMNS;
+                for (; column < chunk_end; column += CHUNK_COLUMNS) {
+                    const u32 x = (column + origin_x) * BYTES_PER_PIXEL;
+                    const u32 offset_x = (x >> GOB_SIZE_X_SHIFT) << x_shift;
+
+                    const u32 base_swizzled_offset = offset_z + offset_y + offset_x;
+                    const u32 swizzled_offset = NativeGobOffset(base_swizzled_offset + (swizzled_x | swizzled_y), native_tiling);
+
+                    const u32 unswizzled_offset = line_offset + column * BYTES_PER_PIXEL;
+
+                    u8* const dst = &output[TO_LINEAR ? swizzled_offset : unswizzled_offset];
+                    const u8* const src = &input[TO_LINEAR ? unswizzled_offset : swizzled_offset];
+                    std::memcpy(dst, src, CHUNK_BYTES);
+                    // The same advance CHUNK_COLUMNS pixel steps make: the masked add carries
+                    // through the permuted bits like the per-pixel increments do.
+                    incrpdep<SWIZZLE_X_BITS, CHUNK_BYTES>(swizzled_x);
+                }
+            }
+            for (; column < width; ++column, incrpdep<SWIZZLE_X_BITS, BYTES_PER_PIXEL>(swizzled_x)) {
                 const u32 x = (column + origin_x) * BYTES_PER_PIXEL;
                 const u32 offset_x = (x >> GOB_SIZE_X_SHIFT) << x_shift;
 
                 const u32 base_swizzled_offset = offset_z + offset_y + offset_x;
                 const u32 swizzled_offset = NativeGobOffset(base_swizzled_offset + (swizzled_x | swizzled_y), native_tiling);
 
-                const u32 unswizzled_offset =
-                    slice * pitch * height + line * pitch + column * BYTES_PER_PIXEL;
+                const u32 unswizzled_offset = line_offset + column * BYTES_PER_PIXEL;
 
                 u8* const dst = &output[TO_LINEAR ? swizzled_offset : unswizzled_offset];
                 const u8* const src = &input[TO_LINEAR ? unswizzled_offset : swizzled_offset];
