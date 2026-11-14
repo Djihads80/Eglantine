@@ -60,7 +60,7 @@ on:
         default: false
       # The same opt-in the other platforms get. Restoring is free; saving writes a
       # fresh entry for every commit and the repository shares one 10 GB pool, so a
-      # leg only saves on refs/heads/nx2 and on the schedule unless a dispatch asks.
+      # leg only saves on refs/heads/nx2 and on daily builds, unless a dispatch asks.
       save_cache:
         description: Save the compiler-object cache at the end of the job (it is always restored)
         type: boolean
@@ -179,7 +179,6 @@ jobs:
           set -uo pipefail
           save=false
           if [ '${{ inputs.save_cache }}' = 'true' ] ||
-             [ '${{ github.event_name }}' = 'schedule' ] ||
              [ '${{ github.ref }}' = 'refs/heads/nx2' ]; then
             save=true
           fi

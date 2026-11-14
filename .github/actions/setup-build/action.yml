@@ -31,7 +31,8 @@ inputs:
   save-cache:
     description: >-
       Force-save the caches at the end of the job (they are always restored). Saving otherwise
-      happens only on the nightly schedule and on refs/heads/nx2 - see "Decide cache saving".
+      happens only on refs/heads/nx2 and on daily builds (ci.yml maps kind=daily onto this input,
+      because a daily is a dispatch now, not a schedule event) - see "Decide cache saving".
     required: false
     default: "false"
 
@@ -98,7 +99,6 @@ runs:
         set -euo pipefail
         save=false
         if [ '${{ inputs.save-cache }}' = 'true' ] ||
-           [ '${{ github.event_name }}' = 'schedule' ] ||
            [ '${{ github.ref }}' = 'refs/heads/nx2' ]; then
           save=true
         fi
