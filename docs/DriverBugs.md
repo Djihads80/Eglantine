@@ -2,7 +2,7 @@
 
 Non-exhaustive list of known drivers bugs.
 
-See also: [Dolphin emulator](hhttps://github.com/dolphin-emu/dolphin/blob/cdbea8867df3d0a6fc375e78726dae95612fb1fd/Source/Core/VideoCommon/DriverDetails.h#L84) own list of driver bugs (which are also included here).
+See also: [Dolphin emulator](https://github.com/dolphin-emu/dolphin/blob/cdbea8867df3d0a6fc375e78726dae95612fb1fd/Source/Core/VideoCommon/DriverDetails.h#L84) own list of driver bugs (which are also included here).
 
 ## Vulkan
 
