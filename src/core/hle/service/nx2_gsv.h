@@ -71,6 +71,7 @@
 #include "video_core/nx2_timeline.h"
 #include "video_core/nx2_knobs.h"
 #include "video_core/textures/decoders.h"
+#include "core/hle/service/nx2_present.h"
 #include "core/hle/service/hle_ipc.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/kernel_helpers.h"
@@ -1897,7 +1898,7 @@ private:
                          wake, waited_ms, front_busy, back_busy);
             });
         }
-        Composite(w[5], ~w[22], w[24], w[7]);
+        Composite(w[5], ~w[22], w[24], w[7], w[8]);
         const auto composited = std::chrono::steady_clock::now();
         const auto release = PresentQueue() ? QueueRelease(w[12]) : std::array<u32, 4>{};
         if (PresentQueue()) {
@@ -2303,7 +2304,7 @@ private:
     // RGBA8 surface in the console's native GOB layout at GPU address == CPU address.
     // shown_size: the present's word 7, ((height - 1) << 16) | (width - 1) of the area the game drew
     // into from the image's top-left corner (0 when it gives none).
-    void Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 shown_size) {
+    void Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 shown_size, u32 flags) {
         u64 address{};
         Nx2ImageLayout layout{};
         u32 image_format{};
@@ -2382,7 +2383,7 @@ private:
             // Preference word 6: 1 = RGBA8, 4 = RGB10A2.
             .pixel_format = image_format == 4 ? android::PixelFormat::Rgba1010102
                                               : android::PixelFormat::Rgba8888,
-            .transform_flags = android::BufferTransformFlags::Unset,
+            .transform_flags = Nx2PresentTransform(flags),
             .crop_rect = {0, 0, static_cast<int>(crop_width), static_cast<int>(crop_height)},
             .blending = Tegra::BlendMode::Opaque,
             .native_tiling = true,
