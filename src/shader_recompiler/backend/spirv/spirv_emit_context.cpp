@@ -1655,7 +1655,7 @@ void EmitContext::DefineImages(const Info& info, u32& binding, u32& scaling_inde
 
 void EmitContext::DefineInputs(const IR::Program& program) {
     const Info& info{program.info};
-    const VaryingState loads{info.loads.mask | info.passthrough.mask};
+    const VaryingState& loads{info.loads};
 
     if (info.uses_workgroup_id) {
         workgroup_id = DefineInput(*this, U32[3], false, spv::BuiltIn::WorkgroupId);
@@ -1723,7 +1723,8 @@ void EmitContext::DefineInputs(const IR::Program& program) {
         layer = DefineInput(*this, U32[1], false, spv::BuiltIn::Layer);
         Decorate(layer, spv::Decoration::Flat);
     }
-    if (loads.AnyComponent(IR::Attribute::PositionX)) {
+    if (loads.AnyComponent(IR::Attribute::PositionX) ||
+        info.passthrough.AnyComponent(IR::Attribute::PositionX)) {
         const bool is_fragment{stage == Stage::Fragment};
         if (!is_fragment && profile.has_broken_spirv_position_input) {
             need_input_position_indirect = true;
@@ -1790,7 +1791,7 @@ void EmitContext::DefineInputs(const IR::Program& program) {
         if (!runtime_info.previous_stage_stores.Generic(index)) {
             continue;
         }
-        if (!loads.Generic(index)) {
+        if (!loads.Generic(index) && !info.passthrough.Generic(index)) {
             continue;
         }
         if (input_type == AttributeType::Disabled) {
