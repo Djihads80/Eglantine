@@ -37,7 +37,11 @@ enum class Operation {
 
 Id ImageType(EmitContext& ctx, const TextureDescriptor& desc) {
     const spv::ImageFormat format{spv::ImageFormat::Unknown};
-    const Id type{desc.is_integer ? ctx.U32[1] : ctx.F32[1]};
+    // A Sampled Type of integer is invalid SPIR-V when Dref is set (OpTypeImage constraint:
+    // "If Dref is 1, Sampled Type must be a float or vector of float"), and all Dref image
+    // instructions emit a float result type. Depth-compare (shadow) textures must therefore
+    // use a float Sampled Type even when they are also marked as integer.
+    const Id type{desc.is_depth ? ctx.F32[1] : desc.is_integer ? ctx.U32[1] : ctx.F32[1]};
     const bool depth{desc.is_depth};
     const bool ms{desc.is_multisample};
     switch (desc.type) {
