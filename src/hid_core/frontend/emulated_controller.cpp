@@ -86,10 +86,15 @@ Settings::ControllerType EmulatedController::MapNPadToSettingsType(NpadStyleInde
     }
 }
 
-void EmulatedController::ReloadFromSettings() {
-    const auto player_index = Service::HID::NpadIdTypeToIndex(npad_id_type);
-    const auto& player = Settings::values.players.GetValue()[player_index];
+NpadStyleIndex EmulatedController::StyleFromSettings(const Settings::PlayerInput& player) const {
+    // Other or debug controller should always be a pro controller
+    if (npad_id_type == NpadIdType::Other) {
+        return NpadStyleIndex::Fullkey;
+    }
+    return MapSettingsTypeToNPad(player.controller_type);
+}
 
+void EmulatedController::LoadMappingsFromSettings(const Settings::PlayerInput& player) {
     for (std::size_t index = 0; index < player.buttons.size(); ++index) {
         button_params[index] = Common::ParamPackage(player.buttons[index]);
     }
@@ -102,17 +107,18 @@ void EmulatedController::ReloadFromSettings() {
 
     controller.color_values = {};
     ReloadColorsFromSettings();
+}
+
+void EmulatedController::ReloadFromSettings() {
+    const auto player_index = Service::HID::NpadIdTypeToIndex(npad_id_type);
+    const auto& player = Settings::values.players.GetValue()[player_index];
+
+    LoadMappingsFromSettings(player);
 
     ring_params[0] = Common::ParamPackage(Settings::values.ringcon_analogs);
 
-    // Other or debug controller should always be a pro controller
-    if (npad_id_type != NpadIdType::Other) {
-        SetNpadStyleIndex(MapSettingsTypeToNPad(player.controller_type));
-        original_npad_type = npad_type.load();
-    } else {
-        SetNpadStyleIndex(NpadStyleIndex::Fullkey);
-        original_npad_type = npad_type.load();
-    }
+    SetNpadStyleIndex(StyleFromSettings(player));
+    original_npad_type = npad_type.load();
 
     // Disable special features before disconnecting
     if (controller.right_polling_mode != Common::Input::PollingMode::Active) {
@@ -120,9 +126,7 @@ void EmulatedController::ReloadFromSettings() {
     }
 
     Disconnect();
-    npad_type_in_settings = npad_id_type == NpadIdType::Other
-                                ? NpadStyleIndex::Fullkey
-                                : MapSettingsTypeToNPad(player.controller_type);
+    npad_type_in_settings = StyleFromSettings(player);
     connected_in_settings = player.connected;
     if (player.connected) {
         Connect();
@@ -138,26 +142,15 @@ void EmulatedController::ReloadMappingsFromSettings() {
     }
     const auto player_index = Service::HID::NpadIdTypeToIndex(npad_id_type);
     const auto& player = Settings::values.players.GetValue()[player_index];
-    const auto style = npad_id_type == NpadIdType::Other
-                           ? NpadStyleIndex::Fullkey
-                           : MapSettingsTypeToNPad(player.controller_type);
-    // Compared with the configuration loaded before, not with the current state: the game may
+    // Compared with the configuration applied last, not with the current state: the game may
     // have changed the style or connection of the controller itself.
-    if (style != npad_type_in_settings.load() || player.connected != connected_in_settings.load()) {
+    if (StyleFromSettings(player) != npad_type_in_settings.load() ||
+        player.connected != connected_in_settings.load()) {
         ReloadFromSettings();
         return;
     }
 
-    for (std::size_t index = 0; index < player.buttons.size(); ++index) {
-        button_params[index] = Common::ParamPackage(player.buttons[index]);
-    }
-    for (std::size_t index = 0; index < player.analogs.size(); ++index) {
-        stick_params[index] = Common::ParamPackage(player.analogs[index]);
-    }
-    for (std::size_t index = 0; index < player.motions.size(); ++index) {
-        motion_params[index] = Common::ParamPackage(player.motions[index]);
-    }
-    ring_params[0] = Common::ParamPackage(Settings::values.ringcon_analogs);
+    LoadMappingsFromSettings(player);
     ReloadInput();
 }
 
@@ -670,6 +663,8 @@ void EmulatedController::SaveCurrentConfig() {
     auto& player = Settings::values.players.GetValue()[player_index];
     player.connected = is_connected;
     player.controller_type = MapNPadToSettingsType(npad_type);
+    npad_type_in_settings = npad_type.load();
+    connected_in_settings = is_connected.load();
     for (std::size_t index = 0; index < player.buttons.size(); ++index) {
         player.buttons[index] = button_params[index].Serialize();
     }

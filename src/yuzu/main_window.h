@@ -424,6 +424,7 @@ private slots:
     void OnGameListRefresh();
     void InitializeHotkeys();
     void WatchControlsReloadRequests();
+    void RetryControlsReloadLater();
     void OnControlsReloadRequested();
     void ToggleFullscreen();
     bool UsingExclusiveFullscreen();
@@ -569,6 +570,8 @@ private:
     std::unique_ptr<QtConfig> config;
     QFileSystemWatcher* controls_reload_watcher = nullptr;
     bool controls_reload_queued = false;
+    // Players that use the running game's own input profile
+    std::vector<std::size_t> game_input_profile_players;
 
     // Whether emulation is currently running in yuzu.
     bool emulation_running = false;

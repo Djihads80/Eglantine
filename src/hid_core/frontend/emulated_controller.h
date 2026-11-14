@@ -498,6 +498,12 @@ public:
     void StatusUpdate();
 
 private:
+    /// The style the configuration gives to this controller
+    NpadStyleIndex StyleFromSettings(const Settings::PlayerInput& player) const;
+
+    /// Takes the mappings and colors of the configuration, without reloading the devices
+    void LoadMappingsFromSettings(const Settings::PlayerInput& player);
+
     /// creates input devices from params
     void LoadDevices();
 
@@ -611,8 +617,8 @@ private:
     // Atomically synched values
     std::atomic<HID::NpadStyleIndex> npad_type{HID::NpadStyleIndex::None};
     std::atomic<HID::NpadStyleIndex> original_npad_type{HID::NpadStyleIndex::None};
-    // The style and connection of the configuration when it was last loaded. The game and its
-    // controller applet may change both since, which is not a change of the configuration.
+    // The style and connection of the configuration when it was last loaded or saved. The game
+    // and its controller applet may change both since, which is not a change of the configuration.
     std::atomic<HID::NpadStyleIndex> npad_type_in_settings{HID::NpadStyleIndex::None};
     std::atomic<bool> connected_in_settings{false};
     // Temporary values to avoid doing changes while the controller is in configuring mode

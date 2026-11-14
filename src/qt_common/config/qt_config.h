@@ -25,11 +25,13 @@ public:
 
     /**
      * Applies the players' controls found in another file that uses the same keys, and saves them
-     * in this configuration. Players without keys in that file are left as they are, and so are
-     * players that use the running game's own input profile.
+     * in this configuration. Players without keys in that file are left as they are, and keys the
+     * file leaves out keep their value. Players in players_to_keep are only saved: they use the
+     * running game's own input profile.
      * Returns the indices of the players whose controls changed.
      */
-    std::vector<std::size_t> ApplyPlayerValuesFromFile(const std::string& path, bool game_running);
+    std::vector<std::size_t> ApplyPlayerValuesFromFile(
+        const std::string& path, const std::vector<std::size_t>& players_to_keep);
     void SaveQtControlPlayerValues(std::size_t player_index);
 
 protected:
