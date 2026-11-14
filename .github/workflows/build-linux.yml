@@ -84,24 +84,11 @@ jobs:
           release: ${{ inputs.release }}
           save-cache: ${{ inputs.save_cache }}
 
-      # A directory the runner owns, used as apt's archive cache. Not /var/cache/apt/archives:
-      # saving that directory fails on archives/lock and archives/partial, and it is root-owned, so
-      # a restore into it writes nothing.
-      - name: Cache APT packages
-        uses: actions/cache@v6
-        with:
-          path: ~/apt-archives
-          key: ${{ runner.os }}-${{ runner.arch }}-apt-${{ hashFiles('.github/workflows/*.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-apt-
-
       - name: Install Linux dependencies
         shell: bash
         run: |
           sudo apt-get update
-          # apt requires the archive directory and its partial/ to exist before it will use them.
-          mkdir -p "$HOME/apt-archives/partial"
-          sudo apt-get -y -o Dir::Cache::archives="$HOME/apt-archives" install --no-install-recommends \
+          sudo apt-get install -y --no-install-recommends \
             sudo autoconf cmake g++ gcc git glslang-tools libglu1-mesa-dev \
             libpulse-dev libtool libudev-dev libxkbcommon-x11-0 \
             mesa-common-dev nasm ninja-build qt6-base-private-dev \
@@ -151,9 +138,7 @@ jobs:
           echo "deb http://apt.llvm.org/$codename/ llvm-toolchain-$codename-$PGO_LLVM_VERSION main" |
             sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
           sudo apt-get update
-          # apt requires the archive directory and its partial/ to exist before it will use them.
-          mkdir -p "$HOME/apt-archives/partial"
-          sudo apt-get -y -o Dir::Cache::archives="$HOME/apt-archives" install --no-install-recommends \
+          sudo apt-get install -y --no-install-recommends \
             "clang-$PGO_LLVM_VERSION" "lld-$PGO_LLVM_VERSION"
           "clang-$PGO_LLVM_VERSION" --version
 
