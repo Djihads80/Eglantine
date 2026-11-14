@@ -252,7 +252,7 @@ std::string GetFileTypeString(FileType type) {
     return "unknown";
 }
 
-constexpr std::array<const char*, 70> RESULT_MESSAGES{
+constexpr std::array<const char*, 71> RESULT_MESSAGES{
     "The operation completed successfully.",
     "The loader requested to load is already loaded.",
     "The operation is not implemented.",
@@ -323,6 +323,7 @@ constexpr std::array<const char*, 70> RESULT_MESSAGES{
     "Integrity verification failed.",
     "The NUP container is malformed or its TOC hash does not match.",
     "The NUP container does not contain a loadable base package.",
+    "An executable module (NSO) is corrupt and could not be loaded. The game needs to be redumped.",
 };
 
 std::string GetResultStatusString(ResultStatus status) {

@@ -10,6 +10,8 @@
 #include <span>
 #include <vector>
 
+#include <openssl/evp.h>
+
 #include "common/common_funcs.h"
 #include "common/game_presets.h"
 #include "common/hex_util.h"
@@ -71,7 +73,7 @@ FileType AppLoader_NSO::IdentifyType(const FileSys::VirtualFile& in_file) {
     return FileType::NSO;
 }
 
-std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::System& system, const FileSys::VfsFile& nso_file, VAddr load_base, bool should_pass_arguments, bool load_into_process, std::optional<FileSys::PatchManager> pm, std::vector<Core::NCE::Patcher>* patches, s32 patch_index) {
+std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::System& system, const FileSys::VfsFile& nso_file, VAddr load_base, bool should_pass_arguments, bool load_into_process, std::optional<FileSys::PatchManager> pm, std::vector<Core::NCE::Patcher>* patches, s32 patch_index, ResultStatus* out_status) {
     if (nso_file.GetSize() < sizeof(NSOHeader))
         return std::nullopt;
     NSOHeader nso_header{};
@@ -106,38 +108,70 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         std::vector<u8> decompressed_size(std::ranges::max_element(nso_header.segments, [](auto const& a, auto const& b) {
             return a.size < b.size;
         })->size);
+        constexpr std::array<const char*, 3> segment_names{".text", ".rodata", ".data"};
+        const auto corrupt = [&](std::size_t i, const char* what) -> std::optional<VAddr> {
+            LOG_ERROR(Loader, "NSO module '{}' is corrupt: {} {}", nso_file.GetName(),
+                      segment_names[i], what);
+            if (out_status) {
+                *out_status = ResultStatus::ErrorCorruptNSO;
+            }
+            return std::nullopt;
+        };
         for (std::size_t i = 0; i < nso_header.segments.size(); ++i) {
-            nso_file.Read(compressed_data.data(), nso_header.segments_compressed_size[i], nso_header.segments[i].offset);
-            if (nso_header.IsSegmentCompressed(i)) {
+            const u32 size = nso_header.segments[i].size;
+            const u32 compressed_size = nso_header.segments_compressed_size[i];
+            if (nso_file.Read(compressed_data.data(), compressed_size,
+                              nso_header.segments[i].offset) != compressed_size) {
+                return corrupt(i, "is truncated");
+            }
+            const u8* segment_data = compressed_data.data();
+            if (size == 0) {
+                // Empty segment, nothing to decompress.
+            } else if (nso_header.IsSegmentCompressed(i)) {
                 if (nso_header.IsZBICCompressed()) {
                     // ZBIC compression
                     const int r = Common::Compression::DecompressDataZBIC(
-                        std::span<u8>{decompressed_size}.first(nso_header.segments[i].size),
-                        std::span<const u8>{compressed_data}.first(nso_header.segments_compressed_size[i])
+                        std::span<u8>{decompressed_size}.first(size),
+                        std::span<const u8>{compressed_data}.first(compressed_size)
                     );
-                    ASSERT(r > 0);
+                    if (r != int(size)) {
+                        return corrupt(i, "failed ZBIC decompression");
+                    }
                 } else {
                     // LZ4 compression
                     int r = Common::Compression::DecompressDataLZ4(
                         decompressed_size.data(),
-                        nso_header.segments[i].size,
+                        size,
                         compressed_data.data(),
-                        nso_header.segments_compressed_size[i]
+                        compressed_size
                     );
-                    ASSERT(r == int(nso_header.segments[i].size));
+                    if (r != int(size)) {
+                        return corrupt(i, "failed LZ4 decompression");
+                    }
                 }
+                segment_data = decompressed_size.data();
+            } else if (compressed_size != size) {
+                return corrupt(i, "is stored uncompressed with a mismatched file size");
+            }
 
+            if (nso_header.IsSegmentHashChecked(i)) {
+                NSOHeader::SHA256Hash hash{};
+                unsigned int hash_size = 0;
+                if (EVP_Digest(segment_data, size, hash.data(), &hash_size, EVP_sha256(),
+                               nullptr) != 1) {
+                    LOG_WARNING(Loader, "NSO module '{}': could not hash {}",
+                                nso_file.GetName(), segment_names[i]);
+                } else if (hash != nso_header.segment_hashes[i]) {
+                    LOG_WARNING(Loader, "NSO module '{}': {} does not match its SHA-256",
+                                nso_file.GetName(), segment_names[i]);
+                }
+            }
+
+            if (size != 0) {
                 std::memcpy(
                     codeset.memory.data() + module_start + nso_header.segments[i].location,
-                    decompressed_size.data(),
-                    nso_header.segments[i].size
-                );
-            } else {
-                // Not compressed
-                std::memcpy(
-                    codeset.memory.data() + module_start + nso_header.segments[i].location,
-                    compressed_data.data(),
-                    nso_header.segments[i].size
+                    segment_data,
+                    size
                 );
             }
             codeset.segments[i].addr = module_start + nso_header.segments[i].location;
@@ -433,8 +467,10 @@ AppLoader_NSO::LoadResult AppLoader_NSO::Load(Kernel::KProcess& process, Core::S
 
     // Load module
     const VAddr base_address = GetInteger(process.GetEntryPoint());
-    if (!LoadModule(process, system, *file, base_address, true, true)) {
-        return {ResultStatus::ErrorLoadingNSO, {}};
+    ResultStatus module_status = ResultStatus::ErrorLoadingNSO;
+    if (!LoadModule(process, system, *file, base_address, true, true, {}, nullptr, -1,
+                    &module_status)) {
+        return {module_status, {}};
     }
 
     modules.insert_or_assign(base_address, file->GetName());

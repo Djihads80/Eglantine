@@ -61,6 +61,9 @@ struct NSOHeader {
     std::array<SHA256Hash, 3> segment_hashes;
 
     bool IsSegmentCompressed(size_t segment_num) const;
+    bool IsSegmentHashChecked(size_t segment_num) const {
+        return ((flags >> (segment_num + 3)) & 1) != 0;
+    }
     bool IsZBICCompressed() const {
         return ((flags >> 7) & 1) != 0;
     }
@@ -100,7 +103,8 @@ public:
                                            bool should_pass_arguments, bool load_into_process,
                                            std::optional<FileSys::PatchManager> pm = {},
                                            std::vector<Core::NCE::Patcher>* patches = nullptr,
-                                           s32 patch_index = -1);
+                                           s32 patch_index = -1,
+                                           ResultStatus* out_status = nullptr);
 
     LoadResult Load(Kernel::KProcess& process, Core::System& system) override;
 
