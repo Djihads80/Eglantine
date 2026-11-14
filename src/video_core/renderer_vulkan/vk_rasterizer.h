@@ -201,6 +201,8 @@ private:
     /// Records the copies of the command list pages the work just recorded wrote and submits, so
     /// the GPU makes them now (BufferCache::Nx2CopyListPages).
     void SubmitNx2ListCopies();
+    /// EDEN_NX2_WRITER_DEPS (diagnostic): what a command-list-writing dispatch samples.
+    void NoteWriterDeps(const ComputePipeline& pipeline);
     /// The split back's idle hook: submits pending list copies and deferred work.
     void FlushSplitIdle();
 

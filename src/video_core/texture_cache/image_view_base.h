@@ -20,6 +20,7 @@ enum class ImageViewFlagBits : u16 {
     PreemtiveDownload = 1 << 0,
     Strong = 1 << 1,
     Slice = 1 << 2,
+    RenderSubExtent = 1 << 3,
 };
 DECLARE_ENUM_FLAG_OPERATORS(ImageViewFlagBits)
 

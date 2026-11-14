@@ -8,12 +8,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <chrono>
 #include <array>
 #include <cstring>
 #include <cstdlib>
 #include <span>
 #include <vector>
 
+#include "common/scope_exit.h"
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
@@ -491,14 +493,51 @@ void BufferCacheRuntime::WaitSubmittedTick(u64 tick) {
     if (master.IsFree(tick)) {
         return;
     }
+    // EDEN_NX2_LIST_COPY_STATS=1 (diagnostic): how a front wait for a tick splits into waiting for
+    // its submission and for the GPU after it, and how much GPU work was in flight.
+    static const bool stats = [] {
+        const char* value = std::getenv("EDEN_NX2_LIST_COPY_STATS");
+        return value != nullptr && value[0] == '1';
+    }();
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point start = stats ? Clock::now() : Clock::time_point{};
+    const bool submitted_at_start = stats && scheduler.IsSubmitted(tick);
+    const u64 in_flight = stats ? master.CurrentTick() - (std::min)(master.CurrentTick(),
+                                                                     master.KnownGpuTick() + 1)
+                                : 0;
+    const u64 ahead = stats && tick > master.KnownGpuTick() ? tick - master.KnownGpuTick() : 0;
+    Clock::time_point submitted = start;
+    SCOPE_EXIT {
+        if (stats) {
+            const Clock::time_point done = Clock::now();
+            static u64 waits{}, already{}, submit_ns{}, gpu_ns{}, flight{}, ticks_ahead{};
+            ++waits;
+            already += submitted_at_start;
+            submit_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(submitted - start).count();
+            gpu_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(done - submitted).count();
+            flight += in_flight;
+            ticks_ahead += ahead;
+            if ((waits % 2000) == 0) {
+                LOG_INFO(Render_Vulkan,
+                         "nx2 list copy waits: {} waits, {} already submitted; mean {:.3f} ms "
+                         "until submitted, {:.3f} ms GPU after; {:.2f} submissions in flight, "
+                         "{:.2f} ticks to the copy's",
+                         waits, already, submit_ns / 1e6 / waits, gpu_ns / 1e6 / waits,
+                         static_cast<double>(flight) / waits,
+                         static_cast<double>(ticks_ahead) / waits);
+            }
+        }
+    };
     // The copy's submission may be deferred (Scheduler::DeferFlush): the split's front asks the
     // back for it rather than waiting for the back's next submission. If the back has stopped,
     // nothing else uses the scheduler and Wait submits it.
     if (!scheduler.IsSubmitted(tick) && VideoCommon::GpuSplit::Get().Active() &&
         !VideoCommon::GpuSplit::OnBackThread() && !scheduler.WaitSubmitted(tick)) {
+        submitted = stats ? Clock::now() : submitted;
         scheduler.Wait(tick);
         return;
     }
+    submitted = stats ? Clock::now() : submitted;
     master.Wait(tick);
 }
 

@@ -24,6 +24,7 @@ set(SHADER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/blit_color_srgb_to_linear.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/blit_color_square.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/block_linear_unswizzle_2d.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_plain_unswizzle.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/blit_color_msaa.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/blit_depth.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/blit_depth_msaa.frag

@@ -43,6 +43,7 @@ struct ImageViewInfo {
     u8 y_source = static_cast<u8>(SwizzleSource::G);
     u8 z_source = static_cast<u8>(SwizzleSource::B);
     u8 w_source = static_cast<u8>(SwizzleSource::A);
+    Extent2D render_size{0, 0}; ///< Attachment area when its backing image is larger.
 };
 static_assert(std::has_unique_object_representations_v<ImageViewInfo>);
 

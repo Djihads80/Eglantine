@@ -223,10 +223,25 @@ bool DmaPusher::Step() {
         // billions of instances and lost the device loading a race).
         bool gpu_written =
             IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
-        if (!gpu_written && VideoCommon::GpuSplit::Get().Active() &&
+        // EDEN_NX2_ENTRY_WRITER_STATS=1 counts these waits and how many found newly GPU-written
+        // words; =2 also skips the wait (unsafe, measurement only).
+        static const int entry_writer_stats = [] {
+            const char* text = std::getenv("EDEN_NX2_ENTRY_WRITER_STATS");
+            return text != nullptr ? std::atoi(text) : 0;
+        }();
+        if (!gpu_written && VideoCommon::GpuSplit::Get().Active() && entry_writer_stats != 2 &&
             VideoCommon::GpuSplit::Get().WaitForWriters()) {
             gpu_written =
                 IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+            if (entry_writer_stats != 0) {
+                static u64 waits{}, found{};
+                ++waits;
+                found += gpu_written ? 1 : 0;
+                if (waits % 20000 == 0) {
+                    LOG_INFO(HW_GPU, "nx2 entry writer waits: {} ({} found GPU-written words)",
+                             waits, found);
+                }
+            }
         }
         // The words as submitted, unless this is a resumed entry or the GPU has newer ones the
         // safe read below would flush (with the split, the front can't tell: it reads memory

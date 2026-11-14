@@ -112,26 +112,26 @@ bool Scheduler::WaitSubmitted(u64 tick) {
     split.RequestIdleHook();
     // No time limit: the back can spend seconds on one entry (a large shader's translation),
     // and a fence reported as submitted before it is would release its downloads too early.
+    // Woken by SubmitExecution (it was a 50 us sleep poll, ~1 ms per check on Windows).
     const auto start = std::chrono::steady_clock::now();
-    auto next_log = start + std::chrono::seconds{2};
-    for (u32 spins = 0; !IsSubmitted(tick); ++spins) {
+    for (;;) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        submitted_ticks.Wait(
+            tick + 1, std::chrono::microseconds{5}, deadline,
+            [&] { return IsSubmitted(tick) || !split.BackRunning(); }, std::chrono::milliseconds{1});
+        if (IsSubmitted(tick)) {
+            return true;
+        }
         if (!split.BackRunning()) {
             return IsSubmitted(tick);
         }
-        if (const auto now = std::chrono::steady_clock::now(); now >= next_log) {
-            next_log = now + std::chrono::seconds{2};
-            LOG_WARNING(Render_Vulkan, "Waited {} s for the GPU thread to submit tick {}",
-                        std::chrono::duration_cast<std::chrono::seconds>(now - start).count(),
-                        tick);
-            split.RequestIdleHook();
-        }
-        if (spins < 64) {
-            std::this_thread::yield();
-        } else {
-            std::this_thread::sleep_for(std::chrono::microseconds{50});
-        }
+        LOG_WARNING(Render_Vulkan, "Waited {} s for the GPU thread to submit tick {}",
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::steady_clock::now() - start)
+                        .count(),
+                    tick);
+        split.RequestIdleHook();
     }
-    return true;
 }
 
 void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {
@@ -499,6 +499,8 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
     });
     chunk->MarkSubmit();
     DispatchWork();
+    // Handed to the worker: wakes threads in WaitSubmitted.
+    submitted_ticks.AdvanceAtLeast(master_semaphore->CurrentTick());
     return signal_value;
 }
 

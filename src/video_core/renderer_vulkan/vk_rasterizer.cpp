@@ -8,6 +8,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <map>
 #include <array>
 #include <bit>
 #include <chrono>
@@ -1833,10 +1834,20 @@ void RasterizerVulkan::DispatchCompute() {
     }
     std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};
     // Command list pages the dispatch writes are copied for the split's front right after it.
+    buffer_cache.Nx2BeginWriterTrace(pipeline->ShaderHash());
     buffer_cache.Nx2CollectListCopies(true);
     SCOPE_EXIT {
         buffer_cache.Nx2CollectListCopies(false);
+        buffer_cache.Nx2EndWriterTrace();
     };
+    if (buffer_cache.Nx2TracingBufferDependencies()) {
+        if (const auto indirect = kepler_compute->GetIndirectComputeAddress()) {
+            if (const auto address = gpu_memory->GpuToCpuAddress(*indirect)) {
+                buffer_cache.Nx2TraceBufferInput(*address, 12,
+                                               VideoCommon::BufferDependencyTrace::Input::Indirect);
+            }
+        }
+    }
     if (!pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache,
                              texture_cache)) {
         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute resources unavailable");
@@ -1931,6 +1942,7 @@ void RasterizerVulkan::DispatchCompute() {
             }
             cmdbuf.DispatchIndirect(indirect_buffer, indirect_offset);
         });
+        NoteWriterDeps(*pipeline);
         SubmitNx2ListCopies();
         publish_collision_map();
         return;
@@ -1948,6 +1960,7 @@ void RasterizerVulkan::DispatchCompute() {
         }
         cmdbuf.Dispatch(dim[0], dim[1], dim[2]);
     });
+    NoteWriterDeps(*pipeline);
     SubmitNx2ListCopies();
     publish_collision_map();
 
@@ -1990,6 +2003,51 @@ void Vulkan::RasterizerVulkan::DisableGraphicsUniformBuffer(size_t stage, u32 in
 }
 
 void RasterizerVulkan::FlushAll() {}
+
+void RasterizerVulkan::NoteWriterDeps(const ComputePipeline& pipeline) {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_WRITER_DEPS");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (!enabled || !buffer_cache.Nx2WriterTraceHasWrites()) {
+        return;
+    }
+    struct Stats {
+        u64 dispatches{}, sampled{}, gpu_written{}, this_frame{}, with_frame_input{};
+        u64 storage_buffers{}, storage_images{}, without_sampled{};
+    };
+    static std::map<u64, Stats> per_shader;
+    static u64 total{};
+    auto& stats = per_shader[pipeline.ShaderHash()];
+    ++stats.dispatches;
+    stats.storage_buffers += pipeline.StorageBufferCount();
+    stats.storage_images += pipeline.StorageImageCount();
+    stats.without_sampled += pipeline.SampledImages().empty();
+    bool frame_input = false;
+    for (const auto& image : pipeline.SampledImages()) {
+        if (!image.id) {
+            continue;
+        }
+        ++stats.sampled;
+        stats.gpu_written += image.gpu_modified;
+        stats.this_frame += image.recent_gpu_modified;
+        frame_input |= image.recent_gpu_modified;
+    }
+    stats.with_frame_input += frame_input;
+    buffer_cache.Nx2WriterTraceInput(frame_input);
+    buffer_cache.Nx2CommitBufferDependencies();
+    if ((++total % 2000) == 0) {
+        for (const auto& [hash, s] : per_shader) {
+            LOG_INFO(Render_Vulkan,
+                     "nx2 writer deps: shader {:016x}: {} list-writing dispatches, {} sampled "
+                     "bindings ({} GPU-dirty, {} marked after frame boundary); {} dispatches "
+                     "sample recent GPU-dirty input; {} with no sampled bindings; {} storage "
+                     "buffer / {} storage image bindings (dependencies not classified)",
+                     hash, s.dispatches, s.sampled, s.gpu_written, s.this_frame,
+                     s.with_frame_input, s.without_sampled, s.storage_buffers, s.storage_images);
+        }
+    }
+}
 
 void RasterizerVulkan::SubmitNx2ListCopies() {
     // Submitted at once: ReadGpuWrittenCommands waits on these copies, so they can't sit out
@@ -2113,9 +2171,33 @@ bool RasterizerVulkan::MustFlushRegion(DAddr addr, u64 size, VideoCommon::CacheT
 
 VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64 size) {
     std::optional<VideoCore::RasterizerDownloadArea> texture_area;
+    // EDEN_NX2_FLUSH_AREA_STATS=1 (diagnostic): how guest reads of trapped pages resolve and how
+    // long they wait for the texture cache lock.
+    static const bool flush_stats = [] {
+        const char* value = std::getenv("EDEN_NX2_FLUSH_AREA_STATS");
+        return value != nullptr && value[0] == '1';
+    }();
+    const auto lock_begin = flush_stats ? std::chrono::steady_clock::now()
+                                        : std::chrono::steady_clock::time_point{};
     {
         std::scoped_lock lock{texture_cache.mutex};
+        const auto locked = flush_stats ? std::chrono::steady_clock::now()
+                                        : std::chrono::steady_clock::time_point{};
         texture_area = texture_cache.GetFlushArea(addr, size);
+        if (flush_stats) {
+            static std::atomic<u64> calls{}, none{}, preemptive{}, flush{}, wait_ns{};
+            wait_ns.fetch_add(static_cast<u64>((locked - lock_begin).count()),
+                              std::memory_order_relaxed);
+            (!texture_area ? none : texture_area->preemtive ? preemptive : flush)
+                .fetch_add(1, std::memory_order_relaxed);
+            const u64 n = calls.fetch_add(1, std::memory_order_relaxed) + 1;
+            if ((n % 20000) == 0) {
+                LOG_INFO(Render_Vulkan,
+                         "nx2 flush area: {} trapped reads: {} without GPU-written images, {} "
+                         "already flushed, {} flushing; {:.1f} ms waiting for the texture cache",
+                         n, none.load(), preemptive.load(), flush.load(), wait_ns.load() / 1e6);
+            }
+        }
     }
     if (texture_area) {
         // The core disarmed the read's pages before asking: the buffer cache arms only pages it

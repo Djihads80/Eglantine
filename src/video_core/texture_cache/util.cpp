@@ -787,6 +787,11 @@ boost::container::small_vector<ImageCopy, 16> MakeShrinkImageCopies(const ImageI
         };
         const Extent3D mip_size = AdjustMipSize(dst.size, base.level + level);
         copy.extent = AdjustSamplesSize(mip_size, dst.num_samples);
+        if (both_2d && CanShareAttachmentStorage(dst, src)) {
+            // Logical attachment growth can preserve tiled backing without enlarging the source.
+            copy.extent.width = (std::min)(copy.extent.width, src.size.width);
+            copy.extent.height = (std::min)(copy.extent.height, src.size.height);
+        }
         if (is_dst_3d) {
             copy.extent.depth = src.size.depth;
         }
@@ -1554,10 +1559,11 @@ bool IsPitchLinearSameSize(const ImageInfo& lhs, const ImageInfo& rhs, bool stri
 
 std::optional<OverlapResult> ResolveOverlap(const ImageInfo& new_info, GPUVAddr gpu_addr,
                                             VAddr cpu_addr, const ImageBase& overlap,
-                                            bool strict_size, bool broken_views, bool native_bgr) {
+                                            bool strict_size, bool broken_views, bool native_bgr,
+                                            bool single_layer_padding) {
     ASSERT(new_info.type != ImageType::Linear);
     ASSERT(overlap.info.type != ImageType::Linear);
-    if (!IsLayerStrideCompatible(new_info, overlap.info)) {
+    if (!IsLayerStrideCompatible(new_info, overlap.info, single_layer_padding)) {
         return std::nullopt;
     }
     if (!IsViewCompatible(overlap.info.format, new_info.format, broken_views, native_bgr)) {
@@ -1581,7 +1587,56 @@ std::optional<OverlapResult> ResolveOverlap(const ImageInfo& new_info, GPUVAddr 
     return ResolveOverlapLeftAddress(new_info, gpu_addr, cpu_addr, overlap, strict_size);
 }
 
-bool IsLayerStrideCompatible(const ImageInfo& lhs, const ImageInfo& rhs) {
+bool CanShareAttachmentStorage(const ImageInfo& lhs, const ImageInfo& rhs) {
+    if (lhs.type != ImageType::e2D || rhs.type != ImageType::e2D ||
+        lhs.resources.layers != 1 || rhs.resources.layers != 1 ||
+        lhs.resources.levels != 1 || rhs.resources.levels != 1 ||
+        lhs.num_samples != 1 || rhs.num_samples != 1 || lhs.block.depth != 0 ||
+        rhs.block.depth != 0 || lhs.format != rhs.format || lhs.format == PixelFormat::Invalid ||
+        lhs.block != rhs.block || lhs.tile_width_spacing != rhs.tile_width_spacing ||
+        lhs.is_sparse || rhs.is_sparse || lhs.size.width == 0 || lhs.size.height == 0 ||
+        rhs.size.width == 0 || rhs.size.height == 0) {
+        return false;
+    }
+    if (DefaultBlockWidth(lhs.format) != 1 || DefaultBlockHeight(lhs.format) != 1) {
+        return false;
+    }
+    // Equal footprints preserve tiled row pitch and the guest bytes covered by the image.
+    return IsBlockLinearSizeCompatible(lhs, rhs, 0, 0, false) &&
+           CalculateGuestSizeInBytes(lhs) == CalculateGuestSizeInBytes(rhs);
+}
+
+bool IsAttachmentBackingUsable(const ImageBase& image) {
+    constexpr auto unsupported = ImageFlagBits::Remapped | ImageFlagBits::Unbacked |
+                                 ImageFlagBits::TrimmedLevels | ImageFlagBits::Rescaled |
+                                 ImageFlagBits::Sparse | ImageFlagBits::SparseLayers |
+                                 ImageFlagBits::SparseTiles;
+    return False(image.flags & unsupported);
+}
+
+std::optional<Extent3D> GrowAttachmentExtent(const ImageInfo& candidate, const ImageInfo& existing) {
+    if (!CanShareAttachmentStorage(candidate, existing)) {
+        return std::nullopt;
+    }
+    ImageInfo grown = candidate;
+    grown.size.width = (std::max)(candidate.size.width, existing.size.width);
+    grown.size.height = (std::max)(candidate.size.height, existing.size.height);
+    if (!CanShareAttachmentStorage(grown, candidate)) {
+        return std::nullopt;
+    }
+    return grown.size;
+}
+
+bool IsLayerStrideCompatible(const ImageInfo& lhs, const ImageInfo& rhs,
+                             bool single_layer_padding) {
+    // No array offset is addressed in a single-mip 2D image. The texel layout must still match.
+    if (single_layer_padding && lhs.type == ImageType::e2D && rhs.type == ImageType::e2D &&
+        lhs.resources.layers == 1 && rhs.resources.layers == 1 &&
+        lhs.resources.levels == 1 && rhs.resources.levels == 1 && lhs.format == rhs.format &&
+        lhs.block == rhs.block &&
+        lhs.tile_width_spacing == rhs.tile_width_spacing && lhs.num_samples == rhs.num_samples) {
+        return true;
+    }
     // If either of the layer strides is zero, we can assume they are compatible
     // These images generally come from rendertargets
     if (lhs.layer_stride == 0) {
@@ -1610,6 +1665,11 @@ std::optional<SubresourceBase> FindSubresource(const ImageInfo& candidate, const
         return std::nullopt;
     }
     const ImageInfo& existing = image.info;
+    if (True(options & RelaxedOptions::RenderTarget) && candidate_addr == image.gpu_addr &&
+        IsAttachmentBackingUsable(image) && CanShareAttachmentStorage(existing, candidate) &&
+        existing.size.width >= candidate.size.width && existing.size.height >= candidate.size.height) {
+        return base;
+    }
     if (True(options & RelaxedOptions::Format)) {
         // Format checking is relaxed, but we still have to check for matching bytes per block.
         // This avoids creating a view for blits on UE4 titles where formats with different bytes
@@ -1623,7 +1683,7 @@ std::optional<SubresourceBase> FindSubresource(const ImageInfo& candidate, const
             return std::nullopt;
         }
     }
-    if (!IsLayerStrideCompatible(existing, candidate)) {
+    if (!IsLayerStrideCompatible(existing, candidate, True(options & RelaxedOptions::SingleLayerStride))) {
         return std::nullopt;
     }
     if (existing.type != candidate.type) {

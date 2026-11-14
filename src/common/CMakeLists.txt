@@ -64,10 +64,12 @@ add_library(
     bit_field.h
     bit_util.h
     bounded_threadsafe_queue.h
+    progress_counter.h
     cityhash.cpp
     cityhash.h
     common_funcs.h
     common_types.h
+    cpu_layout.h
     concepts.h
     container_hash.h
     demangle.cpp
@@ -193,7 +195,7 @@ set_source_files_properties(zbic_compression.cpp PROPERTIES
     COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wno-unused-function;-Wno-missing-declarations;-Wno-shadow>;$<$<CXX_COMPILER_ID:MSVC>:/wd4505;/wd5245>")
 
 if(WIN32)
-    target_sources(common PRIVATE windows/timer_resolution.cpp
+    target_sources(common PRIVATE windows/cpu_layout.cpp windows/cpu_layout.h windows/timer_resolution.cpp
         windows/timer_resolution.h)
     target_link_libraries(common PRIVATE ntdll)
 endif()

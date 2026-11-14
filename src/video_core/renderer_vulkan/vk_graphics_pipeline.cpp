@@ -8,6 +8,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <span>
@@ -877,6 +878,14 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
 bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
                                      const RenderAreaPushConstant& render_area,
                                      bool is_indexed) {
+    static const bool reuse_descriptors = [] {
+        const char* value = std::getenv("EDEN_NX2_DESCRIPTOR_REUSE");
+        const bool enabled = value == nullptr || value[0] != '0';
+        if (!enabled) {
+            LOG_INFO(Render_Vulkan, "Graphics descriptor payload reuse disabled for comparison");
+        }
+        return enabled;
+    }();
     const void* const descriptor_data{guest_descriptor_queue.UpdateData()};
 
     VkDeviceSize descriptor_buffer_offset{};
@@ -884,6 +893,7 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
     if (descriptor_set_layout && uses_descriptor_buffer) {
         const auto* const entries = static_cast<const DescriptorUpdateEntry*>(descriptor_data);
         const bool reuse_allocation =
+            reuse_descriptors &&
             last_descriptor_buffer_generation == descriptor_buffer_ring.CurrentGeneration() &&
             last_descriptor_payload.size() == num_descriptor_entries &&
             std::memcmp(last_descriptor_payload.data(), entries,
@@ -1100,7 +1110,8 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
     if (descriptor_set_layout && !uses_push_descriptor && !uses_descriptor_buffer) {
         const auto* const entries = static_cast<const DescriptorUpdateEntry*>(descriptor_data);
         update_descriptors =
-            bind_pipeline || last_descriptor_payload.size() != num_descriptor_entries ||
+            !reuse_descriptors || bind_pipeline ||
+            last_descriptor_payload.size() != num_descriptor_entries ||
             std::memcmp(last_descriptor_payload.data(), entries,
                         num_descriptor_entries * sizeof(DescriptorUpdateEntry)) != 0;
         if (update_descriptors) {
