@@ -180,7 +180,25 @@ void ConfigureDialog::RetranslateUI() {
     ui->tabWidget->setCurrentIndex(old_index);
 }
 
+bool ConfigureDialog::ConfirmSettings() {
+    if (general_tab->ConfirmApply()) {
+        return true;
+    }
+    ui->selectorList->setCurrentRow(0);
+    ui->tabWidget->setCurrentWidget(general_tab.get());
+    return false;
+}
+
+void ConfigureDialog::accept() {
+    if (ConfirmSettings()) {
+        QDialog::accept();
+    }
+}
+
 void ConfigureDialog::HandleApplyButtonClicked() {
+    if (!ConfirmSettings()) {
+        return;
+    }
     UISettings::values.configuration_applied = true;
     ApplyConfiguration();
 }

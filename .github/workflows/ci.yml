@@ -154,6 +154,7 @@ jobs:
       release: ${{ needs.prepare.outputs.kind == 'stable' || needs.prepare.outputs.kind == 'rc' }}
       nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
       pgo: ${{ inputs.pgo || (needs.prepare.outputs.kind == 'branch' && 'none' || 'both') }}
+      follow_branch: ${{ needs.prepare.outputs.branch }}
       save_cache: ${{ inputs.save_cache || (needs.prepare.outputs.kind == 'daily') }}
 
   windows:
@@ -173,6 +174,7 @@ jobs:
       release: ${{ needs.prepare.outputs.kind == 'stable' || needs.prepare.outputs.kind == 'rc' }}
       nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
       pgo: ${{ inputs.pgo || (needs.prepare.outputs.kind == 'branch' && 'none' || 'both') }}
+      follow_branch: ${{ needs.prepare.outputs.branch }}
       save_cache: ${{ inputs.save_cache || (needs.prepare.outputs.kind == 'daily') }}
 
   macos:

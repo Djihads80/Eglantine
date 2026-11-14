@@ -40,6 +40,9 @@ struct Release {
     std::string base_download_url;
     std::string html_url;
     std::string host;
+    // The commit the release was made for: 40 lowercase hex characters, or empty when the release
+    // targets a branch name or says nothing.
+    std::string target_commit;
 
     std::vector<std::string> assets;
     // Keyed by the asset's browser_download_url.
@@ -60,6 +63,11 @@ struct Release {
     static std::vector<Release> ListFromJson(const nlohmann::json &json, const std::string &host, const std::string &repo);
     static std::vector<Release> ListFromJson(const std::string_view &json, const std::string &host, const std::string &repo);
 };
+
+// The most recently published release made for exactly `commit` that has an asset for `platform`.
+std::optional<Release> FindReleaseForCommit(const std::vector<Release>& releases,
+                                            std::string_view commit, std::string_view platform,
+                                            LinuxPackage package = LinuxPackage::Any);
 
 struct RequestResult {
     std::optional<std::string> body;
@@ -85,5 +93,47 @@ ReleaseList GetReleases();
 
 // Get every release as the text of one JSON array.
 std::optional<std::string> GetReleasesBody();
+
+// Newest commit of a branch or pull request.
+struct RemoteHead {
+    // Lowercase 40-character commit hash.
+    std::string sha;
+    // Pull requests only.
+    std::string title;
+    std::string author;
+    bool open{true};
+    bool merged{};
+
+    // From GET /repos/{repo}/branches/{branch}
+    static std::optional<RemoteHead> FromBranchJson(const std::string_view& json);
+    // From GET /repos/{repo}/pulls/{number}
+    static std::optional<RemoteHead> FromPullJson(const std::string_view& json);
+};
+
+struct RemoteHeadResult {
+    std::optional<RemoteHead> head;
+    // HTTP status, or 0 when no response arrived.
+    int status{};
+};
+
+RemoteHeadResult GetBranchHead(const std::string& branch);
+RemoteHeadResult GetPullRequestHead(u64 number);
+
+// Branch names from GET /repos/{repo}/branches
+std::vector<std::string> BranchNamesFromJson(const std::string_view& json);
+
+// Branches from GET /repos/{repo}/activity, the most recently pushed first, at most `limit`.
+// Branches deleted since their last push are left out.
+std::vector<std::string> RecentBranchesFromActivityJson(const std::string_view& json,
+                                                        std::size_t limit);
+
+struct BranchList {
+    std::vector<std::string> names;
+    bool ok{};
+    int status{};
+};
+
+// The most recently pushed branches, or every branch name when the activity cannot be read.
+BranchList GetBranches();
 
 }

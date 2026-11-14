@@ -32,6 +32,7 @@ extern const char g_build_auto_update_website[];
 extern const char g_build_auto_update_api[];
 extern const char g_build_auto_update_repo[];
 extern const char g_build_release_platform[];
+extern const char g_build_follow_branch[];
 
 // g_build_name plus the identity CI composed for this build (g_display_version),
 // with the packaging flavour in parentheses when there is one.

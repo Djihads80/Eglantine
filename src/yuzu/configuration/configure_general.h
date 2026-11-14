@@ -18,6 +18,7 @@ class System;
 
 class ConfigureDialog;
 class HotkeyRegistry;
+class TesterBuildSettings;
 
 namespace Ui {
 class ConfigureGeneral;
@@ -40,6 +41,8 @@ public:
     void SetResetCallback(std::function<void()> callback);
     void ResetDefaults();
     void ApplyConfiguration() override;
+    // False when a setting is not valid; the user has been told why.
+    bool ConfirmApply();
     void SetConfiguration() override;
 
 signals:
@@ -62,4 +65,6 @@ private:
     std::vector<std::function<void(bool)>> apply_funcs{};
 
     const Core::System& system;
+
+    TesterBuildSettings* tester_settings{};
 };

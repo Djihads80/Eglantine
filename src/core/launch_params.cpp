@@ -51,6 +51,7 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
         {"null-render", no_argument, 0, 'n'},
         {"singlecore", no_argument, 0, 's'},
         {"filter", no_argument, 0, 'x'},
+        {"release", no_argument, 0, 'R'},
         {"mcp", no_argument, 0, 'M'},
         {"mcp-port", required_argument, 0, 'P'},
         {"mcp-allow-writes", no_argument, 0, 'W'},
@@ -110,6 +111,9 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
                     LOG_ERROR(Frontend, "Invalid --mcp-port '{}', using the configured port",
                               optarg);
                 }
+                break;
+            case 'R':
+                // Read by the tester build launcher, nothing to do here.
                 break;
             case 'W':
                 p.mcp_allow_writes = true;

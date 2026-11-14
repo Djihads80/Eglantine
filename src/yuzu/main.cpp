@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -35,6 +36,11 @@
 #endif
 
 #include "main_window.h"
+
+#ifdef ENABLE_UPDATE_CHECKER
+#include "updater/tester_build_launcher.h"
+#include "updater/tester_build_main.h"
+#endif
 
 #ifdef YUZU_CRASH_DUMPS
 #include "yuzu/breakpad.h"
@@ -165,6 +171,14 @@ static void LoadNx2Switches(const char* argv0) {
 }
 
 int main(int argc, char* argv[]) {
+#ifdef ENABLE_UPDATE_CHECKER
+    // Before anything of the emulator starts: the builder only clones, builds and installs.
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--tester-build") == 0) {
+            return RunTesterBuild(argc, argv);
+        }
+    }
+#endif
     LoadNx2Switches(argv[0]);
     // Before StartupChecks: its Vulkan check is the first thing to load a GPU driver. The config
     // isn't loaded yet, so the setting is read from the file.
@@ -191,6 +205,13 @@ int main(int argc, char* argv[]) {
     if (CheckEnvVars(&is_child)) {
         return 0;
     }
+
+#ifdef ENABLE_UPDATE_CHECKER
+    // After the helper-process checks above, so those are never handed off.
+    if (const auto handled = TesterLauncher::Run(argc, argv)) {
+        return *handled;
+    }
+#endif
 
     if (StartupChecks(argv[0], &has_broken_vulkan,
                       Settings::values.perform_vulkan_check.GetValue())) {

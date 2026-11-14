@@ -36,6 +36,10 @@ on:
         description: none or both
         type: string
         default: none
+      follow_branch:
+        description: Branch this build follows for tester builds; empty for builds that do not
+        type: string
+        default: ""
       save_cache:
         description: Force-save the compiler and CPM caches at the end of the job
         type: boolean
@@ -50,6 +54,8 @@ jobs:
     if: inputs.pgo != 'only'
     runs-on: windows-2025
     env:
+      # Followed-branch builds check for updates too.
+      UPDATE_CHECKER: ${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || (inputs.follow_branch != '' && 'ON') || 'OFF' }}
       PLATFORM: windows-x86_64
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_CACHE_SIZE: 1000M
@@ -114,8 +120,11 @@ jobs:
         shell: pwsh
         run: glslangValidator --version
 
+      # The branch name is only ever read from the environment, never pasted into the script.
       - name: Configure
         shell: bash
+        env:
+          FOLLOW_BRANCH: ${{ inputs.follow_branch }}
         run: >-
           cmake -S . -B build/release -G Ninja
           -DCMAKE_BUILD_TYPE=Release
@@ -127,9 +136,10 @@ jobs:
           -DYUZU_USE_BUNDLED_QT=OFF
           -DYUZU_USE_BUNDLED_SDL3=ON
           -DENABLE_QT_TRANSLATION=ON
-          -DENABLE_UPDATE_CHECKER=${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || 'OFF' }}
+          -DENABLE_UPDATE_CHECKER=$UPDATE_CHECKER
           -DEGLANTINE_UPDATE_REPO=${{ github.repository }}
           -DEGLANTINE_RELEASE_PLATFORM=windows-x86_64
+          "-DEGLANTINE_FOLLOW_BRANCH=$FOLLOW_BRANCH"
           -DUSE_DISCORD_PRESENCE=ON
           -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }}
           -DCMAKE_C_COMPILER_LAUNCHER=sccache
@@ -143,8 +153,8 @@ jobs:
         shell: bash
         run: |
           targets="yuzu yuzu-cmd"
-          # The updater helper only exists in release and daily builds, where the update checker is on.
-          if [ "${{ inputs.release || startsWith(inputs.tag, 'daily-') }}" = "true" ]; then targets="$targets eglantine-updater"; fi
+          # The updater helper only exists where the update checker is on.
+          if [ "$UPDATE_CHECKER" = "ON" ]; then targets="$targets eglantine-updater"; fi
           cmake --build build/release --target $targets --parallel
           sccache --show-stats
 
@@ -173,6 +183,8 @@ jobs:
     if: inputs.pgo == 'both' || inputs.pgo == 'only'
     runs-on: windows-2025
     env:
+      # Followed-branch builds check for updates too.
+      UPDATE_CHECKER: ${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || (inputs.follow_branch != '' && 'ON') || 'OFF' }}
       PLATFORM: windows-x86_64-pgo
     steps:
       - name: Check out source
@@ -238,6 +250,8 @@ jobs:
       # path is converted to its Windows form because clang runs with the MSYS mount underneath.
       - name: Configure
         shell: msys2 {0}
+        env:
+          FOLLOW_BRANCH: ${{ inputs.follow_branch }}
         run: |
           set -euo pipefail
           profile="-fprofile-use=$(cygpath -m "$PWD/eglantine.profdata") -Wno-backend-plugin \
@@ -255,9 +269,10 @@ jobs:
             -DVulkanHeaders_FORCE_BUNDLED=ON \
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
             -DENABLE_QT_TRANSLATION=ON \
-            -DENABLE_UPDATE_CHECKER=${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || 'OFF' }} \
+            "-DENABLE_UPDATE_CHECKER=$UPDATE_CHECKER" \
             -DEGLANTINE_UPDATE_REPO=${{ github.repository }} \
             -DEGLANTINE_RELEASE_PLATFORM=windows-x86_64-pgo \
+            "-DEGLANTINE_FOLLOW_BRANCH=$FOLLOW_BRANCH" \
             -DUSE_DISCORD_PRESENCE=ON \
             -DUSE_CCACHE=ON \
             -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }} \
@@ -279,8 +294,8 @@ jobs:
         run: |
           ccache --zero-stats
           targets="yuzu yuzu-cmd"
-          # The updater helper only exists in release and daily builds, where the update checker is on.
-          if [ "${{ inputs.release || startsWith(inputs.tag, 'daily-') }}" = "true" ]; then targets="$targets eglantine-updater"; fi
+          # The updater helper only exists where the update checker is on.
+          if [ "$UPDATE_CHECKER" = "ON" ]; then targets="$targets eglantine-updater"; fi
           cmake --build build/release --target $targets --parallel
           ccache --show-stats
 

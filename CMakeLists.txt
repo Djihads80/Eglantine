@@ -284,6 +284,7 @@ option(NIGHTLY_BUILD "Use Nightly qualifiers in the update checker and build met
 
 set(EGLANTINE_UPDATE_REPO "Eglantine-Community/Eglantine" CACHE STRING "GitHub owner/name repository the update checker reads releases from")
 set(EGLANTINE_RELEASE_PLATFORM "" CACHE STRING "Release asset platform of this build, e.g. windows-x86_64, linux-aarch64-pgo, macos-arm64")
+set(EGLANTINE_FOLLOW_BRANCH "" CACHE STRING "Branch of the update repository this build follows for tester builds; set by CI branch builds")
 
 # GetSCMRev (CMakeModules/GetSCMRev.cmake) reads GIT-COMMIT, GIT-REFSPEC,
 # GIT-TAG and GIT-RELEASE from the source root so a build with no .git still

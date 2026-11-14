@@ -21,6 +21,7 @@
 #include "yuzu/configuration/shared_widget.h"
 #ifdef ENABLE_UPDATE_CHECKER
 #include "frontend_common/update_checker.h"
+#include "yuzu/configuration/tester_build_settings.h"
 #endif
 
 ConfigureGeneral::ConfigureGeneral(const Core::System& system_,
@@ -73,10 +74,14 @@ void ConfigureGeneral::Setup(const ConfigurationShared::Builder& builder) {
     push(UISettings::values.linkage.by_category[Settings::Category::UiGeneral]);
     for (const auto setting : settings) {
         const bool is_update_channel = setting->Id() == UISettings::values.update_channel.Id();
-        const bool is_update_setting =
-            is_update_channel || setting->Id() == UISettings::values.check_for_updates.Id();
+        const bool is_update_variant = setting->Id() == UISettings::values.update_variant.Id();
+        const bool is_update_setting = is_update_channel || is_update_variant ||
+                                       setting->Id() == UISettings::values.check_for_updates.Id();
 #ifdef ENABLE_UPDATE_CHECKER
         if (is_update_channel && !UpdateChecker::BuildChannel()) {
+            continue;
+        }
+        if (is_update_variant && Common::g_build_release_platform[0] == '\0') {
             continue;
         }
 #else
@@ -124,7 +129,13 @@ void ConfigureGeneral::Setup(const ConfigurationShared::Builder& builder) {
     for (auto* widget : update_hold) {
         ui->updates_widget->layout()->addWidget(widget);
     }
+#ifdef ENABLE_UPDATE_CHECKER
+    tester_settings = new TesterBuildSettings(this);
+    ui->updates_widget->layout()->addWidget(tester_settings);
+    ui->UpdatesGroupBox->setVisible(true);
+#else
     ui->UpdatesGroupBox->setVisible(!update_hold.empty());
+#endif
 }
 
 // Called to set the callback when resetting settings to defaults
@@ -146,6 +157,14 @@ void ConfigureGeneral::ResetDefaults() {
     reset_callback();
 }
 
+bool ConfigureGeneral::ConfirmApply() {
+#ifdef ENABLE_UPDATE_CHECKER
+    return tester_settings == nullptr || tester_settings->ConfirmChanges();
+#else
+    return true;
+#endif
+}
+
 void ConfigureGeneral::ApplyConfiguration() {
     bool powered_on = system.IsPoweredOn();
     const auto previous_channel = UISettings::values.update_channel.GetValue();
@@ -155,6 +174,11 @@ void ConfigureGeneral::ApplyConfiguration() {
     if (UISettings::values.update_channel.GetValue() != previous_channel) {
         UISettings::values.skipped_update.SetValue({});
     }
+#ifdef ENABLE_UPDATE_CHECKER
+    if (tester_settings != nullptr) {
+        tester_settings->Apply();
+    }
+#endif
 
     std::vector<std::string> new_dirs;
     new_dirs.reserve(ui->external_content_list->count());

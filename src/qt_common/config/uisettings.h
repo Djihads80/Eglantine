@@ -145,6 +145,9 @@ struct Values {
     // Unset until a tagged release or daily build first runs, then only the user changes it
     Setting<Settings::UpdateChannel> update_channel{linkage, Settings::UpdateChannel::Unset,
                                                     "update_channel", Category::UiGeneral};
+    // Which build updates and tester builds download; Auto keeps the one this build is
+    Setting<Settings::UpdateVariant> update_variant{linkage, Settings::UpdateVariant::Auto,
+                                                    "update_variant", Category::UiGeneral};
     // Tag of the release the user chose not to be reminded of
     Setting<std::string> skipped_update{linkage, {}, "skipped_update", Category::Ui};
 

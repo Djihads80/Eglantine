@@ -105,9 +105,13 @@ create_target_directory_groups(tests)
 if (ENABLE_UPDATE_CHECKER)
     target_sources(tests PRIVATE
         common/update_checker.cpp
+        common/net_heads.cpp
         common/update_installer.cpp
+        common/tester_build.cpp
         ../frontend_common/update_checker.cpp
-        ../frontend_common/update_installer.cpp)
+        ../frontend_common/update_installer.cpp
+        ../frontend_common/tester_build.cpp
+        ${CMAKE_BINARY_DIR}/src/frontend_common/tester_recipe.cpp)
 endif()
 
 target_link_libraries(tests PRIVATE common core input_common video_core)

@@ -35,6 +35,10 @@ on:
         description: none or both
         type: string
         default: none
+      follow_branch:
+        description: Branch this build follows for tester builds; empty for builds that do not
+        type: string
+        default: ""
       save_cache:
         description: Force-save the compiler and CPM caches at the end of the job
         type: boolean
@@ -161,6 +165,9 @@ jobs:
 
       - name: Configure
         shell: bash
+        env:
+          FOLLOW_BRANCH: ${{ inputs.follow_branch }}
+          UPDATE_CHECKER: ${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || (inputs.follow_branch != '' && 'ON') || 'OFF' }}
         run: |
           set -euo pipefail
           flags=(
@@ -178,9 +185,10 @@ jobs:
             -DVulkanHeaders_FORCE_BUNDLED=ON
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON
             -DENABLE_QT_TRANSLATION=ON
-            -DENABLE_UPDATE_CHECKER=${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || 'OFF' }}
+            "-DENABLE_UPDATE_CHECKER=$UPDATE_CHECKER"
             -DEGLANTINE_UPDATE_REPO=${{ github.repository }}
             -DEGLANTINE_RELEASE_PLATFORM=${{ env.PLATFORM }}
+            "-DEGLANTINE_FOLLOW_BRANCH=$FOLLOW_BRANCH"
             -DUSE_DISCORD_PRESENCE=ON
             -DUSE_CCACHE=ON
             -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }}

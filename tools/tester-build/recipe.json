@@ -1,0 +1,187 @@
+{
+  "version": 1,
+  "tools": {
+    "cmake": {
+      "version": "4.4.5",
+      "windows-x86_64": {
+        "url": "https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-windows-x86_64.zip",
+        "sha256": "326c826486d46a23cf9d5a1c9ee3a567d427bdd02c4a34071937a2a675cff004",
+        "bin": "cmake-4.4.5-windows-x86_64/bin"
+      },
+      "linux-x86_64": {
+        "url": "https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-linux-x86_64.tar.gz",
+        "sha256": "ed85135c5a5135b45e50423cb406dea04ca3338da0b8ef3c9ede963559680be0",
+        "bin": "cmake-4.4.5-linux-x86_64/bin"
+      }
+    },
+    "ninja": {
+      "version": "1.13.2",
+      "windows-x86_64": {
+        "url": "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-win.zip",
+        "sha256": "07fc8261b42b20e71d1720b39068c2e14ffcee6396b76fb7a795fb460b78dc65",
+        "bin": "."
+      },
+      "linux-x86_64": {
+        "url": "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-linux.zip",
+        "sha256": "5749cbc4e668273514150a80e387a957f933c6ed3f5f11e03fb30955e2bbead6",
+        "bin": "."
+      }
+    },
+    "glslang": {
+      "version": "16.6.0",
+      "windows-x86_64": {
+        "url": "https://github.com/KhronosGroup/glslang/releases/download/16.6.0/glslang-16.6.0-windows-x86_64-release.zip",
+        "sha256": "82bf434e69b9bb4829de7e2b4bc2c5e7a7861e53d66cf75e5cc70f5f694a8d9b",
+        "bin": "bin"
+      }
+    }
+  },
+  "configure": {
+    "common": [
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DBUILD_TESTING=OFF",
+      "-DYUZU_TESTS=OFF",
+      "-DYUZU_ROOM=OFF",
+      "-DYUZU_ROOM_STANDALONE=OFF",
+      "-DYUZU_CMD=OFF",
+      "-DENABLE_WERROR=OFF",
+      "-DENABLE_UPDATE_CHECKER=ON"
+    ],
+    "windows": [],
+    "linux": [
+      "-DCPMUTIL_FORCE_BUNDLED=ON",
+      "-DYUZU_USE_BUNDLED_QT=ON",
+      "-DYUZU_USE_BUNDLED_FFMPEG=ON",
+      "-DYUZU_USE_BUNDLED_SDL3=ON",
+      "-DYUZU_USE_BUNDLED_OPENSSL=ON",
+      "-DYUZU_USE_BUNDLED_SIRIT=ON"
+    ]
+  },
+  "targets": [
+    "yuzu"
+  ],
+  "windows": {
+    "winget": [
+      {
+        "provides": "msvc",
+        "id": "Microsoft.VisualStudio.BuildTools",
+        "override": "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended",
+        "min_version": "18.0"
+      },
+      {
+        "provides": "git",
+        "id": "Git.Git"
+      }
+    ]
+  },
+  "linux": {
+    "apt": {
+      "verified": true,
+      "packages": [
+        "build-essential",
+        "git",
+        "ca-certificates",
+        "pkg-config",
+        "patch",
+        "glslang-tools",
+        "autoconf",
+        "automake",
+        "libtool",
+        "libudev-dev",
+        "libpulse-dev",
+        "libasound2-dev",
+        "libgl-dev",
+        "libopengl-dev",
+        "libegl-dev",
+        "libdrm-dev",
+        "libxkbcommon-dev",
+        "libfontconfig-dev",
+        "libva-dev",
+        "libvdpau-dev",
+        "libharfbuzz0b",
+        "libxkbcommon-x11-0",
+        "libxcb-xkb1",
+        "libxcb-shape0",
+        "libxcb-render-util0",
+        "libxcb-keysyms1",
+        "libxcb-image0",
+        "libxcb-icccm4",
+        "libxcb-cursor0",
+        "libsm6",
+        "libice6",
+        "libjpeg-turbo8"
+      ]
+    },
+    "pacman": {
+      "verified": false,
+      "packages": [
+        "base-devel",
+        "git",
+        "ca-certificates",
+        "pkgconf",
+        "glslang",
+        "autoconf",
+        "automake",
+        "libtool",
+        "systemd-libs",
+        "libpulse",
+        "alsa-lib",
+        "libglvnd",
+        "mesa",
+        "libdrm",
+        "libx11",
+        "libxkbcommon",
+        "libxkbcommon-x11",
+        "fontconfig",
+        "libva",
+        "libvdpau",
+        "harfbuzz",
+        "xcb-util-cursor",
+        "xcb-util-image",
+        "xcb-util-keysyms",
+        "xcb-util-renderutil",
+        "xcb-util-wm",
+        "libsm",
+        "libice",
+        "libjpeg-turbo"
+      ]
+    },
+    "dnf": {
+      "verified": false,
+      "packages": [
+        "gcc",
+        "gcc-c++",
+        "make",
+        "git",
+        "ca-certificates",
+        "pkgconf-pkg-config",
+        "patch",
+        "glslang",
+        "autoconf",
+        "automake",
+        "libtool",
+        "systemd-devel",
+        "pulseaudio-libs-devel",
+        "alsa-lib-devel",
+        "mesa-libGL-devel",
+        "libglvnd-devel",
+        "libdrm-devel",
+        "libX11-devel",
+        "libxkbcommon-devel",
+        "libxkbcommon-x11",
+        "fontconfig-devel",
+        "libva-devel",
+        "libvdpau-devel",
+        "harfbuzz",
+        "xcb-util-cursor",
+        "xcb-util-image",
+        "xcb-util-keysyms",
+        "xcb-util-renderutil",
+        "xcb-util-wm",
+        "libSM",
+        "libICE",
+        "libjpeg-turbo"
+      ]
+    }
+  }
+}

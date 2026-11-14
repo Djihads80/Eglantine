@@ -65,6 +65,7 @@ public:
     ~ConfigureDialog() override;
 
     void ApplyConfiguration();
+    void accept() override;
 
     /// Selects the Profiles tab of the System category.
     void SelectProfilesTab();
@@ -81,6 +82,7 @@ private:
     void RetranslateUI();
 
     void HandleApplyButtonClicked();
+    bool ConfirmSettings();
 
     void SetConfiguration();
     void UpdateVisibleTabs();
