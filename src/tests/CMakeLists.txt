@@ -97,6 +97,7 @@ add_executable(tests
     video_core/ampere_f2i.cpp
     video_core/ampere_ldc.cpp
     video_core/ampere_vote.cpp
+    video_core/native_upscale.cpp
     video_core/shader_attributes.cpp
     video_core/indirect_reset.cpp
     video_core/ocarina_upscale.cpp
