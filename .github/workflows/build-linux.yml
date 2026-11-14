@@ -91,9 +91,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: /var/cache/apt/archives/*.deb
-          key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/*.yml') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-apt-${{ hashFiles('.github/workflows/*.yml') }}
           restore-keys: |
-            ${{ runner.os }}-apt-
+            ${{ runner.os }}-${{ runner.arch }}-apt-
 
       - name: Install Linux dependencies
         shell: bash
