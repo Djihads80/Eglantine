@@ -293,6 +293,14 @@ public:
     /// True when the current draw's color target 0 already holds an earlier frame's output and
     /// was not fully cleared this frame (P2.1 stale_target_skip).
     [[nodiscard]] bool ColorTargetHasPriorFrameOutput() noexcept;
+    /// Whether render target 0 was first written in an earlier frame (cleared this frame or not):
+    /// a target the title draws every frame rather than one it fills once.
+    [[nodiscard]] bool ColorTargetWrittenBeforeThisFrame() noexcept;
+
+private:
+    [[nodiscard]] bool ColorTargetWrittenBefore(bool require_uncleared) noexcept;
+
+public:
 
     [[nodiscard]] const RenderTargets& GetRenderTargets() const noexcept {
         return render_targets;

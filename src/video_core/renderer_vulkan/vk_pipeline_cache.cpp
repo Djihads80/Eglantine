@@ -2335,8 +2335,19 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline,
     }
     // Native draws can produce terrain data used only once. Submit them after compilation
     // instead of leaving permanent holes when their first use misses the shader cache.
+    // Depth-tested draws into a target first written in an earlier frame are skipped as for other
+    // titles: the title redraws that target every frame, so the draw is back once the pipeline is
+    // built. Waiting for those held Mario Kart World's frames 50-330 ms per new pipeline.
+    // EDEN_NX2_NATIVE_ASYNC=0 waits for every native draw again.
     if (maxwell3d->GetNativeMacroEngine().native_turing) {
-        return pipeline;
+        static const bool native_async = [] {
+            const char* value = std::getenv("EDEN_NX2_NATIVE_ASYNC");
+            return value == nullptr || value[0] != '0';
+        }();
+        if (!native_async || !maxwell3d->regs.zeta_enable ||
+            !texture_cache.ColorTargetWrittenBeforeThisFrame()) {
+            return pipeline;
+        }
     }
     // If something is using depth, we can assume that games are not rendering anything which
     // will be used one time.
