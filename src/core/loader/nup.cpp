@@ -13,6 +13,7 @@
 #include "common/string_util.h"
 #include "core/core.h"
 #include "core/file_sys/nup_container.h"
+#include "core/file_sys/common_funcs.h"
 #include "core/file_sys/control_metadata.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/romfs.h"
@@ -55,6 +56,11 @@ void CopyDeveloperToEntry(FileSys::LanguageEntry& entry, std::string_view develo
 
 std::unique_ptr<FileSys::NACP> BuildNacp(const NupContainer::PackageInfo& base,
                                          const std::string& version) {
+    if (!base.nacp.empty()) {
+        return std::make_unique<FileSys::NACP>(
+            std::make_shared<FileSys::VectorVfsFile>(base.nacp, "control.nacp"));
+    }
+    // A package without a title name is still named after the dump it was made from.
     const std::string& effective_title =
         !base.title_name.empty() ? base.title_name : base.source_dump;
     if (effective_title.empty() && base.localized_titles.empty() && base.publisher.empty() &&
@@ -158,6 +164,9 @@ AppLoader_NUP::AppLoader_NUP(FileSys::VirtualFile file_)
                                                           : program.display_version;
     }
     nacp_file = BuildNacp(program, display_version);
+    if (!program.nacp.empty()) {
+        title_override = program.title_name;
+    }
     if (!program.icon.empty()) {
         icon_file = std::make_shared<FileSys::VectorVfsFile>(program.icon, "icon.dat");
     } else {
@@ -170,18 +179,6 @@ AppLoader_NUP::AppLoader_NUP(FileSys::VirtualFile file_)
             icon_file = std::make_shared<FileSys::VectorVfsFile>(
                 program.localized_icons.front().second, "icon.dat");
         }
-    }
-
-    const auto addon_count = std::count_if(nup->GetPackages().begin(), nup->GetPackages().end(),
-                                           [](const auto& package) {
-                                               return package.kind ==
-                                                      NupContainer::PackageKind::Addon;
-                                           });
-    if (addon_count > 0) {
-        LOG_WARNING(Loader,
-                    "NUP container has {} add-on content package(s); AoC mounting is not "
-                    "supported yet",
-                    addon_count);
     }
 }
 
@@ -206,6 +203,13 @@ AppLoader::LoadResult AppLoader_NUP::Load(Kernel::KProcess& process, Core::Syste
     if (result.first != ResultStatus::Success) {
         return result;
     }
+
+    // Publish only after loading succeeds, before the guest can enumerate content.
+    // Switch 2 edition programs can retain their Switch 1 application's DLC IDs.
+    const u64 addon_application_id = nacp_file && nacp_file->GetDLCBaseTitleId() != 0
+                                         ? FileSys::GetBaseTitleID(nacp_file->GetDLCBaseTitleId())
+                                         : base_title_id;
+    FileSys::SetLooseAOC(nup->GetAddonRomFS(addon_application_id));
 
     system.GetFileSystemController().RegisterProcess(
         process.GetProcessId(), base_title_id,
@@ -276,10 +280,19 @@ ResultStatus AppLoader_NUP::ReadTitle(std::string& title) {
     if (nacp_file == nullptr) {
         return ResultStatus::ErrorNoControl;
     }
-    title = nacp_file->GetApplicationName();
+    title = title_override.empty() ? nacp_file->GetApplicationName() : title_override;
     if (title.empty()) {
         return ResultStatus::ErrorNoControl;
     }
+    return ResultStatus::Success;
+}
+
+ResultStatus AppLoader_NUP::ReadDisplayVersion(std::string& version) {
+    if (nacp_file == nullptr) {
+        return ResultStatus::ErrorNoControl;
+    }
+    // Keep authentic control bytes intact while honoring the selected update and UI overrides.
+    version = display_version.empty() ? nacp_file->GetVersionString() : display_version;
     return ResultStatus::Success;
 }
 
