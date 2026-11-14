@@ -152,7 +152,8 @@ void BlitScreen::DrawToFrame(const Device& device, RasterizerVulkan& rasterizer,
         layers.clear();
         for (size_t i = 0; i < framebuffers.size(); ++i) {
             layers.emplace_back(device, memory_allocator, scheduler, device_memory, image_count,
-                                window_size, window_adapt->GetDescriptorSetLayout(), filters);
+                                window_size, window_adapt->GetDescriptorSetLayout(), filters,
+                                swapchain_view_format == VK_FORMAT_A2B10G10R10_UNORM_PACK32);
         }
     }
 

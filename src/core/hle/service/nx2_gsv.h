@@ -2037,11 +2037,14 @@ private:
         }
         const u64 shown = (u64{layout.width} << 48) | (u64{layout.height} << 32) |
                           (u64{crop_width} << 16) | crop_height;
-        if (shown != m_shown_layout) {
+        if (shown != m_shown_layout || image_format != m_shown_format) {
             m_shown_layout = shown;
+            m_shown_format = image_format;
             LOG_INFO(Service,
-                     "nx2:vi2 composite image {} layout {}x{}, drawn area {:#x}, crop {}x{}",
-                     image_id, layout.width, layout.height, shown_size, crop_width, crop_height);
+                     "nx2:vi2 composite image {} layout {}x{}, drawn area {:#x}, crop {}x{}, "
+                     "format {}",
+                     image_id, layout.width, layout.height, shown_size, crop_width, crop_height,
+                     image_format);
         }
         std::vector<Tegra::FramebufferConfig> layers{Tegra::FramebufferConfig{
             .address = *device,
@@ -2249,7 +2252,17 @@ private:
     // nn::vi2::QueryDisplayHdrStatus(display name): u64 output format, u16 peak luminance in
     // nits. The sdk takes format 1 as SDR and 2 as HDR and fails the query on any other value.
     // Report SDR output with a typical SDR panel's peak.
+    // EDEN_NX2_HDR_PEAK=<nits>: report HDR output with that peak instead.
     void QueryDisplayHdrStatus(HLERequestContext& ctx) {
+        static const u32 hdr_peak = [] {
+            const char* v = std::getenv("EDEN_NX2_HDR_PEAK");
+            return v ? static_cast<u32>(std::strtoul(v, nullptr, 10)) : 0U;
+        }();
+        if (hdr_peak != 0) {
+            LOG_INFO(Service, "nx2:vi2 QueryDisplayHdrStatus: HDR, peak {} nits", hdr_peak);
+            TipcReplyWords(ctx, {2, 0, hdr_peak});
+            return;
+        }
         TipcReplyWords(ctx, {1, 0, 400});
     }
 
@@ -2439,6 +2452,7 @@ private:
     std::shared_ptr<Core::Timing::EventType> m_vsync_timer;
     u64 m_presents{};
     u64 m_shown_layout{}; // image and crop size last logged
+    u32 m_shown_format{}; // preference word 6 last logged
     std::shared_ptr<std::atomic<bool>> m_capture_pending = std::make_shared<std::atomic<bool>>(false);
     u32 m_burst_left{}; // presents still to save for a burst capture
     // Near-white pixel counts of the last presents, for the flash watcher's spike test.

@@ -44,6 +44,8 @@ set(SHADER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/full_screen_triangle.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/fxaa.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/fxaa.vert
+    ${CMAKE_CURRENT_SOURCE_DIR}/hdr_pq_encode.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/hdr_tonemap.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/opengl_convert_s8d24.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/opengl_copy_bc4.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/opengl_fidelityfx_fsr.frag
