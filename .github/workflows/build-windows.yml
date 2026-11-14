@@ -203,11 +203,14 @@ jobs:
 
       # Eden builds its Windows PGO binaries with MSYS2's clang toolchain, so we do the same. The
       # package list is docs/Deps.md (MSYS2) plus what the bundled FFmpeg needs to compile.
+      # `update: true` runs a full `pacman -Syu` on every run, which is most of this step's cost.
+      # The cached root is upgraded by the nightly build instead, so branch and PR runs install
+      # from it as-is; the versions they used are printed by the ccache settings step below.
       - name: Set up MSYS2
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          update: true
+          update: ${{ github.event_name == 'schedule' }}
           cache: true
           install: >-
             git make autoconf libtool automake-wrapper patch jq pactoys ninja
@@ -257,6 +260,7 @@ jobs:
         run: |
           ccache --version | head -1
           ccache -p | grep -vE '^#' | grep -E '(cache_dir|compiler_check|base_dir|hash_dir|sloppiness|max_size|umask)' || true
+          pacman -Q ccache clang 2>/dev/null || true
 
       - name: Build
         shell: msys2 {0}
