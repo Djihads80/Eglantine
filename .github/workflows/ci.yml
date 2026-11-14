@@ -36,6 +36,10 @@ on:
         description: Build macOS binaries
         type: boolean
         default: true
+      build_android:
+        description: Build Android arm64 APKs
+        type: boolean
+        default: true
       pgo:
         description: Also build the PGO variants
         type: choice
@@ -177,6 +181,16 @@ jobs:
       nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
       runner: ${{ vars.MACOS_RUNNER || 'macos-26' }}
 
+  android:
+    name: Android
+    needs: prepare
+    if: >-
+      needs.prepare.outputs.skip != 'true' &&
+      (github.event_name != 'workflow_dispatch' || inputs.build_android)
+    uses: ./.github/workflows/build-android.yml
+    with:
+      sha: ${{ needs.prepare.outputs.sha }}
+
   # Nix will not gate a release and notifies
   # about a failure when non-Nix Nix-supported targets succeed
   # -> see nix-failure-notice
@@ -226,7 +240,7 @@ jobs:
   # Publishes only when every OS that ran succeeded (skipped OSes don't count).
   release:
     name: Publish release
-    needs: [prepare, linux, windows, macos]
+    needs: [prepare, linux, windows, macos, android]
     if: >-
       always() &&
       needs.prepare.result == 'success' &&
