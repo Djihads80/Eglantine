@@ -567,6 +567,8 @@ private:
             tail_level = other.tail_level;
             zero_block = std::exchange(other.zero_block, VK_NULL_HANDLE);
             tail_memory = std::exchange(other.tail_memory, VK_NULL_HANDLE);
+            layer_tails = std::move(other.layer_tails);
+            other.layer_tails.clear();
             bound_bytes = other.bound_bytes;
             warned = other.warned;
             return *this;
@@ -586,6 +588,10 @@ private:
                     allocator->FreeSparseMemory(allocation);
                 }
             }
+            for (const VmaAllocation allocation : layer_tails) {
+                allocator->FreeSparseMemory(allocation);
+            }
+            layer_tails.clear();
             allocator->FreeSparseMemory(tail_memory);
             allocator->FreeSparseMemory(zero_block);
             zero_block = VK_NULL_HANDLE;
@@ -604,13 +610,14 @@ private:
         u32 tile_height{};
         VkDeviceSize layer_bytes{}; ///< One layer's levels before the mip tail, and its own tail
         std::vector<VmaAllocation> layer_memory; ///< Per layer, null until bound
-        /// SparseTiles: per level before the mip tail, per sparse block (rows), null until bound
+        /// SparseTiles: per level, then per array layer and sparse block, null until bound
         std::vector<std::vector<VmaAllocation>> level_tiles;
         u32 tail_level{}; ///< SparseTiles: first level of the mip tail
         /// SparseTiles: the zeroed block every block without memory of its own is bound to, where
         /// the driver can't sample unbound memory
         VmaAllocation zero_block{};
         VmaAllocation tail_memory{};             ///< The mip tail all layers share, if one
+        std::vector<VmaAllocation> layer_tails;   ///< SparseTiles with separate mip tails
         VkDeviceSize bound_bytes{};
         bool warned{};
     };

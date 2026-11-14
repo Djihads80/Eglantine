@@ -2326,14 +2326,24 @@ void TextureCache<P>::RefreshSparseTiles(Image& image) {
             runtime.TransitionImageLayout(image);
             return;
         }
-        const size_t bytes = UnswizzledRectsBytes(image.info, rects);
-        auto staging = runtime.UploadStagingBuffer(bytes);
-        const std::vector<BufferImageCopy> copies = UnswizzleImageRects(
-            *gpu_memory, image.gpu_addr, image.info, rects, staging.mapped_span);
-        image.UploadMemory(staging, copies);
+        // Bound staging allocations to one layer even when a large atlas has many mapped layers.
+        std::span<const LevelRect> remaining{rects};
+        while (!remaining.empty()) {
+            size_t count = 1;
+            while (count < remaining.size() && remaining[count].layer == remaining.front().layer) {
+                ++count;
+            }
+            const auto layer_rects = remaining.first(count);
+            const size_t bytes = UnswizzledRectsBytes(image.info, layer_rects);
+            auto staging = runtime.UploadStagingBuffer(bytes);
+            const auto copies = UnswizzleImageRects(*gpu_memory, image.gpu_addr, image.info,
+                                                   layer_rects, staging.mapped_span);
+            image.UploadMemory(staging, copies);
+            uploaded_bytes += bytes;
+            remaining = remaining.subspan(count);
+        }
         runtime.InsertUploadMemoryBarrier();
         ++images_uploaded;
-        uploaded_bytes += bytes;
     }
 }
 
@@ -2729,8 +2739,7 @@ u64 TextureCache<P>::GetScaledImageSizeBytes(const ImageBase& image) {
                                           Settings::values.resolution_info.up_scale);
     const u64 down_shift = static_cast<u64>(Settings::values.resolution_info.down_shift +
                                             Settings::values.resolution_info.down_shift);
-    const u64 image_size_bytes =
-        static_cast<u64>((std::max)(image.guest_size_bytes, image.unswizzled_size_bytes));
+    const u64 image_size_bytes = (std::max<u64>)(image.guest_size_bytes, image.unswizzled_size_bytes);
     const u64 tentative_size = (image_size_bytes * scale_up) >> down_shift;
     const u64 fitted_size = Common::AlignUp(tentative_size, 1024);
     return fitted_size;
@@ -2747,7 +2756,7 @@ u64 TextureCache<P>::ImageMemoryBytes(const Image& image) const {
         }
         return 0;
     }
-    u64 tentative_size = (std::max)(image.guest_size_bytes, image.unswizzled_size_bytes);
+    u64 tentative_size = (std::max<u64>)(image.guest_size_bytes, image.unswizzled_size_bytes);
     if ((IsPixelFormatASTC(image.info.format) &&
          True(image.flags & ImageFlagBits::AcceleratedUpload)) ||
         True(image.flags & ImageFlagBits::Converted)) {
