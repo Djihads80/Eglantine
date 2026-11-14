@@ -187,12 +187,12 @@ float4 Denoise(float2 uv, float2 inputSize)
     
     for (int i = 0; i < 4; i++)
     {
-        float3 sample = tex2D(BackBuffer, uv + offsets[i]).rgb;
-        float sample_luma = dot(sample, luma_weights);
+        float3 tap = tex2D(BackBuffer, uv + offsets[i]).rgb;
+        float sample_luma = dot(tap, luma_weights);
         float diff = abs(sample_luma - center_luma);
         float weight = exp(-diff * DenoiseStrength * 50.0);
         
-        sum += sample * weight;
+        sum += tap * weight;
         total_weight += weight;
     }
     
