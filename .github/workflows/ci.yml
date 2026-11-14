@@ -7,8 +7,8 @@ run-name: >-
 # one reusable workflow per OS and a final one that publishes the GitHub release.
 #
 #   push to nx2 touching VERSION   stable or rc release, aborted when that tag already exists
-#   schedule                       daily build of nx2, aborted when nothing changed since the last one
-#   workflow_dispatch              branch build of the chosen ref (or a forced daily, from nx2)
+#   workflow_dispatch, kind=daily  daily build of the daily branch, started by daily.yml on nx2
+#   workflow_dispatch              branch build of the chosen ref (or a daily, from the daily branch)
 #   pull_request + ci:build label  branch build of a same-repo PR, rebuilt on each push
 on:
   push:
@@ -17,8 +17,6 @@ on:
     paths:
       - VERSION
       - CHANGELOG.md
-  schedule:
-    - cron: "0 3 * * *"
   workflow_dispatch:
     inputs:
       kind:

@@ -1,0 +1,39 @@
+name: daily
+
+run-name: daily build of ${{ vars.DAILY_BRANCH || 'nx2-experimental' }}
+
+# GitHub only runs a schedule from the default branch's copy of a workflow, so this small
+# workflow lives here and starts ci.yml on the daily branch, which then builds with the
+# workflow files of that branch. Nothing is dispatched when the branch has not moved since the
+# last daily build.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    name: Start daily build
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Dispatch ci.yml on the daily branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAILY_BRANCH: ${{ vars.DAILY_BRANCH || 'nx2-experimental' }}
+        run: |
+          set -euo pipefail
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/$DAILY_BRANCH" --jq .sha)
+          latest=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName \
+            --jq 'first(.[] | .tagName | select(startswith("daily-"))) // ""')
+          if [ -n "$latest" ] &&
+            [ "$(gh api "repos/$GITHUB_REPOSITORY/commits/$latest" --jq .sha)" = "$tip" ]; then
+            echo "Skipping: $latest already has $tip"
+            exit 0
+          fi
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$DAILY_BRANCH" \
+            -f kind=daily -f pgo=both
