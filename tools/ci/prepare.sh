@@ -129,9 +129,9 @@ case "$kind" in
     display_release=$tag
     ;;
   daily)
-    # The schedule runs on the default branch and never fills `branch`; the
-    # build is of the daily branch's tip.
-    display_branch=$daily_branch
+    # `branch` carries the daily branch (daily.yml dispatches ci.yml from it);
+    # fall back to the configured name for a push-style schedule run.
+    display_branch=${branch:-$daily_branch}
     ;;
   branch) ;;
 esac
