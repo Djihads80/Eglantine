@@ -43,17 +43,21 @@ void Manager::ReleaseSessionId(const size_t session_id) {
 
 Manager::~Manager() {
     if (linked_to_manager) {
-        system.AudioCore().GetAudioManager().ClearManager(Event::Type::AudioInManager);
+        system.AudioCore().GetAudioManager().ClearManager(Event::Type::AudioInManager, this);
     }
 }
 
 Result Manager::LinkToManager() {
-    std::scoped_lock l{mutex};
-    if (!linked_to_manager) {
-        system.AudioCore().GetAudioManager().SetInManager(std::bind(&Manager::BufferReleaseAndRegister, this));
+    {
+        std::scoped_lock l{mutex};
+        if (linked_to_manager) {
+            return ResultSuccess;
+        }
         linked_to_manager = true;
     }
-
+    // Registered without the mutex held: the callback takes it while the audio manager thread holds
+    // its event lock, which registering needs.
+    system.AudioCore().GetAudioManager().SetInManager(this, std::bind(&Manager::BufferReleaseAndRegister, this));
     return ResultSuccess;
 }
 

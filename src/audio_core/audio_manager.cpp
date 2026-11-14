@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+
 #include "audio_core/audio_manager.h"
 #include "common/thread.h"
 #include "core/core.h"
@@ -24,8 +26,10 @@ AudioManager::AudioManager() {
             for (size_t i = 0; i < buffer_events.size(); i++) {
                 const auto event_type = Event::Type(i);
                 if (events.CheckAudioEventSet(event_type) || timed_out) {
-                    if (buffer_events[i]) {
-                        buffer_events[i]();
+                    for (const auto& registration : buffer_events[i]) {
+                        if (registration.func) {
+                            registration.func();
+                        }
                     }
                 }
                 events.SetAudioEvent(event_type, false);
@@ -42,12 +46,17 @@ void AudioManager::Shutdown() {
     }
 }
 
-Result AudioManager::SetOutManager(BufferEventFunc buffer_func) {
+Result AudioManager::SetOutManager(const void* owner, BufferEventFunc buffer_func) {
     if (thread.joinable()) {
-        std::scoped_lock l{lock};
+        // The manager thread reads the callbacks under the event lock; callers must not hold a
+        // mutex a callback takes (the manager thread would wait for it while holding that lock).
+        std::scoped_lock l{lock, events.GetAudioEventLock()};
         const auto index{events.GetManagerIndex(Event::Type::AudioOutManager)};
-        if (buffer_events[index] == nullptr) {
-            buffer_events[index] = std::move(buffer_func);
+        auto& registrations = buffer_events[index];
+        const bool registered = std::ranges::any_of(
+            registrations, [owner](const Registration& r) { return r.owner == owner; });
+        if (!registered) {
+            registrations.push_back({owner, std::move(buffer_func)});
             needs_update = true;
             events.SetAudioEvent(Event::Type::AudioOutManager, true);
         }
@@ -56,12 +65,14 @@ Result AudioManager::SetOutManager(BufferEventFunc buffer_func) {
     return Service::Audio::ResultOperationFailed;
 }
 
-Result AudioManager::SetInManager(BufferEventFunc buffer_func) {
+Result AudioManager::SetInManager(const void* owner, BufferEventFunc buffer_func) {
     if (thread.joinable()) {
-        std::scoped_lock l{lock};
+        // The manager thread reads the callbacks under the event lock; callers must not hold a
+        // mutex a callback takes (the manager thread would wait for it while holding that lock).
+        std::scoped_lock l{lock, events.GetAudioEventLock()};
         const auto index{events.GetManagerIndex(Event::Type::AudioInManager)};
-        if (buffer_events[index] == nullptr) {
-            buffer_events[index] = std::move(buffer_func);
+        if (buffer_events[index].empty()) {
+            buffer_events[index].push_back({owner, std::move(buffer_func)});
             needs_update = true;
             events.SetAudioEvent(Event::Type::AudioInManager, true);
         }
@@ -70,10 +81,11 @@ Result AudioManager::SetInManager(BufferEventFunc buffer_func) {
     return Service::Audio::ResultOperationFailed;
 }
 
-void AudioManager::ClearManager(const Event::Type type) {
+void AudioManager::ClearManager(const Event::Type type, const void* owner) {
     // The manager thread holds the event lock whenever it runs a callback.
     std::scoped_lock l{lock, events.GetAudioEventLock()};
-    buffer_events[events.GetManagerIndex(type)] = nullptr;
+    std::erase_if(buffer_events[events.GetManagerIndex(type)],
+                  [owner](const Registration& r) { return r.owner == owner; });
 }
 
 void AudioManager::SetEvent(const Event::Type type, const bool signalled) {
