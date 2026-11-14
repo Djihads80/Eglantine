@@ -93,7 +93,7 @@ TEST_CASE("UpdateChecker: ordering", "[updater]") {
 TEST_CASE("UpdateChecker: channel of a tag", "[updater]") {
     CHECK(ChannelOfTag("v0.1.0") == Channel::Stable);
     CHECK(ChannelOfTag("v0.1.0-rc2") == Channel::ReleaseCandidate);
-    CHECK_FALSE(ChannelOfTag("daily-20261109").has_value());
+    CHECK(ChannelOfTag("daily-20261109") == Channel::Daily);
     CHECK_FALSE(ChannelOfTag("113e7561cd-branch").has_value());
 }
 
@@ -145,10 +145,68 @@ TEST_CASE("UpdateChecker: untagged releases are ignored", "[updater]") {
 
 TEST_CASE("UpdateChecker: a non-release build is offered nothing", "[updater]") {
     const auto releases = MakeReleases({"v0.1.0", "v0.2.0-rc1"});
-    for (const char* current : {"", "113e7561cd-branch", "daily-20261109", "v0.1"}) {
+    for (const char* current : {"", "113e7561cd-branch", "branch-foo-abc123", "v0.1"}) {
         INFO(current);
         CHECK(Select(releases, current, Channel::ReleaseCandidate) == "");
         CHECK(Select(releases, current, Channel::Stable) == "");
+        CHECK(Select(MakeReleases({"daily-20261109"}), current, Channel::Daily) == "");
+    }
+}
+
+TEST_CASE("UpdateChecker: daily tag parsing", "[updater]") {
+    CHECK(ParseDailyTag("daily-20261109") == 20261109u);
+    CHECK(ParseDailyTag("daily-20270101") == 20270101u);
+    for (const char* tag : {"", "daily-", "daily-2026110", "daily-202611090", "daily-2026110x",
+                            "daily-20261309", "daily-20261100", "daily-20260032", "Daily-20261109",
+                            "daily-20261109 ", "v0.1.0", "branch-daily-20261109"}) {
+        INFO(tag);
+        CHECK_FALSE(ParseDailyTag(tag).has_value());
+    }
+}
+
+TEST_CASE("UpdateChecker: daily channel", "[updater]") {
+    const auto releases = MakeReleases(
+        {"daily-20261112", "v0.1.0", "daily-20261109", "v0.2.0-rc1", "daily-20261110"});
+
+    SECTION("the newest later daily build is offered") {
+        CHECK(Select(releases, "daily-20261105", Channel::Daily) == "daily-20261112");
+        CHECK(Select(releases, "daily-20261110", Channel::Daily) == "daily-20261112");
+    }
+    SECTION("nothing is offered when already newest") {
+        CHECK(Select(releases, "daily-20261112", Channel::Daily) == "");
+        CHECK(Select(releases, "daily-20261201", Channel::Daily) == "");
+    }
+    SECTION("tagged releases are not daily builds") {
+        const auto tagged = MakeReleases({"v0.1.0", "v0.2.0-rc1"});
+        CHECK(Select(tagged, "daily-20261105", Channel::Daily) == "");
+    }
+    SECTION("a daily build without the platform asset is skipped") {
+        const std::vector<Common::Net::Release> list = {
+            MakeRelease("daily-20261110"),
+            MakeRelease("daily-20261111", {"eglantine-linux-x86_64.AppImage"}),
+        };
+        CHECK(Select(list, "daily-20261109", Channel::Daily) == "daily-20261110");
+        CHECK(Select(list, "daily-20261109", Channel::Daily, "linux-x86_64") == "daily-20261111");
+    }
+}
+
+TEST_CASE("UpdateChecker: switching between daily and tagged builds", "[updater]") {
+    const auto releases = MakeReleases(
+        {"daily-20261112", "v0.1.0", "daily-20261109", "v0.2.0-rc1", "v0.0.9"});
+
+    SECTION("a tagged build on the Daily channel is offered the newest daily build") {
+        CHECK(Select(releases, "v0.1.0", Channel::Daily) == "daily-20261112");
+        CHECK(Select(releases, "v9.0.0", Channel::Daily) == "daily-20261112");
+        CHECK(Select(releases, "v0.2.0-rc1", Channel::Daily) == "daily-20261112");
+    }
+    SECTION("a daily build on a tagged channel is offered that channel's newest release") {
+        CHECK(Select(releases, "daily-20261112", Channel::Stable) == "v0.1.0");
+        CHECK(Select(releases, "daily-20261201", Channel::Stable) == "v0.1.0");
+        CHECK(Select(releases, "daily-20261112", Channel::ReleaseCandidate) == "v0.2.0-rc1");
+    }
+    SECTION("nothing is offered when the channel has no release") {
+        CHECK(Select(MakeReleases({"v0.1.0"}), "v0.1.0", Channel::Daily) == "");
+        CHECK(Select(MakeReleases({"daily-20261109"}), "daily-20261105", Channel::Stable) == "");
     }
 }
 

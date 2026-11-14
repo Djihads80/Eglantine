@@ -8,10 +8,14 @@
 
 #include <QFont>
 #include <QString>
+#include <QStringList>
 #include "common/uuid.h"
 
 /// Returns a QFont object appropriate to use as a monospace font for debugging widgets, etc.
 [[nodiscard]] QFont GetMonospaceFont();
+
+/// Returns ordered directories to search for UI translation files (.qm).
+[[nodiscard]] QStringList GetLanguageSearchDirectories();
 
 /**
  * Prompt the user for a profile ID. If there is only one valid profile, returns that profile.

@@ -72,6 +72,17 @@ std::string Lower(std::string_view text) {
     return result;
 }
 
+/// An effect set (.vsetb, or .esetb in Mario Kart World) by its lowercase walk name.
+bool IsEffectSet(std::string_view name) {
+    for (const std::string_view suffix : {".vsetb.byml", ".vsetb.byml.zs!zstd", ".esetb.byml",
+                                          ".esetb.byml.zs!zstd"}) {
+        if (EndsWith(name, suffix)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 struct Record {
     ProgramStage stage;
     Bytes code;
@@ -488,6 +499,12 @@ std::vector<Record> ParseBnsh(Bytes data) {
     return result;
 }
 
+/// True when `data` holds the BNSH magic anywhere.
+bool HasEmbeddedBnsh(Bytes data) {
+    static constexpr std::array<u8, 8> magic{'B', 'N', 'S', 'H', 0, 0, 0, 0};
+    return std::search(data.begin(), data.end(), magic.begin(), magic.end()) != data.end();
+}
+
 /// Every BNSH file embedded in `data` with its offset, each one validated. Throws when there is
 /// none.
 std::vector<std::pair<size_t, Bytes>> FindEmbeddedBnsh(Bytes data) {
@@ -801,11 +818,17 @@ struct Walker {
             for (const auto& [offset, bnsh] : FindBnsh(data)) {
                 Walk(bnsh, name + fmt::format("!BNSH@{:x}", offset), depth + 1);
             }
-        } else if (Is(data, 0, std::string_view{"YB\x05\0", 4}) &&
-                   (EndsWith(Lower(name), ".vsetb.byml") ||
-                    EndsWith(Lower(name), ".vsetb.byml.zs!zstd"))) {
+        } else if (Is(data, 0, std::string_view{"YB\x05\0", 4}) && IsEffectSet(Lower(name))) {
             for (const auto& [offset, bnsh] : FindEmbeddedBnsh(data)) {
                 Walk(bnsh, name + fmt::format("!BNSH@{:x}", offset), depth + 1);
+            }
+        } else if (Is(data, 0, "VFXB")) {
+            // Particle effect binaries (Fire Emblem's Effect/Particle/*.ptcl): the GPU particle
+            // programs are embedded BNSH files; most effects have none.
+            if (HasEmbeddedBnsh(data)) {
+                for (const auto& [offset, bnsh] : FindEmbeddedBnsh(data)) {
+                    Walk(bnsh, name + fmt::format("!BNSH@{:x}", offset), depth + 1);
+                }
             }
         } else if (Is(data, 0, "BNSH")) {
             Emit(ParseBnsh(data));
@@ -882,7 +905,9 @@ GameFileKind ClassifyGameFile(std::string_view path) {
         return GameFileKind::ZstdDictionaries;
     }
     std::string lower = Lower(path);
-    if (EndsWith(lower, ".zs")) {
+    if (EndsWith(lower, ".zst")) {
+        lower.resize(lower.size() - 4);
+    } else if (EndsWith(lower, ".zs")) {
         lower.resize(lower.size() - 3);
     }
     for (const std::string_view extension :
@@ -892,7 +917,10 @@ GameFileKind ClassifyGameFile(std::string_view path) {
         }
     }
     if (path.starts_with("Effect/") && path.find('/', 7) == std::string_view::npos &&
-        EndsWith(path, ".vsetb.byml.zs")) {
+        (EndsWith(path, ".vsetb.byml.zs") || EndsWith(path, ".esetb.byml.zs"))) {
+        return GameFileKind::Effect;
+    }
+    if (EndsWith(lower, ".ptcl")) {
         return GameFileKind::Effect;
     }
     return GameFileKind::Other;

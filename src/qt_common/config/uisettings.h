@@ -142,7 +142,7 @@ struct Values {
 
     Setting<bool> check_for_updates{linkage, true, "check_for_updates", Category::UiGeneral};
 
-    // Unset until a tagged release build first runs, then only the user changes it
+    // Unset until a tagged release or daily build first runs, then only the user changes it
     Setting<Settings::UpdateChannel> update_channel{linkage, Settings::UpdateChannel::Unset,
                                                     "update_channel", Category::UiGeneral};
     // Which build updates and tester builds download; Auto keeps the one this build is

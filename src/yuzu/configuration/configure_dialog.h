@@ -67,6 +67,9 @@ public:
     void ApplyConfiguration();
     void accept() override;
 
+    /// Selects the Profiles tab of the System category.
+    void SelectProfilesTab();
+
 private slots:
     void OnLanguageChanged(const QString& locale);
 

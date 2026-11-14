@@ -69,3 +69,10 @@ magick -size 1024x1024 -background none "$EDEN_BASE_SVG" "$TMP_PNG" || exit
 png2icns dist/eden.icns "$TMP_PNG" || echo 'non fatal'
 
 rm "$TMP_PNG"
+
+# Default user avatar
+
+# The built-in avatar is compiled in (Core::Constants::ACCOUNT_BACKUP_JPEG), not read from
+# dist/eden_profile.jpg at runtime, so the jpg has to be pasted into src/core/constants.cpp.
+
+python3 -I tools/update_profile_avatar.py || exit

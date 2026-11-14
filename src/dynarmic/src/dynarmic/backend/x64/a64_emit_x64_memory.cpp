@@ -24,6 +24,7 @@
 #include "dynarmic/backend/x64/perf_map.h"
 #include "dynarmic/common/spin_lock_x64.h"
 #include "dynarmic/interface/exclusive_monitor.h"
+#include "dynarmic/interface/jit_stats.h"
 
 namespace Dynarmic::Backend::X64 {
 

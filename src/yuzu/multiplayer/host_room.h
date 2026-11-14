@@ -50,6 +50,8 @@ public:
 
 signals:
     void SaveConfig();
+    /// Asks the main window to open Configuration > System > Profiles.
+    void RequestProfileConfiguration();
 
 private:
     void Host();

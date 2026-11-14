@@ -17,6 +17,7 @@
 #include "core/hle/kernel/svc.h"
 #include "core/hle/kernel/k_readable_event.h"
 #include "core/hle/service/kernel_helpers.h"
+#include "video_core/nx2_spikes.h"
 
 namespace Kernel::Svc {
 
@@ -2578,10 +2579,45 @@ void Call(Core::System& system, u32 imm) {
         LOG_DEBUG(Kernel_SVC, "Switch 2 svc 0x80 addr={:#x} size={:#x} mask={:#x} attr={:#x} -> {:#x}",
                   address, size, mask, attr, result.raw);
         args[0] = result.raw;
-    } else if (process.Is64Bit()) {
-        Call64(system, imm, args);
     } else {
-        Call32(system, imm, args);
+        namespace Spikes = VideoCommon::Nx2Spikes;
+        const bool spikes = Spikes::Counting();
+        const auto started = spikes ? Spikes::Clock::now() : Spikes::Clock::time_point{};
+        if (process.Is64Bit()) {
+            Call64(system, imm, args);
+        } else {
+            Call32(system, imm, args);
+        }
+        if (spikes) {
+            const auto time = Spikes::Clock::now() - started;
+            Spikes::Note(Spikes::Event::Svc, time);
+            switch (imm) {
+            case 0x0B:
+                Spikes::Note(Spikes::Event::SvcSleep, time);
+                break;
+            case 0x18:
+                Spikes::Note(Spikes::Event::SvcWaitSync, time);
+                break;
+            case 0x1A:
+            case 0x1B:
+            case 0x1C:
+            case 0x1D:
+                Spikes::Note(Spikes::Event::SvcMutexCondvar, time);
+                break;
+            case 0x34:
+            case 0x35:
+                Spikes::Note(Spikes::Event::SvcAddressArbiter, time);
+                break;
+            case 0x21:
+            case 0x22:
+            case 0x43:
+            case 0x44:
+                Spikes::Note(Spikes::Event::SvcIpc, time);
+                break;
+            default:
+                break;
+            }
+        }
     }
     if (svc_trace) {
         LOG_INFO(Kernel_SVC, "svc {:#04x} out t{} [0]={:#x} [1]={:#x} [2]={:#x}", imm,

@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       kind:
-        description: What to build (daily is only allowed from nx2)
+        description: What to build (daily is only allowed on the daily branch)
         type: choice
         options: [branch, daily]
         default: branch
@@ -58,7 +58,7 @@ permissions:
 concurrency:
   # Manual and scheduled daily builds share a group; PR and manual branch builds share a group
   # for the source branch so they cannot race while replacing the same rolling release.
-  group: ci-${{ (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || (github.event.action == 'labeled' && github.event.label.name != 'ci:build'))) && format('ignored-{0}', github.run_id) || (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.kind == 'daily')) && 'daily-nx2' || (github.event_name == 'pull_request' && format('branch-{0}', github.event.pull_request.head.ref)) || (github.event_name == 'workflow_dispatch' && format('branch-{0}', github.ref_name)) || format('release-{0}', github.ref) }}
+  group: ci-${{ (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || (github.event.action == 'labeled' && github.event.label.name != 'ci:build'))) && format('ignored-{0}', github.run_id) || (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.kind == 'daily')) && 'daily' || (github.event_name == 'pull_request' && format('branch-{0}', github.event.pull_request.head.ref)) || (github.event_name == 'workflow_dispatch' && format('branch-{0}', github.ref_name)) || format('release-{0}', github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.kind != 'daily') }}
 
 jobs:
@@ -101,11 +101,12 @@ jobs:
         shell: bash
         env:
           TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          DAILY_BRANCH: ${{ vars.DAILY_BRANCH || 'nx2-experimental' }}
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = schedule ]; then
-            git fetch --no-tags origin nx2:refs/remotes/origin/nx2
-            sha=$(git rev-parse refs/remotes/origin/nx2)
+            git fetch --no-tags origin "$DAILY_BRANCH:refs/remotes/origin/$DAILY_BRANCH"
+            sha=$(git rev-parse "refs/remotes/origin/$DAILY_BRANCH")
           else
             git fetch --no-tags origin "$TARGET_SHA"
             sha="$TARGET_SHA"

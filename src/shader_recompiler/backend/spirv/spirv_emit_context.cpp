@@ -989,9 +989,14 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
     }
     using DefPtr = Id StorageDefinitions::*;
     const Id zero{u32_zero_value};
-    const spv::FunctionControlMask helper_control{LeanGlobalMemory()
-                                                      ? spv::FunctionControlMask::DontInline
-                                                      : spv::FunctionControlMask::MaskNone};
+    const bool inline_mesh_loads{profile.has_broken_mesh_global_memory_calls &&
+                                 runtime_info.mesh_as_compute &&
+                                 (stage == Stage::Task || stage == Stage::Mesh)};
+    const spv::FunctionControlMask helper_control{
+        LeanGlobalMemory() ? spv::FunctionControlMask::DontInline
+                           : spv::FunctionControlMask::MaskNone};
+    const spv::FunctionControlMask load_control{
+        inline_mesh_loads ? spv::FunctionControlMask::Inline : helper_control};
     const auto define_body{[&](DefPtr ssbo_member, Id addr, Id element_pointer, u32 shift,
                                auto&& callback) {
         AddLabel();
@@ -1101,7 +1106,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
     }};
     const auto define_load{[&](DefPtr ssbo_member, Id element_pointer, Id type, u32 shift) {
         const Id function_type{TypeFunction(type, U64)};
-        const Id func_id{OpFunction(type, helper_control, function_type)};
+        const Id func_id{OpFunction(type, load_control, function_type)};
         const Id addr{OpFunctionParameter(U64)};
         if (shift > 2 && SsboAlignFixEnabled() && profile.min_ssbo_alignment < (1U << shift)) {
             // Bindings are only aligned to min_ssbo_alignment, so read the words of the buffer

@@ -321,6 +321,14 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Lets the game adjust between 30 and 60 FPS using whole-frame timing to maintain "
               "normal game speed. Takes effect after restarting the game and takes precedence over "
               "the 30 FPS mode."));
+    INSERT(Settings, hyrule_dynamic_fps,
+           tr("Hyrule Warriors: Age of Imprisonment: dynamic FPS (experimental)"),
+           tr("Drops to 30 FPS with the game's split-screen time step while the game runs below "
+              "about 50 FPS, so heavy slowdowns don't slow down the game, and tries 60 FPS again "
+              "every few seconds."));
+    INSERT(Settings, hyrule_30fps, tr("Hyrule Warriors: Age of Imprisonment: 30 FPS mode"),
+           tr("Always runs at 30 FPS with the game's split-screen time step, at normal game speed. "
+              "Takes precedence over dynamic FPS."));
     INSERT(Settings, barrier_feedback_loops, tr("Barrier feedback loops"),
            tr("Improves rendering of transparency effects in specific games."));
     INSERT(Settings, enable_buffer_history, tr("Enable buffer history"),
@@ -397,7 +405,7 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Whether or not to check for updates upon startup."));
     INSERT(UISettings, update_channel, tr("Update channel"),
            tr("Stable only offers finished releases.\nRelease candidate also offers release "
-              "candidates of upcoming versions."));
+              "candidates of upcoming versions.\nDaily offers the automatic daily builds."));
     INSERT(UISettings, update_variant, tr("Update build"),
            tr("PGO builds are optimized using a profile of real games and are usually faster.\n"
               "When a release or tester build has no PGO build, the standard one is used.\n"
@@ -724,6 +732,7 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                           {
                               PAIR(UpdateChannel, Stable, tr("Stable")),
                               PAIR(UpdateChannel, ReleaseCandidate, tr("Release candidate")),
+                              PAIR(UpdateChannel, Daily, tr("Daily")),
                           }});
     translations->insert({Settings::EnumMetadata<Settings::UpdateVariant>::Index(),
                           {

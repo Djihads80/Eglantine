@@ -336,9 +336,13 @@ json CaptureFrame(ToolState& state, const json& params) {
     std::filesystem::create_directories(directory);
     const bool sampled = params.value("sampled", false);
     const bool buffers = params.value("buffers", false);
+    const u64 sampled_max_mib = Param<u64>(params, "sampled_max_mib", 0, 0, 1 << 16);
     const int timeout = Param<int>(params, "timeout_s", 120, 1, 600);
-    VideoCore::Nx2Debug::RequestCapture(
-        {.id = id, .directory = directory, .sampled = sampled, .buffers = buffers});
+    VideoCore::Nx2Debug::RequestCapture({.id = id,
+                                         .directory = directory,
+                                         .sampled = sampled,
+                                         .buffers = buffers,
+                                         .sampled_max_bytes = sampled_max_mib << 20});
     const auto finished = VideoCore::Nx2Debug::WaitCapture(id, std::chrono::seconds{timeout});
     if (!finished) {
         VideoCore::Nx2Debug::CancelCapture(id);

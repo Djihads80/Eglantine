@@ -164,7 +164,7 @@ ENUM(GameListMode, TreeView, GridView, CarouselView);
 ENUM(SpeedMode, Standard, Turbo, Slow);
 ENUM(FrameGenType, Lsfg, Fsr3);
 ENUM(ColdHintMode, Off, WhenRamIsLow, Always);
-ENUM(UpdateChannel, Unset, Stable, ReleaseCandidate);
+ENUM(UpdateChannel, Unset, Stable, ReleaseCandidate, Daily);
 ENUM(UpdateVariant, Auto, Standard, Pgo);
 
 template <typename Type>

@@ -291,7 +291,7 @@ void ConfigureProfileManager::EditUser() {
     NewUserDialog* dialog = new NewUserDialog(uuid.value(), username, tr("Edit User"), this);
 
     connect(dialog, &NewUserDialog::userAdded, this,
-            [dialog, profile, user_idx, uuid, this](User user) mutable {
+            [dialog, user_idx, uuid, this](User user) {
                 // TODO: MOVE UUID
                 // auto new_uuid = user.uuid;
                 auto new_username = user.username;
@@ -300,11 +300,7 @@ void ConfigureProfileManager::EditUser() {
                 auto const uuid_val = uuid.value();
 
                 const auto username_std = new_username.toStdString();
-                std::fill(profile.username.begin(), profile.username.end(), '\0');
-                std::copy(username_std.begin(), username_std.end(), profile.username.begin());
-
-                profile_manager.SetProfileBase(uuid_val, profile);
-                profile_manager.WriteUserSaveFile();
+                profile_manager.SetProfileUsername(uuid_val, username_std);
 
                 item_model->setItem(
                     user_idx, 0,

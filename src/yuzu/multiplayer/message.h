@@ -3,7 +3,18 @@
 
 #pragma once
 
+#include <functional>
+#include <string>
 #include <utility>
+#include <QObject>
+#include <QString>
+
+class QLineEdit;
+class QWidget;
+
+namespace Core {
+class System;
+}
 
 namespace NetworkMessage {
 
@@ -68,5 +79,38 @@ bool WarnCloseRoom();
  * return true if the user wants to disconnect
  */
 bool WarnDisconnect();
+
+/**
+ * The name the current user profile has, or an empty string when it cannot be read.
+ */
+std::string GetProfileUsername(Core::System& system);
+
+/**
+ * Returns the default name that matches, ignoring case and surrounding spaces, or an empty string
+ * when the name is the user's own.
+ */
+QString GetDefaultDisplayName(const QString& name);
+
+/**
+ * Whether the emulator itself shipped this name as its default nickname, meaning a stored value was
+ * never picked by the user and can be replaced.
+ */
+bool IsShippedDefaultNickname(const QString& name);
+
+/**
+ * Renames the current user profile. Returns false when the name does not fit the profile field or
+ * the profile cannot be saved.
+ */
+bool RenameCurrentProfile(Core::System& system, const QString& new_name);
+
+/**
+ * Warns about a default user profile name or nickname before joining, hosting or connecting to a
+ * room, and applies the fix the user picked. Returns false when the user cancelled.
+ *
+ * \param nickname The lobby nickname field, kept in sync when the profile name is changed.
+ * \param open_profile_settings Opens the settings page that edits the user profile name.
+ */
+bool ConfirmDisplayName(QWidget* parent, Core::System& system, QLineEdit* nickname,
+                        const std::function<void()>& open_profile_settings);
 
 } // namespace NetworkMessage

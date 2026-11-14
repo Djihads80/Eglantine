@@ -385,6 +385,20 @@ inline static bool isDarkMode() {
 }
 #endif // _WIN32
 
+#ifdef ENABLE_UPDATE_CHECKER
+static Settings::UpdateChannel ToSettingsChannel(UpdateChecker::Channel channel) {
+    switch (channel) {
+    case UpdateChecker::Channel::ReleaseCandidate:
+        return Settings::UpdateChannel::ReleaseCandidate;
+    case UpdateChecker::Channel::Daily:
+        return Settings::UpdateChannel::Daily;
+    case UpdateChecker::Channel::Stable:
+        break;
+    }
+    return Settings::UpdateChannel::Stable;
+}
+#endif
+
 MainWindow::MainWindow(bool has_broken_vulkan)
     : ui{std::make_unique<Ui::MainWindow>()},
       input_subsystem{std::make_shared<InputCommon::InputSubsystem>()}, user_data_migrator{this} {
@@ -472,12 +486,10 @@ MainWindow::MainWindow(bool has_broken_vulkan)
             tester_monitor->Start();
         }
     } else if (const auto build_channel = UpdateChecker::BuildChannel()) {
-        // The first tagged release build to run picks the channel, and it stays until changed.
+        // The first tagged release or daily build to run picks the channel, and it stays until
+        // changed.
         if (UISettings::values.update_channel.GetValue() == Settings::UpdateChannel::Unset) {
-            UISettings::values.update_channel.SetValue(
-                *build_channel == UpdateChecker::Channel::Stable
-                    ? Settings::UpdateChannel::Stable
-                    : Settings::UpdateChannel::ReleaseCandidate);
+            UISettings::values.update_channel.SetValue(ToSettingsChannel(*build_channel));
             config->SaveAllValues();
         }
         if (UISettings::values.check_for_updates) {
@@ -1926,6 +1938,14 @@ void MainWindow::ConnectWidgetEvents() {
 
     connect(game_list, &GameList::OpenPerGameGeneralRequested, this,
             &MainWindow::OnGameListOpenPerGameProperties);
+    connect(game_list, &GameList::ResetRecommendedSettingsPromptRequested, this,
+            [this](u64 program_id) {
+                UISettings::values.skipped_recommended_settings.erase(program_id);
+                asked_recommended_settings.erase(program_id);
+                const bool players_were_global = Settings::values.players.UsingGlobal();
+                config->SaveAllValues();
+                Settings::values.players.SetGlobal(players_were_global);
+            });
     connect(game_list, &GameList::LinkToRyujinxRequested, this, &MainWindow::OnLinkToRyujinx);
 
     connect(this, &MainWindow::UpdateInstallProgress, this, &MainWindow::IncrementInstallProgress);
@@ -2030,6 +2050,8 @@ void MainWindow::ConnectMenuEvents() {
     connect(ui->action_Show_Room, &QAction::triggered, multiplayer_state,
             &MultiplayerState::OnOpenNetworkRoom);
     connect(multiplayer_state, &MultiplayerState::SaveConfig, this, &MainWindow::OnSaveConfig);
+    connect(multiplayer_state, &MultiplayerState::RequestProfileConfiguration, this,
+            &MainWindow::OnConfigureProfiles);
 
     // Tools
     connect_menu(ui->action_Launch_PhotoViewer, [this] {
@@ -2089,8 +2111,8 @@ void MainWindow::ConnectMenuEvents() {
     ui->action_Check_For_Updates->setVisible(false);
 #endif
 #if defined(ENABLE_UPDATE_CHECKER) && (defined(__linux__) || defined(_WIN32))
-    auto* restore_action = ui->menu_Help->addAction(tr("Restore Previous Version..."));
-    restore_action->setVisible(false);
+    // In main.ui, so a language change retranslates it; hidden until there is a version to restore.
+    auto* restore_action = ui->action_Restore_Previous_Version;
 #ifdef __linux__
     const auto previous_version = [] {
         const std::filesystem::path target{qEnvironmentVariable("APPIMAGE").toStdString()};
@@ -4099,6 +4121,14 @@ void MainWindow::ToggleShowGameName() {
 }
 
 void MainWindow::OnConfigure() {
+    OpenConfigureDialog(false);
+}
+
+void MainWindow::OnConfigureProfiles() {
+    OpenConfigureDialog(true);
+}
+
+void MainWindow::OpenConfigureDialog(bool select_profiles) {
     const auto old_theme = UISettings::values.theme;
     const bool old_discord_presence = UISettings::values.enable_discord_presence.GetValue();
     const auto old_language_index = Settings::values.language_index.GetValue();
@@ -4121,6 +4151,10 @@ void MainWindow::OnConfigure() {
             &MainWindow::OnLanguageChanged);
     connect(&configure_dialog, &ConfigureDialog::ExternalContentDirsChanged, this,
             &MainWindow::OnGameListRefresh);
+
+    if (select_profiles) {
+        configure_dialog.SelectProfilesTab();
+    }
 
     const auto result = configure_dialog.exec();
     if (result != QDialog::Accepted && !UISettings::values.configuration_applied &&
@@ -5132,10 +5166,17 @@ void MainWindow::CheckForUpdates(bool manual) {
         return;
     }
 
-    update_check_channel = UISettings::values.update_channel.GetValue() ==
-                                   Settings::UpdateChannel::ReleaseCandidate
-                               ? UpdateChecker::Channel::ReleaseCandidate
-                               : UpdateChecker::Channel::Stable;
+    switch (UISettings::values.update_channel.GetValue()) {
+    case Settings::UpdateChannel::ReleaseCandidate:
+        update_check_channel = UpdateChecker::Channel::ReleaseCandidate;
+        break;
+    case Settings::UpdateChannel::Daily:
+        update_check_channel = UpdateChecker::Channel::Daily;
+        break;
+    default:
+        update_check_channel = UpdateChecker::Channel::Stable;
+        break;
+    }
     update_check_running = true;
     update_check_manual = manual;
     update_future = QtConcurrent::run(
@@ -5154,8 +5195,8 @@ void MainWindow::OnCheckForUpdates() {
     if (!UpdateChecker::BuildChannel()) {
         QMessageBox::information(
             this, tr("Check for Updates"),
-            tr("This build was not made from a tagged release, so it does not check for "
-               "updates."));
+            tr("This build is not a tagged release or a daily build, so it does not check "
+               "for updates."));
         return;
     }
     CheckForUpdates(true);
@@ -5189,8 +5230,8 @@ void MainWindow::OnEmulatorUpdateAvailable() {
         case UpdateChecker::Failure::NotReleaseBuild:
             QMessageBox::information(
                 this, title,
-                tr("This build was not made from a tagged release, so it does not check for "
-                   "updates."));
+                tr("This build is not a tagged release or a daily build, so it does not check "
+                   "for updates."));
             break;
         default:
             QMessageBox::warning(
@@ -5917,15 +5958,23 @@ void MainWindow::UpdateUITheme() {
 }
 
 void MainWindow::LoadTranslation() {
-    bool loaded;
+    bool loaded = false;
+    const auto lang = UISettings::values.language.GetValue();
+    const QString lang_str = QString::fromStdString(lang);
 
-    if (UISettings::values.language.GetValue().empty()) {
-        // If the selected language is empty, use system locale
-        loaded = translator.load(QLocale(), {}, {}, QStringLiteral(":/languages/"));
-    } else {
-        // Otherwise load from the specified file
-        loaded = translator.load(QString::fromStdString(UISettings::values.language.GetValue()),
-                                 QStringLiteral(":/languages/"));
+    for (const auto& dir : GetLanguageSearchDirectories()) {
+        const bool is_resource = dir.startsWith(QLatin1Char{':'});
+        if (is_resource || QDir(dir).exists()) {
+            const QString path = dir.endsWith(QLatin1Char{'/'}) ? dir : dir + QLatin1Char{'/'};
+            if (lang.empty()) {
+                loaded = translator.load(QLocale(), {}, {}, path);
+            } else {
+                loaded = translator.load(lang_str, path);
+            }
+            if (loaded) {
+                break;
+            }
+        }
     }
 
     if (loaded)

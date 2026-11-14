@@ -23,6 +23,7 @@
 #include <qlayoutitem.h>
 
 #include "common/common_types.h"
+#include "common/game_presets.h"
 #include "core/core.h"
 #include "core/file_sys/nup_writer.h"
 #include "core/file_sys/patch_manager.h"
@@ -530,6 +531,15 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
         edit_nup->setEnabled(!nup_conversion_running);
     }
     QAction* properties = context_menu.addAction(tr("Configure Game"));
+    if (Settings::FindGamePreset(program_id) != nullptr) {
+        QAction* reset_settings_prompt =
+            context_menu.addAction(tr("Show Recommended Settings Prompt Again"));
+        reset_settings_prompt->setToolTip(
+            tr("Ask about recommended settings the next time you start this game from the game "
+               "list."));
+        connect(reset_settings_prompt, &QAction::triggered, this,
+                [this, program_id] { emit ResetRecommendedSettingsPromptRequested(program_id); });
+    }
 
     favorite->setVisible(program_id != 0);
     favorite->setCheckable(true);

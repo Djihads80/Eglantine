@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Lichii Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -19,7 +20,8 @@ namespace {
 struct TempDir {
     TempDir() {
         path = fs::temp_directory_path() /
-               ("eglantine-update-installer-" + std::to_string(std::rand()) + "-" +
+               ("eglantine-update-installer-" +
+                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
                 std::to_string(counter++));
         fs::create_directories(path);
     }
@@ -129,7 +131,7 @@ TEST_CASE("Only an existing file in a writable folder can be replaced", "[update
 TEST_CASE("Only one holder at a time gets the lock", "[updater]") {
     TempDir dir;
     const auto path = UpdateInstaller::LockPath(dir.path / "eglantine.AppImage");
-    CHECK(path == dir.path / "eglantine.AppImage.lock");
+    CHECK(path == dir.path / ".eglantine.AppImage.lock");
     {
         const UpdateInstaller::Lock first{path};
         CHECK(first.Held());
@@ -247,6 +249,28 @@ TEST_CASE("Restoring the backup brings back the previous version and can be undo
     CHECK(Read(install / "user/data.bin") == "mine");
 }
 
+TEST_CASE("Updates after a restore leave the user's own folders and the lock alone", "[updater]") {
+    TempDir dir;
+    const auto install = dir.path / "app";
+    Put(install, "eglantine.exe", "v1");
+    Put(install, "games/game.nsp", "mine");
+    const UpdateInstaller::Lock lock{UpdateInstaller::LockPath(install / "eglantine.exe")};
+    REQUIRE(lock.Held());
+    std::error_code ec;
+
+    Put(install, ".update-staging/eglantine.exe", "v2");
+    REQUIRE(UpdateInstaller::Install(install / ".update-staging", install, ec));
+    REQUIRE(UpdateInstaller::Install(install / ".update-backup", install, ec));
+    Put(install, ".update-staging/eglantine.exe", "v3");
+    REQUIRE(UpdateInstaller::Install(install / ".update-staging", install, ec));
+    Put(install, ".update-staging/eglantine.exe", "v4");
+    REQUIRE(UpdateInstaller::Install(install / ".update-staging", install, ec));
+
+    CHECK(Read(install / "eglantine.exe") == "v4");
+    CHECK(Read(install / "games/game.nsp") == "mine");
+    CHECK(fs::exists(UpdateInstaller::LockPath(install / "eglantine.exe")));
+}
+
 #ifndef _WIN32
 TEST_CASE("A failed install puts every file back", "[updater]") {
     TempDir dir;
@@ -293,6 +317,36 @@ TEST_CASE("A failed restore keeps the backup it restores from", "[updater]") {
     CHECK(Read(backup / "locked/b.dll") == "v1 b");
 }
 #endif
+
+TEST_CASE("Files a failed install could not put back block the next install", "[updater]") {
+    TempDir dir;
+    const auto install = dir.path / "app";
+    Put(install, "a.dll", "old a");
+    Put(install, ".update-backup.tmp/b.dll", "only copy");
+    Put(install, ".update-staging/a.dll", "new a");
+
+    CHECK(UpdateInstaller::HasPendingBackup(install));
+    std::error_code ec;
+    CHECK_FALSE(UpdateInstaller::Install(install / ".update-staging", install, ec));
+    CHECK(ec == std::errc::file_exists);
+    CHECK(Read(install / "a.dll") == "old a");
+    CHECK(Read(install / ".update-backup.tmp/b.dll") == "only copy");
+    CHECK(Read(install / ".update-staging/a.dll") == "new a");
+}
+
+TEST_CASE("An empty leftover pending backup does not block an install", "[updater]") {
+    TempDir dir;
+    const auto install = dir.path / "app";
+    Put(install, "a.dll", "old a");
+    Put(install, ".update-staging/a.dll", "new a");
+    fs::create_directories(install / ".update-backup.tmp");
+
+    CHECK_FALSE(UpdateInstaller::HasPendingBackup(install));
+    std::error_code ec;
+    REQUIRE(UpdateInstaller::Install(install / ".update-staging", install, ec));
+    CHECK(Read(install / "a.dll") == "new a");
+    CHECK_FALSE(fs::exists(install / ".update-backup.tmp"));
+}
 
 TEST_CASE("The user folder is protected whatever its letter case", "[updater]") {
     TempDir dir;

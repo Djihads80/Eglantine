@@ -35,7 +35,15 @@
 #undef GetSaveFileName
 
 QString UpdateDialog::ChannelName(UpdateChecker::Channel channel) {
-    return channel == UpdateChecker::Channel::Stable ? tr("Stable") : tr("Release candidate");
+    switch (channel) {
+    case UpdateChecker::Channel::Stable:
+        return tr("Stable");
+    case UpdateChecker::Channel::ReleaseCandidate:
+        return tr("Release candidate");
+    case UpdateChecker::Channel::Daily:
+        return tr("Daily");
+    }
+    return {};
 }
 
 UpdateDialog::UpdateDialog(const Common::Net::Release& release, UpdateChecker::Channel channel,
@@ -103,7 +111,7 @@ UpdateDialog::~UpdateDialog() {
     delete ui;
 }
 
-#if defined(ENABLE_UPDATE_CHECKER) && (defined(__linux__) || defined(_WIN32))
+#if defined(ENABLE_UPDATE_CHECKER) && defined(__linux__)
 void UpdateDialog::Restart(QWidget* window, const QString& target) {
     auto environment = QProcessEnvironment::systemEnvironment();
     const auto app_dir = environment.value(QStringLiteral("APPDIR"));
@@ -149,7 +157,26 @@ void UpdateDialog::Restart(QWidget* window, const QString& target) {
 #endif
 
 #if defined(ENABLE_UPDATE_CHECKER) && defined(_WIN32)
+bool UpdateDialog::ReportPendingBackup() {
+    const std::filesystem::path install_dir{QCoreApplication::applicationDirPath().toStdWString()};
+    if (!UpdateInstaller::HasPendingBackup(install_dir)) {
+        return false;
+    }
+    QtCommon::Frontend::Critical(
+        tr("Failed to install the update"),
+        tr("An earlier update could not put back some files of your previous version. They are "
+           "kept in %1. Copy them back from there, or delete that folder if you no longer need "
+           "them, then try again.")
+            .arg(QString::fromStdWString(
+                (install_dir / UpdateInstaller::PendingBackupName).wstring())));
+    return true;
+}
+
 bool UpdateDialog::LaunchInstaller(QWidget* window, const QString& staging) {
+    if (ReportPendingBackup()) {
+        return false;
+    }
+
     // The helper runs from a copy, because the installed one is replaced along with everything else.
     const QString helper =
         QCoreApplication::applicationDirPath() + QStringLiteral("/eglantine-updater.exe");
@@ -276,6 +303,9 @@ void UpdateDialog::InstallInPlace(const std::filesystem::path& target) {
 
 #if defined(ENABLE_UPDATE_CHECKER) && defined(_WIN32)
 void UpdateDialog::InstallOnRestart(const std::filesystem::path& exe) {
+    if (ReportPendingBackup()) {
+        return;
+    }
     const auto install_dir = exe.parent_path();
     const UpdateInstaller::Lock lock{UpdateInstaller::LockPath(exe)};
     if (!lock.Held()) {

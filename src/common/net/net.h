@@ -88,10 +88,10 @@ struct ReleaseList {
     int status{};
 };
 
-// Get the latest releases, including prereleases.
+// Get every release, including prereleases, reading all pages of the list.
 ReleaseList GetReleases();
 
-// Get the latest releases as text.
+// Get every release as the text of one JSON array.
 std::optional<std::string> GetReleasesBody();
 
 // Newest commit of a branch or pull request.

@@ -108,7 +108,7 @@ jobs:
         shell: bash
         env:
           FOLLOW_BRANCH: ${{ inputs.follow_branch }}
-          UPDATE_CHECKER: ${{ inputs.release && 'ON' || (inputs.follow_branch != '' && 'ON') || 'OFF' }}
+          UPDATE_CHECKER: ${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || (inputs.follow_branch != '' && 'ON') || 'OFF' }}
         run: >-
           cmake -S . -B build/release -G Ninja
           -DCMAKE_BUILD_TYPE=Release
@@ -137,8 +137,8 @@ jobs:
         shell: bash
         run: |
           targets="yuzu yuzu-cmd"
-          # The updater helper only exists in release builds, where the update checker is on.
-          if [ "${{ inputs.release }}" = "true" ]; then targets="$targets eglantine-updater"; fi
+          # The updater helper only exists in release and daily builds, where the update checker is on.
+          if [ "${{ inputs.release || startsWith(inputs.tag, 'daily-') }}" = "true" ]; then targets="$targets eglantine-updater"; fi
           cmake --build build/release --target $targets --parallel
           sccache --show-stats
 
@@ -228,7 +228,7 @@ jobs:
         shell: msys2 {0}
         env:
           FOLLOW_BRANCH: ${{ inputs.follow_branch }}
-          UPDATE_CHECKER: ${{ inputs.release && 'ON' || (inputs.follow_branch != '' && 'ON') || 'OFF' }}
+          UPDATE_CHECKER: ${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || (inputs.follow_branch != '' && 'ON') || 'OFF' }}
         run: |
           set -euo pipefail
           profile="-fprofile-use=$(cygpath -m "$PWD/eglantine.profdata") -Wno-backend-plugin \
@@ -263,8 +263,8 @@ jobs:
         shell: msys2 {0}
         run: |
           targets="yuzu yuzu-cmd"
-          # The updater helper only exists in release builds, where the update checker is on.
-          if [ "${{ inputs.release }}" = "true" ]; then targets="$targets eglantine-updater"; fi
+          # The updater helper only exists in release and daily builds, where the update checker is on.
+          if [ "${{ inputs.release || startsWith(inputs.tag, 'daily-') }}" = "true" ]; then targets="$targets eglantine-updater"; fi
           cmake --build build/release --target $targets --parallel
           ccache --show-stats
 
