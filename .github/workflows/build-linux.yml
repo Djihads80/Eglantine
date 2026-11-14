@@ -234,6 +234,8 @@ jobs:
         shell: bash
         env:
           VERSION_LABEL: ${{ inputs.version }}
+          RELEASE: ${{ inputs.release }}
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           test -x build/release/bin/eglantine
@@ -256,6 +258,12 @@ jobs:
           export EXTRA_PLATFORM_PLUGINS='libqwayland-egl.so;libqwayland-generic.so'
           # Embedded in the AppImage metadata: the version label of this build.
           export LDAI_VERSION="$VERSION_LABEL"
+          # Stable builds name their update feed (AppImageUpdate, Gear Lever, Shelly): the latest
+          # GitHub release, whose .zsync release.yml makes. Daily, branch and rc builds are all
+          # pre-releases with the same asset names, so no feed can tell them apart; they get none.
+          if [ "$RELEASE" = true ] && [[ "$TAG" != *-rc* ]]; then
+            export LDAI_UPDATE_INFORMATION="gh-releases-zsync|${GITHUB_REPOSITORY%%/*}|${GITHUB_REPOSITORY#*/}|latest|eglantine-${PLATFORM}.AppImage.zsync"
+          fi
           export LDAI_OUTPUT="eglantine-${SHA}-${PLATFORM}.AppImage"
           export OUTPUT="$LDAI_OUTPUT"
           export ARCH="$arch"
