@@ -19,6 +19,7 @@
 
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
+#include "video_core/buffer_cache/storage_buffer_size.h"
 #include "video_core/buffer_cache/uniform_stream_reuse.h"
 #include "video_core/gpu_split.h"
 #include "video_core/guest_memory.h"
@@ -690,9 +691,12 @@ bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, 
         }
         ssbo_addr = holder + indirect_offset;
     }
+    // NVN graphics descriptors carry a size; bare native pointers and tables do not.
+    const bool native_pointer = maxwell3d->GetNativeMacroEngine().native_turing &&
+                                !IsNvnGraphicsStorageDescriptor(stage, cbuf_index, cbuf_offset,
+                                                               indirect_offset);
     Binding& slot = channel_state->storage_buffers[stage][ssbo_index];
-    Binding next = StorageBufferBinding(ssbo_addr, cbuf_index, is_written,
-                                        maxwell3d->GetNativeMacroEngine().native_turing,
+    Binding next = StorageBufferBinding(ssbo_addr, cbuf_index, is_written, native_pointer,
                                         indirect_offset != ~0U);
     if (slot.buffer_id && slot.buffer_id != NULL_BUFFER_ID &&
         slot.device_addr == next.device_addr && slot.gpu_addr == next.gpu_addr &&
@@ -3547,25 +3551,17 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
         if (table_pointer && !is_written) {
             const u64 reach = (std::min)(runtime.GetMaxStorageBufferRange(), u64{256_MiB + 64_KiB});
             const u32 limit = static_cast<u32>(reach - (std::min)(reach, u64{64_KiB}));
-            return (std::min)(memory_layout_size, limit);
+            return StorageBufferSize(memory_layout_size, 0, native_pointer, table_pointer,
+                                     is_written, limit);
         }
         // A native (Switch 2) compute program's pointer is bare: the word after it is another
         // parameter (a dimension, stride or texture handle), not an NVN buffer size. Taking it as
         // one bound Fortune's Weave's DLSS input features to 266 bytes and dropped the rest.
         // Only DLSS passes size from the mapping: doing it for every native dispatch binds up to
         // 8 MiB per buffer and slows Hyrule Warriors' fights to a few fps, then hangs them.
-        if (native_pointer) {
-            return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
-        }
-        const u64 next_qword = gpu_memory->Read<u64>(ssbo_addr + 8);
-        const u32 packed_size = static_cast<u32>(next_qword);
-        const bool next_qword_is_size = static_cast<u32>(next_qword >> 32) == 0 &&
-                                        packed_size != 0 &&
-                                        packed_size <= memory_layout_size;
-        if (next_qword_is_size) {
-            return packed_size;
-        }
-        return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
+        const u64 size_word = native_pointer ? 0 : gpu_memory->Read<u64>(ssbo_addr + 8);
+        return StorageBufferSize(memory_layout_size, size_word, native_pointer, table_pointer,
+                                 is_written);
     }();
     if ((native_pointer || table_pointer) && size != 0) {
         // Stop where the mapping or its device range does: the binding is one device range, and
