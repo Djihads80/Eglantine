@@ -99,6 +99,8 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
+          # apt requires the archive directory and its partial/ to exist before it will use them.
+          mkdir -p "$HOME/apt-archives/partial"
           sudo apt-get -y -o Dir::Cache::archives="$HOME/apt-archives" install --no-install-recommends \
             sudo autoconf cmake g++ gcc git glslang-tools libglu1-mesa-dev \
             libpulse-dev libtool libudev-dev libxkbcommon-x11-0 \
@@ -149,6 +151,8 @@ jobs:
           echo "deb http://apt.llvm.org/$codename/ llvm-toolchain-$codename-$PGO_LLVM_VERSION main" |
             sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
           sudo apt-get update
+          # apt requires the archive directory and its partial/ to exist before it will use them.
+          mkdir -p "$HOME/apt-archives/partial"
           sudo apt-get -y -o Dir::Cache::archives="$HOME/apt-archives" install --no-install-recommends \
             "clang-$PGO_LLVM_VERSION" "lld-$PGO_LLVM_VERSION"
           "clang-$PGO_LLVM_VERSION" --version
