@@ -17,6 +17,35 @@ if(DEFINED ENV{DISPLAYVERSION})
     set(DISPLAY_VERSION $ENV{DISPLAYVERSION})
 endif()
 
+# The display identity: what the window title and the About dialog show. CI
+# writes it next to the GIT-* files GetSCMRev reads (.github/actions/setup-build
+# for the plain legs, the Nix job's "Write SCM files" step for the flake). A
+# local build has no such file and falls back to the version composed from those
+# files, so nothing here can produce an empty title.
+set(EGLANTINE_DISPLAY_VERSION "")
+if(EXISTS "${CMAKE_SOURCE_DIR}/GIT-DISPLAY")
+    file(READ "${CMAKE_SOURCE_DIR}/GIT-DISPLAY" EGLANTINE_DISPLAY_VERSION)
+    string(STRIP "${EGLANTINE_DISPLAY_VERSION}" EGLANTINE_DISPLAY_VERSION)
+elseif(DEFINED ENV{DISPLAYVERSION})
+    set(EGLANTINE_DISPLAY_VERSION $ENV{DISPLAYVERSION})
+endif()
+
+# Where the binary came from, when the packaging layer wants to say so (the Nix
+# package sets this to "nix"). Rendered in parentheses after the identity.
+set(EGLANTINE_BUILD_FLAVOUR "")
+if(DEFINED ENV{EGLANTINE_FLAVOUR})
+    set(EGLANTINE_BUILD_FLAVOUR $ENV{EGLANTINE_FLAVOUR})
+endif()
+
+# Both values end up inside C string literals. Git allows quotes and backslashes
+# in a ref name, and configure_file would paste them through verbatim.
+foreach(_var EGLANTINE_DISPLAY_VERSION EGLANTINE_BUILD_FLAVOUR)
+    if(${_var})
+        string(REPLACE "\\" "\\\\" ${_var} "${${_var}}")
+        string(REPLACE "\"" "\\\"" ${_var} "${${_var}}")
+    endif()
+endforeach()
+
 include(GenerateSCMRev)
 
 add_library(

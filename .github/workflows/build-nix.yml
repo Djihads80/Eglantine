@@ -1,0 +1,288 @@
+name: build-nix
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        type: string
+        required: true
+      # The identity every leg shows. Composed once in prepare; never here. Two
+      # variants because whether a matrix row is PGO is decided per leg, and two
+      # store-safe renderings because a Nix store path name cannot carry slashes
+      # or parentheses and the flake uses that form as the derivation version.
+      display:
+        description: Human-facing build identity (plain variant)
+        type: string
+        default: ""
+      display_pgo:
+        description: Human-facing build identity (PGO variant)
+        type: string
+        default: ""
+      display_store:
+        description: Store-path-safe form of display
+        type: string
+        default: ""
+      display_pgo_store:
+        description: Store-path-safe form of display_pgo
+        type: string
+        default: ""
+      pgo:
+        description: none, both or only
+        type: string
+        default: none
+      linux:
+        description: Build x86_64-linux and aarch64-linux
+        type: boolean
+        default: true
+      macos:
+        description: Build aarch64-darwin
+        type: boolean
+        default: true
+      # The four values .github/actions/setup-build writes as GIT-* files. Nix
+      # only sees tracked files in a git checkout, so the build job writes and
+      # stages them itself; without them GetSCMRev has no .git to ask and the
+      # binary reports its no-git fallback.
+      refspec:
+        description: Value for GIT-REFSPEC (branch or daily build label)
+        type: string
+        default: ""
+      tag:
+        description: Value for GIT-TAG
+        type: string
+        default: ""
+      release:
+        description: Write GIT-RELEASE, which makes this a release build
+        type: boolean
+        default: false
+      nightly:
+        description: Build the eglantine-nightly* outputs
+        type: boolean
+        default: false
+      # The same opt-in the other platforms get. Restoring is free; saving writes a
+      # fresh entry for every commit and the repository shares one 10 GB pool, so a
+      # leg only saves on refs/heads/nx2 and on daily builds, unless a dispatch asks.
+      save_cache:
+        description: Save the compiler-object cache at the end of the job (it is always restored)
+        type: boolean
+        default: false
+
+    secrets:
+      CACHIX_AUTH_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  flake:
+    name: flake
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+
+      - name: Check Nix flake inputs
+        uses: DeterminateSystems/flake-checker-action@v14
+
+  build:
+    name: nix-${{ matrix.system }}${{ matrix.pgo && '-pgo' || '' }}
+    needs: flake
+    runs-on: ${{ matrix.system == 'aarch64-darwin' && (vars.MACOS_RUNNER || 'macos-26') || (matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'ubuntu-24.04') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        system: ${{ fromJSON(
+          inputs.linux && inputs.macos && '["x86_64-linux","aarch64-linux","aarch64-darwin"]'
+          || inputs.macos && '["aarch64-darwin"]'
+          || inputs.linux && '["x86_64-linux","aarch64-linux"]'
+          || '[]') }}
+        pgo: ${{ fromJSON(inputs.pgo == 'both' && '[false, true]' || inputs.pgo == 'only' && '[true]' || '[false]') }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+
+      # Same files .github/actions/setup-build writes for every other platform.
+      # GetSCMRev prefers them over git; the Nix build has no .git, so without
+      # them the binary falls back to the GIT-NOTFOUND values (1.0.0/stable).
+      # `git add -f` because Nix only copies tracked files out of a git tree.
+      - name: Write SCM files
+        shell: bash
+        env:
+          SCM_SHA: ${{ inputs.sha }}
+          SCM_REFSPEC: ${{ inputs.refspec }}
+          SCM_TAG: ${{ inputs.tag }}
+          SCM_RELEASE: ${{ inputs.release }}
+          SCM_NIGHTLY: ${{ inputs.nightly }}
+          SCM_DISPLAY: ${{ matrix.pgo && inputs.display_pgo || inputs.display }}
+          SCM_DISPLAY_STORE: ${{ matrix.pgo && inputs.display_pgo_store || inputs.display_store }}
+        run: |
+          set -uo pipefail
+          printf '%s\n' "$SCM_SHA" > GIT-COMMIT
+          if [ -n "$SCM_REFSPEC" ]; then printf '%s\n' "$SCM_REFSPEC" > GIT-REFSPEC; fi
+          if [ -n "$SCM_TAG" ]; then
+            printf '%s\n' "$SCM_TAG" > GIT-TAG
+            if [ "$SCM_RELEASE" = "true" ]; then printf '%s\n' "$SCM_TAG" > GIT-RELEASE; fi
+          fi
+          # CMakeLists.txt turns NIGHTLY_BUILD on when this file exists, so a
+          # nightly is a tree property rather than a second package output.
+          if [ "$SCM_NIGHTLY" = "true" ]; then printf 'nightly\n' > GIT-NIGHTLY; fi
+          # The display identity rides in the tree like the GIT-* files: CMake
+          # reads the human form for the title and the About dialog, the flake
+          # reads the store-safe form as its version.
+          if [ -n "$SCM_DISPLAY" ]; then printf '%s\n' "$SCM_DISPLAY" > GIT-DISPLAY; fi
+          if [ -n "$SCM_DISPLAY_STORE" ]; then printf '%s\n' "$SCM_DISPLAY_STORE" > GIT-DISPLAY-STORE; fi
+          for f in GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE GIT-NIGHTLY GIT-DISPLAY GIT-DISPLAY-STORE; do
+            [ -f "$f" ] && git add -f "$f"
+          done
+          head -v GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE GIT-NIGHTLY GIT-DISPLAY GIT-DISPLAY-STORE 2> /dev/null || true
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          # Avoids GitHub API rate limits when the flake fetches nixpkgs.
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            # Otherwise a PR could put substituters and trusted-public-keys in
+            # the nixConfig of flake.nix and have CI trust an attacker's cache.
+            accept-flake-config = false
+            # Compiler-object cache, read and written by the build users.
+            extra-sandbox-paths = /nix/var/cache/ccache
+
+      - name: Prepare ccache directory
+        run: |
+          sudo mkdir -p -m 0777 /nix/var/cache/ccache
+          sudo chmod 0777 /nix/var/cache/ccache
+          sudo chown "$(id -u):$(id -g)" /nix/var/cache/ccache
+          sudo sh -c 'for a in 0 1 2 3 4 5 6 7 8 9 a b c d e f; do
+                        for b in 0 1 2 3 4 5 6 7 8 9 a b c d e f; do
+                          mkdir -p -m 0777 "/nix/var/cache/ccache/$a/$b"
+                        done
+                      done'
+          sudo mkdir -p -m 0777 /nix/var/cache/ccache/tmp
+          sudo chown -R "$(id -u):$(id -g)" /nix/var/cache/ccache
+
+      # setup-build's "Decide cache saving" rule, kept in the same shape so one
+      # operator-facing answer ("did this run save?") works for every platform.
+      # ccache archives are scoped to the ref that wrote them, so a dispatch that
+      # does not save cannot warm a branch, and one that saves on every commit
+      # evicts other people's entries from the shared pool.
+      - name: Decide cache saving
+        shell: bash
+        run: |
+          set -uo pipefail
+          save=false
+          if [ '${{ inputs.save_cache }}' = 'true' ] ||
+             [ '${{ github.ref }}' = 'refs/heads/nx2' ]; then
+            save=true
+          fi
+          echo "CACHE_SAVE=$save" >> "$GITHUB_ENV"
+          echo "compiler-object cache will be saved: $save"
+
+      - name: Cache compiler objects (restore and save)
+        if: env.CACHE_SAVE == 'true'
+        uses: actions/cache@v6
+        with:
+          path: /nix/var/cache/ccache
+          key: ccache-${{ matrix.system }}-${{ matrix.pgo && 'pgo' || 'plain' }}-${{ inputs.sha }}
+          restore-keys: |
+            ccache-${{ matrix.system }}-${{ matrix.pgo && 'pgo' || 'plain' }}-
+
+      - name: Cache compiler objects (restore only)
+        if: env.CACHE_SAVE != 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: /nix/var/cache/ccache
+          key: ccache-${{ matrix.system }}-${{ matrix.pgo && 'pgo' || 'plain' }}-${{ inputs.sha }}
+          restore-keys: |
+            ccache-${{ matrix.system }}-${{ matrix.pgo && 'pgo' || 'plain' }}-
+
+      - name: Unlock ccache for nixbld users
+        run: |
+          sudo chmod -R 0777 /nix/var/cache/ccache || true
+
+      - name: Cachix
+        if: vars.CACHIX_CACHE != ''
+        uses: cachix/cachix-action@v17
+        with:
+          name: ${{ vars.CACHIX_CACHE }}
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          # Excludes a path ending in -source -- the cleaned tree handed to the
+          # build -- and the nixpkgs tarball. The per-dependency source trees are
+          # named <dep>-source-<version>, so they are NOT matched, and that is
+          # deliberate: a substituted dependency source beats re-fetching and
+          # re-patching ten of them on every leg, and they are small next to the
+          # binaries. Drop the -source clause entirely to push those too.
+          pushFilter: "(-source$|nixpkgs\\.tar\\.gz$)"
+
+      # checks that the token is present if it should be
+      # (i.e. if the cache is set and this is not a PR from a fork)
+      - name: Cachix token is present where it is needed
+        if: >-
+          vars.CACHIX_CACHE != ''
+          && (github.event_name != 'pull_request'
+          || github.event.pull_request.head.repo.full_name == github.repository)
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          if [ -z "$CACHIX_AUTH_TOKEN" ]; then
+            echo "::error::CACHIX_AUTH_TOKEN is empty, so nothing will be pushed to ${{ vars.CACHIX_CACHE }}."
+            echo "::error::Set the repository secret. A reusable workflow is handed it only if the caller passes it."
+            exit 1
+          fi
+
+      - name: Zero ccache counters
+        run: nix shell nixpkgs#ccache -c ccache --dir /nix/var/cache/ccache --zero-stats 2>&1 | tail -1
+
+      - name: Check
+        run: nix flake check -L
+
+      # The whole block, not a grep of it: ccache omits the counter lines when it
+      # compiled nothing, so a filtered step printed only "Cache size (GiB)" and
+      # read as an empty cache rather than as "this stage substituted everything".
+      # Same shape as the plain legs' stats step.
+      - name: ccache after the check step
+        if: always()
+        run: |
+          nix shell nixpkgs#ccache -c ccache --dir /nix/var/cache/ccache --show-stats 2>&1 \
+            || echo 'no statistics'
+
+      - name: Build
+        run: nix build -L .#packages.${{ matrix.system }}.eglantine${{ matrix.pgo && '-pgo' || '' }}
+
+      - name: Open the ccache tree for the save
+        if: always() && env.CACHE_SAVE == 'true'
+        run: sudo chmod -R 0777 /nix/var/cache/ccache || true
+
+      - name: ccache statistics
+        if: always()
+        run: |
+          {
+            echo '### ccache'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # The profile path sits in the compiler command line, so it is part of
+          # every ccache key. A tree-derived path therefore means every PGO
+          # compile misses, which is invisible in a hit rate alone -- it just
+          # looks like a slow leg. Printing the flag makes the cause observable.
+          pkg=eglantine${{ matrix.pgo && '-pgo' || '' }}
+          drv=$(nix eval --raw .#packages.${{ matrix.system }}.$pkg.drvPath 2>/dev/null || true)
+          if [ -n "$drv" ]; then
+            nix derivation show "$drv" 2>/dev/null |
+              tr ',' '\n' |
+              grep -E 'fprofile-use|"cmakeFlags"|NIX_CFLAGS_COMPILE|NIX_CXXFLAGS_COMPILE' |
+              cut -c1-700
+            echo "source tree: $(nix eval --raw .#packages.${{ matrix.system }}.$pkg.src 2>/dev/null || echo '?')"
+          fi
+          # tee as well as the summary: the log is the only part of this a
+          # non-interactive reader can actually see, and one short block does
+          # not bury anything.
+          nix shell nixpkgs#ccache -c ccache --dir /nix/var/cache/ccache --show-stats 2>&1 \
+            | tee -a "$GITHUB_STEP_SUMMARY" || echo 'no statistics'
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

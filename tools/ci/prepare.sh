@@ -58,7 +58,6 @@ case "$mode" in
     day=$(date -u +%Y%m%d)
     tag="daily-$day"
     refspec="$tag"
-    version="$day-${sha:0:7}"
     title="Eglantine Build $(date -u +%d/%m/%Y)"
     branch="$daily_branch"
     latest=$(daily_tags | head -n1 || true)
@@ -72,7 +71,6 @@ case "$mode" in
   push)
     tag="v$base"
     refspec="$tag"
-    version="$tag"
     title="Eglantine $tag"
     nightly=false
     if [[ "$base" == *-rc* ]]; then
@@ -107,7 +105,6 @@ case "$mode" in
     slug=$(bash "$here/slugify.sh" "$branch")
     tag="branch-$slug"
     refspec="$slug"
-    version="$slug-${sha:0:7}"
     title="Eglantine Branch: ${pr_title:-$branch}"
     ;;
 
@@ -117,12 +114,55 @@ case "$mode" in
     ;;
 esac
 
+# What every leg shows its user: "[owner/repo/]branch - <commit time> (<sha>)",
+# or "... - <release id>" for a release. The rule lives in display-version.sh so
+# the workflows, the tarball, the Nix build and a manual dispatch all agree.
+# Two variants, because whether a leg is PGO is a per-leg decision (a dispatch
+# can build both), not a property of the run.
+owner=${GITHUB_REPOSITORY%%/*}
+repo_name=${GITHUB_REPOSITORY##*/}
+display_branch=$branch
+display_release=''
+case "$kind" in
+  stable | rc)
+    display_branch=${GITHUB_REF_NAME:-}
+    display_release=$tag
+    ;;
+  daily)
+    # `branch` carries the daily branch (daily.yml dispatches ci.yml from it);
+    # fall back to the configured name for a push-style schedule run.
+    display_branch=${branch:-$daily_branch}
+    ;;
+  branch) ;;
+esac
+display_args=(--owner "$owner" --repo "$repo_name" --branch "$display_branch" --sha "$sha")
+if [[ -n "$display_release" ]]; then
+  display_args+=(--release "$display_release")
+fi
+display=$(bash "$here/display-version.sh" "${display_args[@]}")
+display_pgo=$(bash "$here/display-version.sh" "${display_args[@]}" --pgo)
+# The Nix side needs the same identity inside a store path name, where slashes
+# and parentheses are illegal; the script's --store rendering is the only place
+# that rule lives, so the legs do not re-derive it.
+display_store=$(bash "$here/display-version.sh" "${display_args[@]}" --store)
+display_pgo_store=$(bash "$here/display-version.sh" "${display_args[@]}" --pgo --store)
+
+# The file naming follows the identity: an AppImage, an artifact and a Nix store
+# path then carry the same string, so a downloaded file says which build it is.
+# `tag` stays a separate, shorter, URL-safe thing: it is the only field a client
+# can compare against a published release, and it must not carry slashes.
+version=$display_store
+
 title=$(oneline "$title")
 
 emit kind "$kind"
 emit tag "$tag"
 emit title "$title"
 emit version "$version"
+emit display "$display"
+emit display_pgo "$display_pgo"
+emit display_store "$display_store"
+emit display_pgo_store "$display_pgo_store"
 emit refspec "$refspec"
 emit sha "$sha"
 emit skip "$skip"
@@ -141,6 +181,8 @@ emit branch "$branch"
   printf '| tag | `%s` |\n' "$tag"
   printf '| title | %s |\n' "$title"
   printf '| version | `%s` |\n' "$version"
+  printf '| display | `%s` |\n' "$display"
+  printf '| display (PGO) | `%s` |\n' "$display_pgo"
   printf '| commit | `%s` |\n' "$sha"
   printf '| skipped | %s |\n' "$skip"
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

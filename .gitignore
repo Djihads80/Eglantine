@@ -67,3 +67,12 @@ vulkansdk*.exe
 
 # Build-time generated external sources
 externals/generated
+
+# Nix
+/result
+/result-*
+.direnv/
+
+# Build identity written by CI (staged with `git add -f` where Nix needs it)
+/GIT-DISPLAY
+/GIT-DISPLAY-STORE

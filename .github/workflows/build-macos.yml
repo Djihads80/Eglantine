@@ -14,6 +14,10 @@ on:
       version:
         type: string
         required: true
+      display:
+        description: Human-facing build identity
+        type: string
+        default: ""
       refspec:
         type: string
         required: true
@@ -26,6 +30,10 @@ on:
       nightly:
         type: boolean
         default: true
+      save_cache:
+        description: Force-save the compiler and CPM caches at the end of the job
+        type: boolean
+        default: false
       runner:
         type: string
         default: macos-26
@@ -38,8 +46,6 @@ jobs:
     name: macos-arm64
     runs-on: ${{ inputs.runner }}
     env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 1000M
       PLATFORM: macos-arm64
       SHA: ${{ inputs.sha }}
     steps:
@@ -58,6 +64,8 @@ jobs:
           refspec: ${{ inputs.refspec }}
           tag: ${{ inputs.tag }}
           release: ${{ inputs.release }}
+          save-cache: ${{ inputs.save_cache }}
+          display: ${{ inputs.display }}
 
       - name: Setup build from compatibility pin
         if: hashFiles('.github/actions/setup-build/action.yml') == ''
@@ -68,12 +76,20 @@ jobs:
           refspec: ${{ inputs.refspec }}
           tag: ${{ inputs.tag }}
           release: ${{ inputs.release }}
+          save-cache: ${{ inputs.save_cache }}
 
       # The packages docs/Deps.md lists for macOS, plus ccache.
       - name: Install macOS dependencies
         shell: bash
         env:
+          # The runner image already ships most of these bottles. Without these, brew spends its
+          # time updating taps, scanning dependents and upgrading what is already present; with
+          # them the install is a no-op for anything the image has.
           HOMEBREW_NO_INSTALL_CLEANUP: 1
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
+          HOMEBREW_NO_INSTALL_UPGRADE: 1
+          HOMEBREW_NO_ANALYTICS: 1
         run: |
           brew install autoconf automake boost ffmpeg fmt glslang hidapi libtool libusb lz4 ninja \
             nlohmann-json openssl pkg-config qt@6 sdl3 speexdsp zlib zstd cmake catch2 molten-vk \
@@ -101,9 +117,16 @@ jobs:
             -DUSE_CCACHE=ON \
             -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }}
 
+      - name: ccache settings
+        shell: bash
+        run: |
+          ccache --version | head -1
+          ccache -p | grep -vE '^#' | grep -E '(cache_dir|compiler_check|base_dir|hash_dir|sloppiness|max_size|umask)' || true
+
       - name: Build
         shell: bash
         run: |
+          ccache --zero-stats
           cmake --build build/release --target yuzu yuzu-cmd --parallel
           ccache --show-stats
 

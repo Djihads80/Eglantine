@@ -41,6 +41,10 @@ on:
         type: choice
         options: [none, both, only]
         default: none
+      save_cache:
+        description: Save the compiler and CPM caches at the end of the job (they are always restored)
+        type: boolean
+        default: false
       publish:
         description: Publish the binaries as a GitHub pre-release (otherwise only workflow artifacts)
         type: boolean
@@ -77,6 +81,10 @@ jobs:
       tag: ${{ steps.scheme.outputs.tag }}
       title: ${{ steps.scheme.outputs.title }}
       version: ${{ steps.scheme.outputs.version }}
+      display: ${{ steps.scheme.outputs.display }}
+      display_pgo: ${{ steps.scheme.outputs.display_pgo }}
+      display_store: ${{ steps.scheme.outputs.display_store }}
+      display_pgo_store: ${{ steps.scheme.outputs.display_pgo_store }}
       refspec: ${{ steps.scheme.outputs.refspec }}
       sha: ${{ steps.scheme.outputs.sha }}
       skip: ${{ steps.scheme.outputs.skip }}
@@ -139,11 +147,14 @@ jobs:
     with:
       sha: ${{ needs.prepare.outputs.sha }}
       version: ${{ needs.prepare.outputs.version }}
+      display: ${{ needs.prepare.outputs.display }}
+      display_pgo: ${{ needs.prepare.outputs.display_pgo }}
       refspec: ${{ needs.prepare.outputs.refspec }}
       tag: ${{ needs.prepare.outputs.tag }}
       release: ${{ needs.prepare.outputs.kind == 'stable' || needs.prepare.outputs.kind == 'rc' }}
       nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
       pgo: ${{ inputs.pgo || (needs.prepare.outputs.kind == 'branch' && 'none' || 'both') }}
+      save_cache: ${{ inputs.save_cache || (needs.prepare.outputs.kind == 'daily') }}
 
   windows:
     name: Windows
@@ -155,11 +166,14 @@ jobs:
     with:
       sha: ${{ needs.prepare.outputs.sha }}
       version: ${{ needs.prepare.outputs.version }}
+      display: ${{ needs.prepare.outputs.display }}
+      display_pgo: ${{ needs.prepare.outputs.display_pgo }}
       refspec: ${{ needs.prepare.outputs.refspec }}
       tag: ${{ needs.prepare.outputs.tag }}
       release: ${{ needs.prepare.outputs.kind == 'stable' || needs.prepare.outputs.kind == 'rc' }}
       nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
       pgo: ${{ inputs.pgo || (needs.prepare.outputs.kind == 'branch' && 'none' || 'both') }}
+      save_cache: ${{ inputs.save_cache || (needs.prepare.outputs.kind == 'daily') }}
 
   macos:
     name: macOS
@@ -171,11 +185,81 @@ jobs:
     with:
       sha: ${{ needs.prepare.outputs.sha }}
       version: ${{ needs.prepare.outputs.version }}
+      display: ${{ needs.prepare.outputs.display }}
       refspec: ${{ needs.prepare.outputs.refspec }}
       tag: ${{ needs.prepare.outputs.tag }}
       release: ${{ needs.prepare.outputs.kind == 'stable' || needs.prepare.outputs.kind == 'rc' }}
       nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
       runner: ${{ vars.MACOS_RUNNER || 'macos-26' }}
+      save_cache: ${{ inputs.save_cache || (needs.prepare.outputs.kind == 'daily') }}
+
+  # Nix will not gate a release and notifies
+  # about a failure when non-Nix Nix-supported targets succeed
+  # -> see nix-failure-notice
+  nix:
+    name: Nix
+    needs: prepare
+    # A push or a scheduled run builds every system. A manual run follows the
+    # same Linux/macOS ticks that drive the other OS jobs, and is skipped
+    # entirely when the operator asked for Windows only.
+    # (There is no `platforms` input: per-OS booleans replaced it in
+    # baa6d295ac, two days before the Nix workflows merged -- this job kept
+    # reading the deleted one, so it always ran with `os: all`.)
+    if: >-
+      needs.prepare.outputs.skip != 'true' &&
+      (github.event_name != 'workflow_dispatch' ||
+       inputs.build_linux || inputs.build_macos)
+    uses: ./.github/workflows/build-nix.yml
+    with:
+      sha: ${{ needs.prepare.outputs.sha }}
+      display: ${{ needs.prepare.outputs.display }}
+      display_pgo: ${{ needs.prepare.outputs.display_pgo }}
+      display_store: ${{ needs.prepare.outputs.display_store }}
+      display_pgo_store: ${{ needs.prepare.outputs.display_pgo_store }}
+      linux: ${{ github.event_name != 'workflow_dispatch' || inputs.build_linux }}
+      macos: ${{ github.event_name != 'workflow_dispatch' || inputs.build_macos }}
+      # Same identity inputs the linux job gets, so the Nix binary reports the
+      # same version string as the release it sits next to.
+      refspec: ${{ needs.prepare.outputs.refspec }}
+      tag: ${{ needs.prepare.outputs.tag }}
+      release: ${{ needs.prepare.outputs.kind == 'stable' || needs.prepare.outputs.kind == 'rc' }}
+      nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
+      pgo: ${{ inputs.pgo || (needs.prepare.outputs.kind == 'branch' && 'none' || 'both') }}
+      save_cache: ${{ inputs.save_cache || (needs.prepare.outputs.kind == 'daily') }}
+    secrets:
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+  nix-failure-notice:
+    name: Nix failure notice
+    needs: [linux, macos, nix]
+    # Only speak up when Nix is the sole failure: every OS job that actually
+    # ran must have passed, and at least one of them must have run (a
+    # Windows-only dispatch skips both and never reaches here anyway).
+    if: >-
+      always() && needs.nix.result == 'failure' &&
+      needs.linux.result != 'failure' &&
+      needs.macos.result != 'failure' &&
+      (needs.linux.result == 'success' || needs.macos.result == 'success')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Announce the failure
+        shell: bash
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_DEV_WEBHOOK_URL }}
+        run: |
+          set -uo pipefail
+          URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          SHA="${GITHUB_SHA::7}"
+          # The annotation is the part that works with no setup at all.
+          echo "::warning::Nix failed on ${GITHUB_REF_NAME} (${SHA}, ${GITHUB_EVENT_NAME}) on its own -- the other builds that ran passed, so this one is Nix's. Not release-blocking. ${URL}"
+          # Same idiom as the release notice in release.yml, minus the role ping
+          # and pointed at a dev channel's webhook instead of the public one.
+          if [ -z "$WEBHOOK" ]; then echo "No DISCORD_DEV_WEBHOOK_URL secret, skipping."; exit 0; fi
+          MSG=$(printf '## Nix CI failed on `%s` (%s) -- the other builds that ran passed\n%s' "${GITHUB_REF_NAME}" "${SHA}" "${URL}")
+          jq -n --arg content "$MSG" '{content: $content}' |
+            curl -fsS -H "Content-Type: application/json" -d @- "$WEBHOOK" ||
+            echo "::warning::Could not post the notice to Discord."
+          exit 0
 
   # Publishes only when every OS that ran succeeded (skipped OSes don't count).
   release:
