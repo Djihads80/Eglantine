@@ -60,6 +60,7 @@ case "$mode" in
     refspec="$tag"
     version="$day-${sha:0:7}"
     title="Eglantine Build $(date -u +%d/%m/%Y)"
+    branch="$daily_branch"
     latest=$(daily_tags | head -n1 || true)
     prev_tag=$(daily_tags | grep -vxF "$tag" | head -n1 || true)
     if [[ "$force" == false && -n "$latest" ]] &&
