@@ -126,7 +126,11 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
     ui->buttonBox->setFocus();
 }
 
-ConfigureDialog::~ConfigureDialog() = default;
+ConfigureDialog::~ConfigureDialog() {
+    // Deleting the tab pages makes the tab widget switch tabs; don't run the handler on a
+    // half-destroyed dialog.
+    ui->tabWidget->blockSignals(true);
+}
 
 void ConfigureDialog::SetConfiguration() {}
 

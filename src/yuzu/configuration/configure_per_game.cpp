@@ -78,7 +78,8 @@ ConfigurePerGame::ConfigurePerGame(QWidget* parent, u64 title_id_, const std::st
 
     if (tweaks_tab != nullptr) {
         connect(ui->tabWidget, &QTabWidget::currentChanged, this, [this](int index) {
-            if (ui->tabWidget->widget(index) == tweaks_tab.get() && !system.IsPoweredOn()) {
+            if (index >= 0 && tweaks_tab != nullptr &&
+                ui->tabWidget->widget(index) == tweaks_tab.get() && !system.IsPoweredOn()) {
                 ApplySettingTabs();
                 tweaks_tab->RefreshRecommendations();
             }
@@ -102,7 +103,11 @@ ConfigurePerGame::ConfigurePerGame(QWidget* parent, u64 title_id_, const std::st
     LoadConfiguration();
 }
 
-ConfigurePerGame::~ConfigurePerGame() = default;
+ConfigurePerGame::~ConfigurePerGame() {
+    // Deleting the tab pages makes the tab widget switch tabs; don't run the handler on a
+    // half-destroyed dialog.
+    ui->tabWidget->blockSignals(true);
+}
 
 void ConfigurePerGame::BuildSettingTabs() {
     tab_group->clear();
