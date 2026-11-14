@@ -72,3 +72,7 @@ externals/generated
 /result
 /result-*
 .direnv/
+
+# Build identity written by CI (staged with `git add -f` where Nix needs it)
+/GIT-DISPLAY
+/GIT-DISPLAY-STORE

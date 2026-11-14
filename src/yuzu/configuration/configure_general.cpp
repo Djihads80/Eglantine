@@ -99,7 +99,7 @@ void ConfigureGeneral::Setup(const ConfigurationShared::Builder& builder) {
         if (is_update_channel) {
             widget->setToolTip(widget->toolTip() + QStringLiteral("\n\n") +
                                tr("Installed version: %1")
-                                   .arg(QString::fromUtf8(Common::g_build_version)));
+                                   .arg(QString::fromStdString(Common::BuildDisplayName())));
         }
 #endif
 
