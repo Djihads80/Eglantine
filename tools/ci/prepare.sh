@@ -129,9 +129,9 @@ case "$kind" in
     display_release=$tag
     ;;
   daily)
-    # The schedule runs on the default branch and never fills `branch`; the
-    # build is of the daily branch's tip.
-    display_branch=$daily_branch
+    # Prefer the branch the daily was dispatched from; fall back to the
+    # configured daily branch for a schedule run on the default branch.
+    display_branch=${branch:-$daily_branch}
     ;;
   branch) ;;
 esac
