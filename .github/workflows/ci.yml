@@ -212,6 +212,7 @@ jobs:
       release: ${{ needs.prepare.outputs.kind == 'stable' || needs.prepare.outputs.kind == 'rc' }}
       nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
       pgo: ${{ inputs.pgo || (needs.prepare.outputs.kind == 'branch' && 'none' || 'both') }}
+      save_cache: ${{ inputs.save_cache }}
     secrets:
       CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
