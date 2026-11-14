@@ -21,6 +21,13 @@ inputs:
     description: "true for stable and rc builds: writes GIT-RELEASE, which makes the build a release build"
     required: false
     default: "false"
+  display:
+    description: >-
+      Human-facing build identity for this leg, composed by prepare (see
+      tools/ci/display-version.sh). Written as GIT-DISPLAY; empty means the caller had none and
+      the binary falls back to its own version string.
+    required: false
+    default: ""
   save-cache:
     description: >-
       Force-save the caches at the end of the job (they are always restored). Saving otherwise
@@ -38,6 +45,7 @@ runs:
         SCM_REFSPEC: ${{ inputs.refspec }}
         SCM_TAG: ${{ inputs.tag }}
         SCM_RELEASE: ${{ inputs.release }}
+        SCM_DISPLAY: ${{ inputs.display }}
       run: |
         set -euo pipefail
         printf '%s\n' "$SCM_SHA" > GIT-COMMIT
@@ -48,8 +56,16 @@ runs:
         else
           rm -f GIT-RELEASE
         fi
+        # The string every user sees in the title bar and the About dialog. It is
+        # empty when the caller has none (a local build, an old CI pin), and the
+        # binary then falls back to the version it composes from the files above.
+        if [ -n "$SCM_DISPLAY" ]; then
+          printf '%s\n' "$SCM_DISPLAY" > GIT-DISPLAY
+        else
+          rm -f GIT-DISPLAY
+        fi
         echo "GetSCMRev inputs:"
-        head -v GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE 2> /dev/null || true
+        head -v GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE GIT-DISPLAY 2> /dev/null || true
 
     # One definition of the compiler-cache environment, for every platform and every ref.
     # ccache hashes these settings into every key, so a platform (or a branch) that sets them

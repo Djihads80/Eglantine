@@ -12,6 +12,14 @@ on:
       version:
         type: string
         required: true
+      display:
+        description: Human-facing build identity (plain variant)
+        type: string
+        default: ""
+      display_pgo:
+        description: Human-facing build identity (PGO variant)
+        type: string
+        default: ""
       refspec:
         type: string
         required: true
@@ -62,6 +70,7 @@ jobs:
           tag: ${{ inputs.tag }}
           release: ${{ inputs.release }}
           save-cache: ${{ inputs.save_cache }}
+          display: ${{ inputs.display }}
 
       - name: Setup build from compatibility pin
         if: hashFiles('.github/actions/setup-build/action.yml') == ''
@@ -188,6 +197,7 @@ jobs:
           tag: ${{ inputs.tag }}
           release: ${{ inputs.release }}
           save-cache: ${{ inputs.save_cache }}
+          display: ${{ inputs.display_pgo }}
 
       # The profile is in the source tree, where the configure step reads it.
       - name: Check PGO profile
