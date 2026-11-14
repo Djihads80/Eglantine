@@ -38,6 +38,13 @@ on:
         description: Build the eglantine-nightly* outputs
         type: boolean
         default: false
+      # The same opt-in the other platforms get. Restoring is free; saving writes a
+      # fresh entry for every commit and the repository shares one 10 GB pool, so a
+      # leg only saves on refs/heads/nx2 and on the schedule unless a dispatch asks.
+      save_cache:
+        description: Save the compiler-object cache at the end of the job (it is always restored)
+        type: boolean
+        default: false
 
     secrets:
       CACHIX_AUTH_TOKEN:
@@ -134,8 +141,36 @@ jobs:
           sudo mkdir -p -m 0777 /nix/var/cache/ccache/tmp
           sudo chown -R "$(id -u):$(id -g)" /nix/var/cache/ccache
 
-      - name: Restore ccache
+      # setup-build's "Decide cache saving" rule, kept in the same shape so one
+      # operator-facing answer ("did this run save?") works for every platform.
+      # ccache archives are scoped to the ref that wrote them, so a dispatch that
+      # does not save cannot warm a branch, and one that saves on every commit
+      # evicts other people's entries from the shared pool.
+      - name: Decide cache saving
+        shell: bash
+        run: |
+          set -uo pipefail
+          save=false
+          if [ '${{ inputs.save_cache }}' = 'true' ] ||
+             [ '${{ github.event_name }}' = 'schedule' ] ||
+             [ '${{ github.ref }}' = 'refs/heads/nx2' ]; then
+            save=true
+          fi
+          echo "CACHE_SAVE=$save" >> "$GITHUB_ENV"
+          echo "compiler-object cache will be saved: $save"
+
+      - name: Cache compiler objects (restore and save)
+        if: env.CACHE_SAVE == 'true'
         uses: actions/cache@v6
+        with:
+          path: /nix/var/cache/ccache
+          key: ccache-${{ matrix.system }}-${{ matrix.pgo && 'pgo' || 'plain' }}-${{ inputs.sha }}
+          restore-keys: |
+            ccache-${{ matrix.system }}-${{ matrix.pgo && 'pgo' || 'plain' }}-
+
+      - name: Cache compiler objects (restore only)
+        if: env.CACHE_SAVE != 'true'
+        uses: actions/cache/restore@v6
         with:
           path: /nix/var/cache/ccache
           key: ccache-${{ matrix.system }}-${{ matrix.pgo && 'pgo' || 'plain' }}-${{ inputs.sha }}
@@ -192,7 +227,7 @@ jobs:
         run: nix build -L .#packages.${{ matrix.system }}.eglantine${{ matrix.pgo && '-pgo' || '' }}
 
       - name: Open the ccache tree for the save
-        if: always()
+        if: always() && env.CACHE_SAVE == 'true'
         run: sudo chmod -R 0777 /nix/var/cache/ccache || true
 
       - name: ccache statistics

@@ -14,6 +14,10 @@ on:
         type: choice
         options: [none, both, only]
         default: both
+      save_cache:
+        description: Save the compiler-object cache at the end of the job (otherwise restore only)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,6 +37,7 @@ jobs:
       refspec: ${{ github.ref_name }}
       tag: manual
       pgo: ${{ inputs.pgo || 'both' }}
+      save_cache: ${{ inputs.save_cache }}
     secrets:
       CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
