@@ -734,6 +734,8 @@ private:
     vk::Image null_image;
     VkImage image_handle = VK_NULL_HANDLE;
     VkImageView render_target = VK_NULL_HANDLE;
+    u32 host_level_offset = 0; // the image's (see Image::host_level_offset)
+    s32 image_levels = 0;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     u32 buffer_size = 0;
 
