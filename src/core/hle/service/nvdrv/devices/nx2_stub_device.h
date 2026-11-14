@@ -84,7 +84,8 @@ public:
     void ReleaseBacking(u64 cpu_address, u64 size) {
         {
             std::scoped_lock lk{device_mutex};
-            device_ranges.erase(cpu_address);
+            device_ranges.erase(device_ranges.lower_bound(cpu_address),
+                                device_ranges.lower_bound(cpu_address + size));
         }
         std::scoped_lock lk{mutex};
         for (auto& [owner, listener] : listeners) {
