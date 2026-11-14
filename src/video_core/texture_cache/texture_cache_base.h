@@ -133,6 +133,8 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     u64 gc_deletes{};
     u64 gc_costly_deletes{};
     u64 gc_download_deletes{}; ///< Evictions that downloaded the image first (a full GPU wait)
+    u64 stale_deletes{}; ///< BadOverlap images collected early (TC_STALE_AGE)
+    u64 stale_upload_skips{}; ///< Render targets made without uploading stale bytes
     u64 async_decodes_queued{};
     u64 images_created{};
     u64 images_uploaded{};   ///< Image contents uploaded from guest memory (last 600 frames)
@@ -152,6 +154,11 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     std::vector<u8> astc_scan_buffer;
     u64 images_deleted{};
     std::map<u64, std::pair<u32, GPUVAddr>> created_shapes;
+    std::unordered_map<GPUVAddr, u32> created_addresses;
+    u64 creations_at_existing_address{};
+    u64 creations_with_join{};
+    u64 creations_with_gpu_join{};
+    u64 creations_with_full_gpu_join{};
     bool debug_stats{}; ///< Collect what only the debug statistics lines use
 
     static constexpr s64 DEFAULT_EXPECTED_MEMORY = 1_GiB + 125_MiB;
@@ -242,6 +249,21 @@ public:
 
     /// Return a constant reference to the given image view id
     [[nodiscard]] const ImageView& GetImageView(ImageViewId id) const noexcept;
+
+    /// Diagnostic state, not a complete producer history or an asynchronous-queue safety proof.
+    [[nodiscard]] std::pair<bool, bool> Nx2ViewWrittenState(ImageViewId id) const noexcept {
+        if (id == NULL_IMAGE_VIEW_ID) {
+            return {};
+        }
+        const auto& view = slot_image_views[id];
+        if (view.IsBuffer() || !view.image_id) {
+            return {};
+        }
+        const ImageBase& image = slot_images[view.image_id];
+        const bool gpu_modified = True(image.flags & ImageFlagBits::GpuModified);
+        return {gpu_modified,
+                gpu_modified && image.modification_tick > frame_start_modification_tick};
+    }
 
     /// Return a reference to the given image view id
     [[nodiscard]] ImageView& GetImageView(ImageViewId id) noexcept;
@@ -457,7 +479,8 @@ private:
 
     /// Create a new image and join perfectly matching existing images
     /// Remove joined images from the cache
-    [[nodiscard]] ImageId JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr);
+    [[nodiscard]] ImageId JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr,
+                                    RelaxedOptions options);
 
     [[nodiscard]] ImageId FindDMAImage(const ImageInfo& info, GPUVAddr gpu_addr);
 
@@ -602,6 +625,7 @@ private:
     u64 minimum_memory;
     u64 expected_memory;
     u64 critical_memory;
+    u64 native_heap_budget{};
     size_t gpu_unswizzle_maxsize = 0;
     size_t swizzle_chunk_size = 0;
     u32 swizzle_slices_per_batch = 0;
@@ -669,6 +693,7 @@ private:
     Common::ScratchBuffer<u8> unswizzle_data_buffer;
 
     u64 modification_tick = 0;
+    u64 frame_start_modification_tick = 0;
     u64 frame_tick = 0;
 
     Common::ThreadWorker texture_decode_worker{1, "TextureDecoder", {},

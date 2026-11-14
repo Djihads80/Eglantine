@@ -86,11 +86,26 @@ public:
         u32 tic;
         VideoCommon::ImageViewId id;
         VideoCommon::SamplerId sampler;
+        bool gpu_modified{};
+        bool recent_gpu_modified{};
     };
 
-    /// The textures sampled by the last configured dispatch, kept while a sampled frame dump runs.
+    /// Sampled textures, kept during frame dumps or writer diagnostics. Diagnostic state is
+    /// captured before the dispatch's own storage-image writes are marked.
     [[nodiscard]] std::span<const SampledImage> SampledImages() const noexcept {
         return sampled_images;
+    }
+
+    [[nodiscard]] size_t StorageBufferCount() const noexcept {
+        return info.storage_buffers_descriptors.size();
+    }
+
+    [[nodiscard]] u32 StorageImageCount() const noexcept {
+        u32 count{};
+        for (const auto& desc : info.image_descriptors) {
+            count += desc.count;
+        }
+        return count;
     }
 
 private:

@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <span>
 
@@ -44,9 +45,12 @@ void incrpdep(u32& value) {
     value = ((value | ~mask) + swizzled_incr) & mask;
 }
 
-template <bool TO_LINEAR, u32 BYTES_PER_PIXEL>
+template <bool TO_LINEAR, u32 BYTES_PER_PIXEL, bool NATIVE_MASKS = false>
 void SwizzleImpl(std::span<u8> output, std::span<const u8> input, u32 width, u32 height, u32 depth,
                  u32 block_height, u32 block_depth, u32 stride, bool native_tiling) {
+    // Native GOBs exchange bits 5 and 6; deposit them directly instead of swapping each element.
+    static constexpr u32 x_bits = NativeGobOffset(SWIZZLE_X_BITS, NATIVE_MASKS);
+    static constexpr u32 y_bits = NativeGobOffset(SWIZZLE_Y_BITS, NATIVE_MASKS);
     // The origin of the transformation can be configured here, leave it as zero as the current API
     // doesn't expose it.
     static constexpr u32 origin_x = 0;
@@ -72,20 +76,23 @@ void SwizzleImpl(std::span<u8> output, std::span<const u8> input, u32 width, u32
                              ((z & block_depth_mask) << (GOB_SIZE_SHIFT + block_height));
         for (u32 line = 0; line < height; ++line) {
             const u32 y = line + origin_y;
-            const u32 swizzled_y = pdep<SWIZZLE_Y_BITS>(y);
+            const u32 swizzled_y = pdep<y_bits>(y);
 
             const u32 block_y = y >> GOB_SIZE_Y_SHIFT;
             const u32 offset_y = (block_y >> block_height) * block_size +
                                  ((block_y & block_height_mask) << GOB_SIZE_SHIFT);
 
-            u32 swizzled_x = pdep<SWIZZLE_X_BITS>(origin_x * BYTES_PER_PIXEL);
+            u32 swizzled_x = pdep<x_bits>(origin_x * BYTES_PER_PIXEL);
             for (u32 column = 0; column < width;
-                 ++column, incrpdep<SWIZZLE_X_BITS, BYTES_PER_PIXEL>(swizzled_x)) {
+                 ++column, incrpdep<x_bits, BYTES_PER_PIXEL>(swizzled_x)) {
                 const u32 x = (column + origin_x) * BYTES_PER_PIXEL;
                 const u32 offset_x = (x >> GOB_SIZE_X_SHIFT) << x_shift;
 
                 const u32 base_swizzled_offset = offset_z + offset_y + offset_x;
-                const u32 swizzled_offset = NativeGobOffset(base_swizzled_offset + (swizzled_x | swizzled_y), native_tiling);
+                const u32 element_offset = base_swizzled_offset + (swizzled_x | swizzled_y);
+                const u32 swizzled_offset = NATIVE_MASKS
+                                               ? element_offset
+                                               : NativeGobOffset(element_offset, native_tiling);
 
                 const u32 unswizzled_offset =
                     slice * pitch * height + line * pitch + column * BYTES_PER_PIXEL;
@@ -165,9 +172,17 @@ void SwizzleSubrectImpl(std::span<u8> output, std::span<const u8> input, u32 wid
 template <bool TO_LINEAR>
 void Swizzle(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel, u32 width,
              u32 height, u32 depth, u32 block_height, u32 block_depth, u32 stride_alignment, bool native_tiling) {
+    static const bool native_masks = [] {
+        const char* value = std::getenv("EDEN_NX2_NATIVE_SWIZZLE_MASKS");
+        return value != nullptr && value[0] == '1';
+    }();
     switch (bytes_per_pixel) {
 #define BPP_CASE(x)                                                                                \
     case x:                                                                                        \
+        if (native_tiling && native_masks) {                                                        \
+            return SwizzleImpl<TO_LINEAR, x, true>(output, input, width, height, depth, block_height, \
+                                                    block_depth, stride_alignment, true);           \
+        }                                                                                          \
         return SwizzleImpl<TO_LINEAR, x>(output, input, width, height, depth, block_height,        \
                                          block_depth, stride_alignment, native_tiling);
         BPP_CASE(1)

@@ -30,6 +30,7 @@
 #include "video_core/host_shaders/vulkan_quad_indexed_comp_spv.h"
 #include "video_core/host_shaders/vulkan_uint8_comp_spv.h"
 #include "video_core/host_shaders/vulkan_vertex_repack_comp_spv.h"
+#include "video_core/host_shaders/vulkan_plain_unswizzle_comp_spv.h"
 #include "video_core/host_shaders/block_linear_unswizzle_3d_bcn_comp_spv.h"
 #include "video_core/renderer_vulkan/vk_compute_pass.h"
 #include "video_core/renderer_vulkan/vertex_repack.h"
@@ -385,6 +386,47 @@ std::optional<std::pair<VkBuffer, VkDeviceSize>> VertexRepackPass::Assemble(VkBu
     });
     scheduler.InvalidateDescriptorBuffer();
     return std::pair<VkBuffer, VkDeviceSize>{dest.buffer, dest.offset};
+}
+
+PlainUnswizzlePass::PlainUnswizzlePass(const Device& device_, Scheduler& scheduler_,
+                                     DescriptorPool& descriptor_pool,
+                                     ComputePassDescriptorQueue& descriptor_queue_)
+    : ComputePass(device_, scheduler_, descriptor_pool, INPUT_OUTPUT_DESCRIPTOR_SET_BINDINGS,
+                  INPUT_OUTPUT_DESCRIPTOR_UPDATE_TEMPLATE, INPUT_OUTPUT_BANK_INFO,
+                  COMPUTE_PUSH_CONSTANT_RANGE<sizeof(VideoCommon::PlainUnswizzleParameters)>,
+                  VULKAN_PLAIN_UNSWIZZLE_COMP_SPV),
+      scheduler{scheduler_}, descriptor_queue{descriptor_queue_} {}
+
+void PlainUnswizzlePass::Dispatch(VkBuffer source, VkDeviceSize offset, VkBuffer destination,
+                                 const VideoCommon::PlainUnswizzleParameters& parameters, u32 guard_bytes) {
+    descriptor_queue.Acquire(scheduler, 2);
+    descriptor_queue.AddBuffer(source, offset, u64{parameters.source_words} * 4);
+    descriptor_queue.AddBuffer(destination, 0, u64{parameters.word_count} * 4 + guard_bytes);
+    const void* data = descriptor_queue.UpdateData();
+    scheduler.RequestOutsideRenderPassOperationContext();
+    scheduler.Record([this, data, parameters](vk::CommandBuffer cmdbuf) {
+        // The shared output may still be read by an earlier buffer-to-image copy.
+        const VkMemoryBarrier before{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+        };
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, before);
+        const auto set = descriptor_allocator.Commit();
+        device.GetLogical().UpdateDescriptorSet(set, *descriptor_template, data);
+        cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline);
+        cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, *layout, 0, set, {});
+        cmdbuf.PushConstants(*layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(parameters), &parameters);
+        cmdbuf.Dispatch(Common::DivCeil(parameters.word_count, 256U), 1, 1);
+        const VkMemoryBarrier after{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        };
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0, after);
+    });
 }
 
 Uint8Pass::Uint8Pass(const Device& device_, Scheduler& scheduler_, DescriptorPool& descriptor_pool,

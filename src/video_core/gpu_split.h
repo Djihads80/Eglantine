@@ -16,6 +16,7 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+#include <vector>
 
 #include "common/common_types.h"
 #include "video_core/split_write_tracker.h"
@@ -288,19 +289,21 @@ public:
     /// Call it after the entry that issues the write was sent.
     void NoteAsyncWrite(u64 begin, u64 size) {
         for (u64 slot = begin >> 4; slot <= (begin + size - 1) >> 4; ++slot) {
-            async_writes[slot] = write_position;
+            // Positions only grow: a bucket holds the newest of the slots that share it.
+            async_writes[AsyncWriteBucket(slot)] = write_position;
         }
+        any_async_write = true;
     }
-    /// Front: the ring position of the newest async write noted to these bytes, or 0.
+    /// Front: the ring position of the newest async write noted to these bytes, or 0. Slots
+    /// share buckets, so this may be newer than the bytes' own last write or report one they
+    /// never had: callers then only wait longer or take the drained path.
     [[nodiscard]] u64 HasAsyncWrite(u64 begin, u64 size) const {
         u64 newest = 0;
-        if (async_writes.empty()) {
+        if (!any_async_write) {
             return newest;
         }
         for (u64 slot = begin >> 4; slot <= (begin + size - 1) >> 4; ++slot) {
-            if (const auto it = async_writes.find(slot); it != async_writes.end()) {
-                newest = (std::max)(newest, it->second);
-            }
+            newest = (std::max)(newest, async_writes[AsyncWriteBucket(slot)]);
         }
         return newest;
     }
@@ -475,7 +478,15 @@ private:
     // always touched together by both threads, so they share a block.
     alignas(128) std::atomic<u64> published{};
     alignas(128) std::atomic<u64> consumed{};
-    std::unordered_map<u64, u64> async_writes; ///< Front: 16-byte slot -> ring position
+    /// Front: newest ring position per bucket of 16-byte slots (AsyncWriteBucket). An unordered
+    /// map kept every slot ever reported for the whole session: in Ocarina of Time its inserts
+    /// were ~6% of the front's working time (counter reports at ever-new addresses).
+    static constexpr size_t AsyncWriteBuckets = size_t{1} << 16;
+    [[nodiscard]] static size_t AsyncWriteBucket(u64 slot) {
+        return static_cast<size_t>((slot ^ (slot >> 16) ^ (slot >> 32)) & (AsyncWriteBuckets - 1));
+    }
+    std::vector<u64> async_writes = std::vector<u64>(AsyncWriteBuckets);
+    bool any_async_write{};
     /// A position the front waits for (WaitFor): the back stores `consumed` once past it.
     alignas(128) std::atomic<u64> wait_target{~u64{0}};
     alignas(128) std::atomic<bool> back_waiting{};

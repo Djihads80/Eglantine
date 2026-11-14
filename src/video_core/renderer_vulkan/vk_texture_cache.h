@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <cstdlib>
 #include <chrono>
 #include <deque>
 #include <memory>
@@ -28,6 +29,7 @@
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/texture_cache/image_view_base.h"
+#include "video_core/texture_cache/image_allocation_pool.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -72,6 +74,11 @@ public:
     void FreeDeferredStagingBuffer(StagingBufferRef& ref);
 
     void TickFrame();
+
+    [[nodiscard]] vk::Image AcquireImageAllocation(const VideoCommon::ImageInfo& info);
+    void RecycleImage(Image& image, u64 completed_tick);
+    bool CanGpuUnswizzle(const Image& image) const;
+    bool UploadGpuUnswizzle(Image& image, std::span<const u8> source);
 
     void FlushDeferredClear();
 
@@ -288,6 +295,22 @@ public:
     std::vector<PendingTranscode> free_transcodes;
 
     std::optional<BlockLinearUnswizzle3DPass> bl3d_unswizzle_pass;
+    std::optional<PlainUnswizzlePass> plain_unswizzle_pass;
+    VkBuffer DispatchPlainUnswizzle(const VideoCommon::PlainUnswizzleParameters& parameters,
+                                   const StagingBufferRef& source, bool guarded);
+    bool CheckPlainUnswizzle(const VideoCommon::ImageInfo& info,
+                            const VideoCommon::PlainUnswizzleParameters& parameters,
+                            const StagingBufferRef& source, VkBuffer output);
+    StagingBufferRef QueuePlainUnswizzleReadback(
+        const VideoCommon::PlainUnswizzleParameters& parameters, VkBuffer output, bool deferred);
+    bool TestPlainUnswizzle();
+    bool plain_unswizzle_tested{};
+    bool plain_unswizzle_failed{};
+    u64 plain_unswizzle_frames{};
+    u64 plain_unswizzle_uploads{};
+    u64 plain_unswizzle_bytes{};
+    u32 plain_verified_early{};
+    u32 plain_verified_late{};
     const Settings::ResolutionScalingInfo& resolution;
     std::array<std::vector<VkFormat>, VideoCore::Surface::MaxPixelFormat> view_formats;
 
@@ -315,6 +338,19 @@ public:
     };
 
     std::vector<MsaaScratchImage> msaa_scratch_images;
+    /// EDEN_NX2_IMAGE_POOL_MIB / EDEN_NX2_IMAGE_POOL_ENTRIES: what the pool may hold (256, 128).
+    /// Ocarina of Time recreates ~15 render targets a frame while the view moves (up to 29 MiB
+    /// each): 256 MiB evicted about half of what it recycled.
+    static u64 PoolSetting(const char* name, u64 fallback) {
+        const char* value = std::getenv(name);
+        return value != nullptr ? std::strtoull(value, nullptr, 10) : fallback;
+    }
+    VideoCommon::ImageAllocationPool<vk::Image> image_allocation_pool{
+        PoolSetting("EDEN_NX2_IMAGE_POOL_MIB", 256) << 20,
+        static_cast<size_t>(PoolSetting("EDEN_NX2_IMAGE_POOL_ENTRIES", 128)), 3600};
+    u64 allocation_pool_frames{};
+    u32 allocation_pool_pressure_events{};
+    u32 allocation_pool_pressure_frames{};
     ::Common::unordered_map<VkImage, ResolveShadow> resolve_shadows;
     std::vector<std::pair<u64, ResolveShadow>> pending_resolve_shadows;
 };
@@ -534,6 +570,7 @@ public:
     u64 allocation_tick;
 
     friend class BlockLinearUnswizzle3DPass;
+    friend class TextureCacheRuntime;
 
 private:
     bool BlitScaleHelper(bool scale_up);

@@ -1303,7 +1303,8 @@ VkBuffer TextureCacheRuntime::GetTemporaryBuffer(size_t needed_size) {
     const auto new_size = Common::NextPow2(needed_size);
     static constexpr VkBufferUsageFlags flags =
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-        VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
+        VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     const VkBufferCreateInfo temp_ci = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .pNext = nullptr,
@@ -2697,7 +2698,310 @@ void TextureCacheRuntime::ReleaseMsaaScratchImage(VkImage image) {
     }
 }
 
+namespace {
+bool PlainGpuUnswizzleEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_GPU_UNSWIZZLE_2D");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+bool PlainGpuUnswizzleVerify() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_GPU_UNSWIZZLE_VERIFY");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+bool ImageAllocationReuseEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_IMAGE_ALLOCATION_REUSE");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+}
+
+bool TextureCacheRuntime::CanGpuUnswizzle(const Image& image) const {
+    constexpr auto unsupported = ImageFlagBits::Converted | ImageFlagBits::AcceleratedUpload |
+                                 ImageFlagBits::AsynchronousDecode | ImageFlagBits::IsDecoding;
+    if (!PlainGpuUnswizzleEnabled() || plain_unswizzle_failed || !image.info.native_tiling ||
+        resolution.up_scale != 1 || resolution.down_shift != 0 || image.HasScaled() ||
+        !VideoCommon::IsAttachmentBackingUsable(image) || True(image.flags & unsupported) ||
+        image.AspectMask() == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+        return false;
+    }
+    const auto params = VideoCommon::MakePlainUnswizzleParameters(image.info);
+    return params && params->word_count >= 65536 &&
+           u64{params->source_words} * 4 <= device.GetMaxStorageBufferRange() &&
+           u64{params->word_count} * 4 <= device.GetMaxStorageBufferRange() &&
+           Common::DivCeil(params->word_count, 256U) <= device.GetMaxComputeWorkGroupCount()[0];
+}
+
+VkBuffer TextureCacheRuntime::DispatchPlainUnswizzle(
+    const VideoCommon::PlainUnswizzleParameters& params, const StagingBufferRef& source, bool guarded) {
+    const u64 output_bytes = u64{params.word_count} * 4;
+    const VkBuffer output = GetTemporaryBuffer(output_bytes + (guarded ? 64 : 0));
+    if (guarded) {
+        scheduler.RequestOutsideRenderPassOperationContext();
+        scheduler.Record([output, output_bytes](vk::CommandBuffer cmdbuf) {
+            const VkMemoryBarrier before{
+                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            };
+            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT, 0, before);
+            cmdbuf.FillBuffer(output, output_bytes, 64, 0xcdcdcdcd);
+        });
+    }
+    plain_unswizzle_pass->Dispatch(source.buffer, source.offset, output, params, guarded ? 64 : 0);
+    return output;
+}
+
+StagingBufferRef TextureCacheRuntime::QueuePlainUnswizzleReadback(
+    const VideoCommon::PlainUnswizzleParameters& params, VkBuffer output, bool deferred) {
+    const size_t bytes = size_t{params.word_count} * 4;
+    const auto download = DownloadStagingBuffer(bytes + 64, deferred);
+    scheduler.Record([output, download, bytes](vk::CommandBuffer cmdbuf) {
+        const VkMemoryBarrier before{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        };
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0, before);
+        cmdbuf.CopyBuffer(output, download.buffer, VkBufferCopy{0, download.offset, bytes + 64});
+        const VkBufferMemoryBarrier after{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = download.buffer,
+            .offset = download.offset,
+            .size = bytes + 64,
+        };
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                              0, nullptr, after, nullptr);
+    });
+    return download;
+}
+
+bool TextureCacheRuntime::CheckPlainUnswizzle(const ImageInfo& info,
+                                             const VideoCommon::PlainUnswizzleParameters& params,
+                                             const StagingBufferRef& source, VkBuffer output) {
+    const size_t bytes = size_t{params.word_count} * 4;
+    std::vector<u8> expected(bytes);
+    const auto swizzle = VideoCommon::FullUploadSwizzles(info).front();
+    Tegra::Texture::UnswizzleTexture(expected, source.mapped_span, BytesPerBlock(info.format),
+                                     info.size.width, info.size.height, 1, swizzle.block.height,
+                                     swizzle.block.depth, VideoCommon::CalculateLevelStrideAlignment(info, 0),
+                                     info.native_tiling);
+    const auto download = QueuePlainUnswizzleReadback(params, output, false);
+    Finish();
+    const bool equal = std::equal(expected.begin(), expected.end(), download.mapped_span.begin());
+    const auto guard = download.mapped_span.subspan(bytes, 64);
+    const bool intact = std::all_of(guard.begin(), guard.end(), [](u8 value) { return value == 0xcd; });
+    if (!equal || !intact) {
+        LOG_ERROR(Render_Vulkan, "Plain GPU unswizzle verification failed: {}x{} format {} equal={} guard={}",
+                  info.size.width, info.size.height, static_cast<u32>(info.format), equal, intact);
+    }
+    return equal && intact;
+}
+
+bool TextureCacheRuntime::TestPlainUnswizzle() {
+    u32 passed = 0;
+    constexpr std::array widths{4U, 17U, 65U, 81U, 97U, 128U, 257U, 960U};
+    constexpr std::array heights{1U, 7U, 8U, 9U, 33U, 65U, 97U, 540U};
+    for (const auto format : {PixelFormat::A8B8G8R8_UNORM, PixelFormat::R16G16B16A16_FLOAT,
+                              PixelFormat::R8_UNORM, PixelFormat::D32_FLOAT}) {
+        for (u32 index = 0; index < widths.size(); ++index) {
+            ImageInfo info;
+            info.type = ImageType::e2D;
+            info.format = format;
+            info.size = {widths[index], heights[index], 1};
+            info.resources = {.levels = 1, .layers = 1};
+            info.block = {0, index % 6, 0};
+            info.tile_width_spacing = index % 3;
+            info.native_tiling = (index % 2) != 0;
+            const auto params = VideoCommon::MakePlainUnswizzleParameters(info);
+            if (!params) {
+                continue;
+            }
+            auto input = UploadStagingBuffer(size_t{params->source_words} * 4);
+            for (size_t i = 0; i < size_t{params->source_words} * 4; ++i) {
+                input.mapped_span[i] = static_cast<u8>((i * 71) ^ (i >> 7) ^ index);
+            }
+            const VkBuffer output = DispatchPlainUnswizzle(*params, input, true);
+            if (!CheckPlainUnswizzle(info, *params, input, output)) {
+                return false;
+            }
+            ++passed;
+        }
+    }
+    struct PendingCheck {
+        StagingBufferRef download;
+        std::vector<u8> expected;
+    };
+    std::vector<PendingCheck> pending;
+    for (u32 index = 0; index < 4; ++index) {
+        ImageInfo info;
+        info.type = ImageType::e2D;
+        info.format = PixelFormat::A8B8G8R8_UNORM;
+        info.size = {97, 65, 1};
+        info.resources = {.levels = 1, .layers = 1};
+        info.block = {0, index, 0};
+        info.native_tiling = (index % 2) != 0;
+        const auto params = VideoCommon::MakePlainUnswizzleParameters(info).value();
+        auto input = UploadStagingBuffer(size_t{params.source_words} * 4);
+        for (size_t i = 0; i < size_t{params.source_words} * 4; ++i) {
+            input.mapped_span[i] = static_cast<u8>((i * 83) ^ (i >> 9) ^ (index * 37));
+        }
+        std::vector<u8> expected(size_t{params.word_count} * 4 + 64, 0xcd);
+        const auto swizzle = VideoCommon::FullUploadSwizzles(info).front();
+        Tegra::Texture::UnswizzleTexture(expected, input.mapped_span, 4, 97, 65, 1,
+                                         swizzle.block.height, 0,
+                                         VideoCommon::CalculateLevelStrideAlignment(info, 0),
+                                         info.native_tiling);
+        const VkBuffer output = DispatchPlainUnswizzle(params, input, true);
+        pending.push_back({QueuePlainUnswizzleReadback(params, output, true), std::move(expected)});
+    }
+    Finish();
+    bool batch_valid = true;
+    for (auto& check : pending) {
+        batch_valid &= std::equal(check.expected.begin(), check.expected.end(),
+                                  check.download.mapped_span.begin());
+        FreeDeferredStagingBuffer(check.download);
+    }
+    if (!batch_valid) {
+        LOG_ERROR(Render_Vulkan, "Plain GPU unswizzle queued scratch-reuse verification failed");
+        return false;
+    }
+    passed += 4;
+    LOG_INFO(Render_Vulkan, "Plain GPU unswizzle self-test: {} byte-exact guarded cases passed (4 queued)", passed);
+    return passed != 0;
+}
+
+bool TextureCacheRuntime::UploadGpuUnswizzle(Image& image, std::span<const u8> source) {
+    const auto params = VideoCommon::MakePlainUnswizzleParameters(image.info);
+    if (!params || source.size() < u64{params->source_words} * 4) {
+        return false;
+    }
+    if (!plain_unswizzle_pass) {
+        plain_unswizzle_pass.emplace(device, scheduler, descriptor_pool, compute_pass_descriptor_queue);
+    }
+    if (PlainGpuUnswizzleVerify() && !plain_unswizzle_tested) {
+        plain_unswizzle_tested = true;
+        if (!TestPlainUnswizzle()) {
+            plain_unswizzle_failed = true;
+            return false;
+        }
+    }
+    auto input = UploadStagingBuffer(size_t{params->source_words} * 4);
+    if (input.offset % device.GetStorageBufferAlignment() != 0) {
+        return false;
+    }
+    std::memcpy(input.mapped_span.data(), source.data(), size_t{params->source_words} * 4);
+    const bool verify_early = PlainGpuUnswizzleVerify() && plain_verified_early < 64;
+    const bool verify_late = PlainGpuUnswizzleVerify() && plain_unswizzle_frames >= 2500 &&
+                             plain_verified_early >= 64 && plain_verified_late < 64;
+    const VkBuffer output = DispatchPlainUnswizzle(*params, input, verify_early || verify_late);
+    if (verify_early || verify_late) {
+        if (!CheckPlainUnswizzle(image.info, *params, input, output)) {
+            plain_unswizzle_failed = true;
+            return false;
+        }
+        ++(verify_early ? plain_verified_early : plain_verified_late);
+        if ((plain_verified_early + plain_verified_late) % 16 == 0) {
+            LOG_INFO(Render_Vulkan, "Plain GPU unswizzle verification: {} early / {} late byte-exact uploads",
+                     plain_verified_early, plain_verified_late);
+        }
+    }
+    const std::array copies{VideoCommon::BufferImageCopy{
+        .buffer_offset = 0,
+        .buffer_size = size_t{params->word_count} * 4,
+        .buffer_row_length = image.info.size.width,
+        .buffer_image_height = image.info.size.height,
+        .image_subresource = {0, 0, 1},
+        .image_offset = {0, 0, 0},
+        .image_extent = image.info.size,
+    }};
+    image.UploadMemory(output, 0, copies);
+    ++plain_unswizzle_uploads;
+    plain_unswizzle_bytes += u64{params->word_count} * 4;
+    return true;
+}
+
+vk::Image TextureCacheRuntime::AcquireImageAllocation(const ImageInfo& info) {
+    if (!ImageAllocationReuseEnabled() || resolution.up_scale != 1 || resolution.down_shift != 0) {
+        return {};
+    }
+    if (const auto key = VideoCommon::ReusableImageAllocationKey(info)) {
+        return image_allocation_pool.Acquire(*key);
+    }
+    return {};
+}
+
+void TextureCacheRuntime::RecycleImage(Image& image, u64 completed_tick) {
+    constexpr auto unsupported = VideoCommon::ImageFlagBits::Converted |
+                                 VideoCommon::ImageFlagBits::IsDecoding;
+    if (!ImageAllocationReuseEnabled() || resolution.up_scale != 1 || resolution.down_shift != 0 ||
+        !image.original_image || image.original_image.IsUnbacked() || image.scaled_image ||
+        image.HasScaled() || !VideoCommon::IsAttachmentBackingUsable(image) ||
+        True(image.flags & unsupported)) {
+        return;
+    }
+    const auto key = VideoCommon::ReusableImageAllocationKey(image.info);
+    if (!key) {
+        return;
+    }
+    const VkImage handle = *image.original_image;
+    const auto memory = image.original_image.GetMemoryBlock();
+    if (image_allocation_pool.Recycle(*key, image.original_image,
+                                      memory.size, completed_tick,
+                                      [this](u64 tick) { return scheduler.IsFree(tick); },
+                                      memory.block, memory.block_size)) {
+        EraseResolveShadow(handle);
+    }
+}
+
 void TextureCacheRuntime::TickFrame() {
+    if (PlainGpuUnswizzleEnabled()) {
+        static const bool log_plain = std::getenv("EDEN_NX2_TC_LOG") != nullptr;
+        if (++plain_unswizzle_frames % 600 == 0 && log_plain) {
+            LOG_INFO(Render_Vulkan, "Plain GPU unswizzle totals: {} uploads, {} MiB, verification failed={}",
+                     plain_unswizzle_uploads, plain_unswizzle_bytes >> 20, plain_unswizzle_failed);
+        }
+    }
+    if (ImageAllocationReuseEnabled()) {
+        const u32 pressure_events = MemoryPressureEvents();
+        if (pressure_events != allocation_pool_pressure_events) {
+            allocation_pool_pressure_frames = 60;
+            allocation_pool_pressure_events = pressure_events;
+        }
+        if (++allocation_pool_frames % 30 == 0) {
+            const u64 budget = GetDeviceMemoryBudget();
+            const u64 used = GetDeviceMemoryUsage();
+            if (budget != 0 && (used >= budget || budget - used < (u64{512} << 20))) {
+                allocation_pool_pressure_frames = 60;
+            }
+        }
+        image_allocation_pool.Tick(allocation_pool_pressure_frames != 0);
+        if (allocation_pool_pressure_frames != 0) {
+            --allocation_pool_pressure_frames;
+        }
+        static const bool log_pool = std::getenv("EDEN_NX2_TC_LOG") != nullptr;
+        if (log_pool && allocation_pool_frames % 600 == 0) {
+            LOG_INFO(Render_Vulkan,
+                     "Image allocation reuse totals: {} hits, {} misses, {} recycled, {} evicted; "
+                     "{} images {} MiB allocations / {} MiB blocks held",
+                     image_allocation_pool.Hits(), image_allocation_pool.Misses(),
+                     image_allocation_pool.Recycled(), image_allocation_pool.Evicted(), image_allocation_pool.Size(),
+                     image_allocation_pool.AllocationBytes() >> 20,
+                     image_allocation_pool.Bytes() >> 20);
+        }
+    }
     static constexpr u32 MAX_UNUSED_SCRATCH_FRAMES = 60;
     // Finished decode images wait for the next texture of their shape, up to this much memory.
     static constexpr u64 MaxFreeTranscodeBytes = u64{256} << 20;
@@ -2740,24 +3044,28 @@ void TextureCacheRuntime::TickFrame() {
 Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu_addr_,
              VAddr cpu_addr_)
     : VideoCommon::ImageBase(info_, gpu_addr_, cpu_addr_), scheduler{&runtime_.scheduler},
-      runtime{&runtime_},
-      original_image(MakeImage(runtime_.device, runtime_.memory_allocator,
-                               TrimmedHostInfo(runtime_.device, info, host_level_offset),
+      runtime{&runtime_}, aspect_mask(ImageAspectMask(info.format)) {
+    const auto host_info = TrimmedHostInfo(runtime_.device, info, host_level_offset);
+    const bool unbacked = UsesSparseLayers(runtime_.device, info, gpu_addr_) ||
+                          UsesSparseTiles(runtime_.device, info, gpu_addr_) ||
+                          IsUnwrittenSparse(runtime_.device, info, gpu_addr_);
+    if (!unbacked) {
+        original_image = runtime_.AcquireImageAllocation(host_info);
+    }
+    if (!original_image) {
+        original_image = MakeImage(runtime_.device, runtime_.memory_allocator, host_info,
                                IsHugeAstcArray(runtime_.device, info)
                                    ? std::span<const VkFormat>{HugeAstcViewFormats}
                                : IsOpaqueBc1Astc(runtime_.device, info)
                                    ? std::span<const VkFormat>{OpaqueAstcViewFormats}
                                    : runtime->ViewFormats(info.format),
                                AstcHostFormat(runtime_.device, info),
-                               UsesSparseLayers(runtime_.device, info, gpu_addr_) ||
-                                   UsesSparseTiles(runtime_.device, info, gpu_addr_) ||
-                                   IsUnwrittenSparse(runtime_.device, info, gpu_addr_),
+                               unbacked,
                                UsesSparseTiles(runtime_.device, info, gpu_addr_) &&
-                                   SparseTilesModeOf(runtime_.device) == SparseTilesMode::Aliased)),
-      aspect_mask(ImageAspectMask(info.format)) {
+                                   SparseTilesModeOf(runtime_.device) == SparseTilesMode::Aliased);
+    }
     if (original_image.IsUnbacked()) {
         flags |= VideoCommon::ImageFlagBits::Unbacked;
-        const ImageInfo host_info = TrimmedHostInfo(runtime_.device, info, host_level_offset);
         const u64 texels = u64{host_info.size.width} * host_info.size.height *
                            host_info.size.depth * static_cast<u64>(host_info.resources.layers);
         if (UsesSparseTiles(runtime_.device, info, gpu_addr_) && InitSparseTiles()) {

@@ -22,6 +22,7 @@
 #include "common/alignment.h"
 #include "common/common_types.h"
 #include "common/polyfill_thread.h"
+#include "common/progress_counter.h"
 #include "common/settings.h"
 #include "video_core/gpu_split.h"
 #include "video_core/renderer_vulkan/fragment_barrier_state.h"
@@ -307,6 +308,8 @@ public:
 private:
     std::chrono::steady_clock::time_point last_flush{};
     bool flush_pending{};
+    /// The master semaphore's current tick as of the last submission (WaitSubmitted waits on it).
+    Common::ProgressCounter submitted_ticks;
 
     class Command {
     public:

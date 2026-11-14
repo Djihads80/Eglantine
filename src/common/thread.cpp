@@ -31,6 +31,7 @@
 #elif defined(_WIN32)
 #include <windows.h>
 #include "common/string_util.h"
+#include "common/windows/cpu_layout.h"
 #include "common/windows/timer_resolution.h"
 #else
 #if defined(__FreeBSD__)
@@ -956,6 +957,11 @@ void SetCurrentThreadName(const char* name) {
     (void)name;
 #else
     pthread_setname_np(pthread_self(), name);
+#endif
+#ifdef _WIN32
+    if (std::strcmp(name, "GPUBack") == 0) {
+        Windows::StartNx2CpuLayout();
+    }
 #endif
 }
 

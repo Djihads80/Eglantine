@@ -9,11 +9,14 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <optional>
+#include <unordered_map>
 
 #include "common/assert.h"
 #include "common/logging.h"
 #include "common/settings.h"
 #include "core/core.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/dma_pusher.h"
@@ -78,6 +81,126 @@ void OnBackRelease(DmaPusher& dma_pusher, GPUVAddr address, const Func& func) {
     if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address)) {
         split.NoteAsyncWrite(*device, 16);
     }
+}
+
+// EDEN_NX2_ACQUIRE_STATS=1 (diagnostic): classifies Ampere acquire triggers before their drain.
+// The front notes each queued release (device address -> ring position past it, payload); an
+// acquire is "queued-release" when the newest queued release to its word, still ahead of the
+// back, satisfies it, "memory" when the word in memory already does and no release to it is
+// queued, and "other" otherwise.
+struct Nx2QueuedRelease {
+    u64 position{};
+    u32 payload{};
+};
+bool AcquireStatsEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_ACQUIRE_STATS");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+std::unordered_map<u64, Nx2QueuedRelease>& QueuedReleases() {
+    static std::unordered_map<u64, Nx2QueuedRelease> releases; // front thread only
+    return releases;
+}
+struct Nx2AcquireStats {
+    u64 total{}, queued_release{}, queued_release_unmet{}, memory{}, other{}, unmet_after{};
+};
+Nx2AcquireStats& AcquireStats() {
+    static Nx2AcquireStats stats; // front thread only
+    return stats;
+}
+
+bool AcquireEarlyEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_ACQUIRE_EARLY");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+bool AcquireEarlyVerify() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_ACQUIRE_EARLY_VERIFY");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+struct Nx2AcquireEarlyStats {
+    u64 checks{}, early{}, waited{}, declined_gpu_written{}, declined_proof{}, declined_async{},
+        unmet{}, verify_mismatches{};
+};
+Nx2AcquireEarlyStats& AcquireEarlyStats() {
+    static Nx2AcquireEarlyStats stats; // front thread only
+    return stats;
+}
+
+// Most Ampere acquires wait on words the guest CPU released long before (OoT: ~88% are met in
+// memory with no release to them queued), yet each drained the whole back first. Here the front
+// waits only for the queued entries that could write the word: unknown-effect entries, noted
+// writes to its 16 bytes and draws/dispatches not proven to write no memory (as the early MME DMA
+// read does, Maxwell3D::FrontDmaReadEarly). Then a page no GPU work ever wrote cannot have a newer
+// copy in the buffer cache, and with no pending query result for the word, memory holds what a
+// drained read would see. Returns true when the word meets the acquire; false falls back to the
+// drained check (which then also covers an unmet word).
+bool AcquireEarly(DmaPusher& dma_pusher, GPUVAddr address, const auto& matches) {
+    auto& split = VideoCommon::GpuSplit::Get();
+    auto& stats = AcquireEarlyStats();
+    ++stats.checks;
+    const std::optional<DAddr> device = dma_pusher.memory_manager.GpuToCpuAddress(address);
+    if (!device || Tegra::Nx2IsGpuWrittenRegion(*device) || Tegra::Nx2IsGpuWritten(*device)) {
+        ++stats.declined_gpu_written;
+        return false;
+    }
+    const u64 slot_begin = *device & ~u64{0xf};
+    const u64 slot_end = slot_begin + 0x10;
+    const u64 consumed = split.SettleWrites();
+    const bool writer_set =
+        VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::MacroReadWriterSet);
+    const u64 target = writer_set ? split.Writes().WriterReadTarget(slot_begin, slot_end)
+                                  : split.ReadTarget(slot_begin, slot_end);
+    if (target > consumed) {
+        ++stats.waited;
+    }
+    split.WaitUntil(target, VideoCommon::DrainSite::AcquireTrigger);
+    const u64 consumed_now = split.ConsumedNow();
+    if (writer_set && split.Writes().LastGpu() > consumed_now) {
+        const u64 epoch = Tegra::g_nx2_code_epoch.load(std::memory_order_acquire);
+        if (!split.Writes().DrawsValid(consumed_now, epoch) ||
+            split.Writes().AnyPendingWrite(consumed_now, split.Writes().LastGpu(),
+                                           [](u64 begin, u64 end) {
+                                               return Tegra::Nx2IsProvenCode(begin, end - begin);
+                                           })) {
+            ++stats.declined_proof;
+            return false;
+        }
+    }
+    if (Tegra::Nx2IsGpuWrittenRegion(*device) || Tegra::Nx2IsGpuWritten(*device)) {
+        ++stats.declined_gpu_written;
+        return false;
+    }
+    if (const u64 async_position = split.HasAsyncWrite(slot_begin, slot_end - slot_begin);
+        async_position != 0 && (async_position > consumed_now ||
+                                !Tegra::Nx2AsyncReportsSettled(slot_begin, slot_end - slot_begin))) {
+        ++stats.declined_async;
+        return false;
+    }
+    if (!matches(dma_pusher.memory_manager.Read<u32>(address))) {
+        ++stats.unmet;
+        return false;
+    }
+    ++stats.early;
+    if ((stats.checks % 50000) == 0) {
+        LOG_INFO(HW_GPU,
+                 "nx2 acquire early: {} checks, {} decided without a drain ({} after a partial "
+                 "wait); declined: {} GPU-written, {} draw proofs, {} async results, {} unmet; "
+                 "{} verify mismatches",
+                 stats.checks, stats.early, stats.waited, stats.declined_gpu_written,
+                 stats.declined_proof, stats.declined_async, stats.unmet,
+                 stats.verify_mismatches);
+    }
+    return true;
 }
 
 void DrainBack(VideoCommon::DrainSite site = VideoCommon::DrainSite::Acquire) {
@@ -319,6 +442,11 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                               rasterizer->Query(mirror, VideoCommon::QueryType::Payload, properties, payload, 0);
                           }
                       });
+        if (AcquireStatsEnabled() && VideoCommon::GpuSplit::Get().Active()) {
+            if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(sequence_address)) {
+                QueuedReleases()[*device] = {VideoCommon::GpuSplit::Get().WritePosition(), payload};
+            }
+        }
         // After the release's entry was sent, so its position covers it.
         if (auto& split = VideoCommon::GpuSplit::Get(); mirror != 0 && split.Active()) {
             if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(mirror)) {
@@ -343,8 +471,60 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             return;
         }
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireChecks, 1);
+        int acquire_class = -1; // 0 queued release, 1 memory, 2 other
+        if (AcquireStatsEnabled() && VideoCommon::GpuSplit::Get().Active()) {
+            auto& stats = AcquireStats();
+            ++stats.total;
+            const u64 consumed_now = VideoCommon::GpuSplit::Get().ConsumedNow();
+            const auto device = dma_pusher.memory_manager.GpuToCpuAddress(acquire.address);
+            const auto it = device ? QueuedReleases().find(*device) : QueuedReleases().end();
+            const bool queued = it != QueuedReleases().end() && it->second.position > consumed_now;
+            if (queued) {
+                const bool met = acquire.Matches(it->second.payload);
+                acquire_class = met ? 0 : 2;
+                ++(met ? stats.queued_release : stats.queued_release_unmet);
+            } else if (acquire.Matches(dma_pusher.memory_manager.Read<u32>(acquire.address))) {
+                acquire_class = 1;
+                ++stats.memory;
+            } else {
+                acquire_class = 2;
+                ++stats.other;
+            }
+            if ((stats.total % 20000) == 0) {
+                LOG_INFO(HW_GPU,
+                         "nx2 acquire stats: {} acquire triggers: {} met by a queued release, "
+                         "{} with a queued release that does not meet it, {} met in memory with "
+                         "none queued, {} other; {} still unmet after the drain",
+                         stats.total, stats.queued_release, stats.queued_release_unmet,
+                         stats.memory, stats.other, stats.unmet_after);
+            }
+        }
+        if (AcquireEarlyEnabled() && VideoCommon::GpuSplit::Get().Active() &&
+            AcquireEarly(dma_pusher, acquire.address,
+                         [&acquire](u32 word) { return acquire.Matches(word); })) {
+            if (AcquireEarlyVerify()) {
+                DrainBack(VideoCommon::DrainSite::AcquireTrigger);
+                const u32 verified = ReadSemaphoreWord(dma_pusher, acquire.address);
+                if (!acquire.Matches(verified) &&
+                    AcquireEarlyStats().verify_mismatches++ < 64) {
+                    LOG_ERROR(HW_GPU,
+                              "nx2 acquire early: {:#x} op {} value {:#x} met early, word {:#x} "
+                              "after a drain does not meet it",
+                              acquire.address, acquire.operation, acquire.value, verified);
+                }
+            }
+            return;
+        }
         DrainBack(VideoCommon::DrainSite::AcquireTrigger);
         const u32 drained = ReadSemaphoreWord(dma_pusher, acquire.address);
+        if (acquire_class >= 0 && !acquire.Matches(drained)) {
+            ++AcquireStats().unmet_after;
+            if (acquire_class != 2) {
+                LOG_WARNING(HW_GPU, "nx2 acquire stats: class {} acquire at {:#x} value {:#x} "
+                            "unmet after the drain (word {:#x})", acquire_class, acquire.address,
+                            acquire.value, drained);
+            }
+        }
         if (acquire.Matches(drained)) {
             return;
         }

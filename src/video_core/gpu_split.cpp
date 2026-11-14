@@ -178,7 +178,8 @@ void GpuSplit::Stop() {
     last_sync_position = 0;
     last_function_position = 0;
     writes.Reset();
-    async_writes.clear();
+    std::ranges::fill(async_writes, u64{0});
+    any_async_write = false;
     cb_words.clear();
     cb_words_lost = 0;
     note_memory = nullptr;

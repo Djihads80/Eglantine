@@ -38,6 +38,9 @@
 #include "common/spin_recursive_mutex.h"
 #include "shader_recompiler/shader_info.h"
 #include "video_core/buffer_cache/buffer_base.h"
+#include "video_core/buffer_cache/buffer_dependency_trace.h"
+#include "video_core/buffer_cache/list_copy_demand.h"
+#include "video_core/buffer_cache/list_writer_trace.h"
 #include "video_core/buffer_cache/read_trap_tracker.h"
 #include "video_core/buffer_cache/virtual_range_cache.h"
 #include "video_core/control/channel_state_cache.h"
@@ -479,6 +482,45 @@ public:
     [[nodiscard]] bool HasPendingNx2ListCopies() const noexcept {
         return !nx2_list_copy_requests.empty();
     }
+    void Nx2BeginWriterTrace(u64 shader) {
+        if (nx2_list_copy_demand) {
+            nx2_list_copy_shader = shader;
+        }
+        if (nx2_buffer_deps) {
+            nx2_buffer_deps->BeginDispatch(shader);
+        }
+        if (nx2_writer_trace) {
+            std::scoped_lock lock{nx2_list_mutex};
+            nx2_writer_trace->BeginDispatch(shader);
+        }
+    }
+    void Nx2EndWriterTrace() {
+        nx2_list_copy_shader = 0;
+        if (nx2_buffer_deps) {
+            nx2_buffer_deps->EndDispatch();
+        }
+        if (nx2_writer_trace) {
+            std::scoped_lock lock{nx2_list_mutex};
+            nx2_writer_trace->EndDispatch();
+        }
+    }
+    [[nodiscard]] bool Nx2WriterTraceHasWrites() const {
+        return nx2_writer_trace && nx2_writer_trace->HasScopeWrites();
+    }
+    void Nx2WriterTraceInput(bool recent) {
+        if (nx2_writer_trace) {
+            std::scoped_lock lock{nx2_list_mutex};
+            nx2_writer_trace->SetRecentInput(recent);
+        }
+    }
+    void Nx2CommitBufferDependencies() {
+        if (nx2_buffer_deps) {
+            nx2_buffer_deps->CommitWriter();
+        }
+    }
+    void Nx2TraceComputeBufferInputs();
+    bool Nx2TracingBufferDependencies() const { return nx2_buffer_deps.has_value(); }
+    void Nx2TraceBufferInput(DAddr addr, u64 size, BufferDependencyTrace::Input input);
     /// True when it recorded copies, which the GPU completes at `tick` (the caller submits).
     bool Nx2CopyListPages(u64 tick);
     enum class Nx2ListRead { Unknown, Copied, Synced, NeedsSync };
@@ -1036,9 +1078,39 @@ private:
         /// the page's lists read guest memory once the back ran the work before the last such
         /// wait and no write came since the front flushed the page (Nx2ReadListCopy).
         bool draw_written{};
+        bool copy_read{};
+        ListCopyDemand demand;
         std::optional<Nx2Staging> copy;
     };
     std::mutex nx2_list_mutex; ///< nx2_list_pages: the split's front reads the copies
+    std::optional<ListWriterTrace> nx2_writer_trace = []() -> std::optional<ListWriterTrace> {
+        const char* value = std::getenv("EDEN_NX2_WRITER_DEPS");
+        if (value != nullptr && value[0] == '1') {
+            return std::optional<ListWriterTrace>{std::in_place};
+        }
+        return std::nullopt;
+    }();
+    std::optional<BufferDependencyTrace> nx2_buffer_deps = []()
+        -> std::optional<BufferDependencyTrace> {
+        const char* value = std::getenv("EDEN_NX2_BUFFER_DEPS");
+        if (value != nullptr && value[0] == '1') {
+            return std::optional<BufferDependencyTrace>{std::in_place};
+        }
+        return std::nullopt;
+    }();
+    const bool nx2_list_copy_log = [] {
+        const char* value = std::getenv("EDEN_NX2_LIST_COPY_LOG");
+        return value != nullptr && value[0] == '1';
+    }();
+    const bool nx2_list_copy_demand = [] {
+        const char* value = std::getenv("EDEN_NX2_LIST_COPY_DEMAND");
+        return value != nullptr && value[0] == '1';
+    }();
+    u64 nx2_list_copy_shader{}; ///< Back thread only; zero also covers DMA and inline writes.
+    struct Nx2ListCopyStats {
+        u64 copies{}, bytes{}, replaced_unread{}, copied{}, synced{}, misses{}, waits{};
+        u64 demand_skipped{}, demand_promoted{};
+    } nx2_list_copy_stats; ///< Protected by nx2_list_mutex.
     std::unordered_map<DAddr, Nx2ListPage> nx2_list_pages;
     /// Copies replaced while the GPU may still write them: freed once it is past their tick.
     std::vector<std::pair<u64, Nx2Staging>> nx2_retired_list_copies;

@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "common/common_types.h"
+#include "common/container/unordered_map.h"
 #include "common/thread.h"
 #include "video_core/nx2_perf.h"
 
@@ -209,7 +210,7 @@ struct Nx2NonWriterSet {
         }
     };
     std::mutex mutex;
-    std::map<u64, std::vector<std::pair<Nx2DrawPrograms, u64>>> buckets; ///< hash -> (key, epoch)
+    Common::unordered_map<Nx2DrawPrograms, u64, Hash> proofs;
     std::atomic<u64> version{1}; ///< Moves on every insert (the front caches its lookups)
 };
 
@@ -222,37 +223,16 @@ inline Nx2NonWriterSet& Nx2NonWriters() {
 /// guest memory.
 [[nodiscard]] inline bool Nx2IsNonWriterDraw(const Nx2DrawPrograms& programs, u64 epoch) {
     auto& set = Nx2NonWriters();
-    const u64 hash = Nx2NonWriterSet::Hash{}(programs);
     std::scoped_lock lock{set.mutex};
-    const auto it = set.buckets.find(hash);
-    if (it == set.buckets.end()) {
-        return false;
-    }
-    for (const auto& [key, proven_epoch] : it->second) {
-        if (key == programs) {
-            return proven_epoch == epoch;
-        }
-    }
-    return false;
+    const auto it = set.proofs.find(programs);
+    return it != set.proofs.end() && it->second == epoch;
 }
 
 inline void Nx2InsertNonWriterDraw(const Nx2DrawPrograms& programs, u64 epoch) {
     auto& set = Nx2NonWriters();
-    const u64 hash = Nx2NonWriterSet::Hash{}(programs);
     {
         std::scoped_lock lock{set.mutex};
-        auto& bucket = set.buckets[hash];
-        bool found = false;
-        for (auto& [key, proven_epoch] : bucket) {
-            if (key == programs) {
-                proven_epoch = epoch;
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            bucket.emplace_back(programs, epoch);
-        }
+        set.proofs.insert_or_assign(programs, epoch);
     }
     set.version.fetch_add(1, std::memory_order_release);
 }
@@ -274,7 +254,7 @@ inline void Nx2ClearGpuWrittenPages() {
     {
         auto& set = Nx2NonWriters();
         std::scoped_lock lock{set.mutex};
-        set.buckets.clear();
+        set.proofs.clear();
     }
 }
 

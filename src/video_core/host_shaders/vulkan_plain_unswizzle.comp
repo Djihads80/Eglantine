@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#version 450
+
+layout(local_size_x = 256) in;
+layout(binding = 0, std430) readonly buffer Input { uint source[]; };
+layout(binding = 1, std430) writeonly buffer Output { uint destination[]; };
+layout(push_constant) uniform Parameters {
+    uint words_per_row;
+    uint word_count;
+    uint block_size;
+    uint x_shift;
+    uint block_height;
+    uint block_height_mask;
+    uint native_tiling;
+    uint source_words;
+} p;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= p.word_count) {
+        return;
+    }
+    uint x = (index % p.words_per_row) * 4;
+    uint y = index / p.words_per_row;
+    uint gob = ((x & 32) << 3) | ((y & 6) << 5) | ((x & 16) << 1) |
+               ((y & 1) << 4) | (x & 15);
+    if (p.native_tiling != 0) {
+        uint difference = ((gob >> 5) ^ (gob >> 6)) & 1;
+        gob ^= (difference << 5) | (difference << 6);
+    }
+    uint block_y = y >> 3;
+    uint address = (block_y >> p.block_height) * p.block_size +
+                   ((block_y & p.block_height_mask) << 9) + ((x >> 6) << p.x_shift) + gob;
+    uint word = address >> 2;
+    destination[index] = word < p.source_words ? source[word] : 0;
+}

@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <barrier>
 #include <limits>
 #include <random>
@@ -125,4 +126,72 @@ TEST_CASE("Concurrent overlapping GPU-written marks retain every writer's bits",
         writers.clear();
         pages.Check();
     }
+}
+
+TEST_CASE("Non-writer proofs distinguish full keys despite hash collisions and epoch updates",
+          "[video_core][nx2_nonwriter_proof]") {
+    WrittenPages reset;
+    Tegra::Nx2DrawPrograms first{{0x1000, 0x2000}, 1, 0, true};
+    auto collision = first;
+    collision.memory_id = 2;
+    collision.map_serial = (first.memory_id * 0x9e3779b97f4a7c15ULL) ^
+                           (collision.memory_id * 0x9e3779b97f4a7c15ULL);
+    REQUIRE(first != collision);
+    REQUIRE(Tegra::Nx2NonWriterSet::Hash{}(first) == Tegra::Nx2NonWriterSet::Hash{}(collision));
+    CHECK_FALSE(Tegra::Nx2IsNonWriterDraw(first, 7));
+    const u64 version = Tegra::Nx2NonWriters().version.load();
+    Tegra::Nx2InsertNonWriterDraw(first, 7);
+    Tegra::Nx2InsertNonWriterDraw(collision, 8);
+    CHECK(Tegra::Nx2IsNonWriterDraw(first, 7));
+    CHECK(Tegra::Nx2IsNonWriterDraw(collision, 8));
+    CHECK_FALSE(Tegra::Nx2IsNonWriterDraw(first, 8));
+    CHECK_FALSE(Tegra::Nx2IsNonWriterDraw(collision, 7));
+    Tegra::Nx2InsertNonWriterDraw(first, 9);
+    CHECK_FALSE(Tegra::Nx2IsNonWriterDraw(first, 7));
+    CHECK(Tegra::Nx2IsNonWriterDraw(first, 9));
+    CHECK(Tegra::Nx2IsNonWriterDraw(collision, 8));
+    CHECK(Tegra::Nx2NonWriters().version.load() == version + 3);
+    for (size_t field = 0; field < 9; ++field) {
+        auto missing = first;
+        if (field < 6) {
+            ++missing.addresses[field];
+        } else if (field == 6) {
+            ++missing.memory_id;
+        } else if (field == 7) {
+            ++missing.map_serial;
+        } else {
+            missing.native = false;
+        }
+        CHECK_FALSE(Tegra::Nx2IsNonWriterDraw(missing, 9));
+    }
+}
+
+TEST_CASE("Non-writer proofs retain concurrent insertions and clear between sessions",
+          "[video_core][nx2_nonwriter_proof]") {
+    WrittenPages reset;
+    constexpr size_t Writers = 4;
+    std::barrier ready{static_cast<std::ptrdiff_t>(Writers)};
+    std::atomic<bool> missing{};
+    std::vector<std::jthread> writers;
+    for (u64 writer = 0; writer < Writers; ++writer) {
+        writers.emplace_back([&, writer] {
+            ready.arrive_and_wait();
+            for (u64 i = 0; i < 64; ++i) {
+                const Tegra::Nx2DrawPrograms key{{0x1000 * (i + 1)}, writer + 100, 1, true};
+                Tegra::Nx2InsertNonWriterDraw(key, 15);
+                if (!Tegra::Nx2IsNonWriterDraw(key, 15)) {
+                    missing.store(true);
+                }
+            }
+        });
+    }
+    writers.clear();
+    CHECK_FALSE(missing.load());
+    for (u64 writer = 0; writer < Writers; ++writer) {
+        for (u64 i = 0; i < 64; ++i) {
+            CHECK(Tegra::Nx2IsNonWriterDraw({{0x1000 * (i + 1)}, writer + 100, 1, true}, 15));
+        }
+    }
+    Tegra::Nx2ClearGpuWrittenPages();
+    CHECK_FALSE(Tegra::Nx2IsNonWriterDraw({{0x1000}, 100, 1, true}, 15));
 }

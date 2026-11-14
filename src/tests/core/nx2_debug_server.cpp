@@ -118,7 +118,7 @@ TEST_CASE("Debug server requests map to handlers", "[core][nx2_debug_server]") {
 }
 
 TEST_CASE("Debug server shader hashes need all 16 hex digits", "[core][nx2_debug_server]") {
-    REQUIRE(Core::Nx2Debug::ParseShaderHash("00000000621c4755") == 0x621c4755);
+    REQUIRE(Core::Nx2Debug::ParseShaderHash("00000000621c4755") == 0x621c4755ULL);
     REQUIRE(Core::Nx2Debug::ParseShaderHash("3DDFB1D7621C4755") == 0x3ddfb1d7621c4755);
     REQUIRE(Core::Nx2Debug::ParseShaderHash("0x3ddfb1d7621c4755") == 0x3ddfb1d7621c4755);
     for (const char* bad : {"621c4755", "3ddfb1d7", "0x621c4755", "", "0x", "3ddfb1d7621c47551",
@@ -236,9 +236,9 @@ TEST_CASE("Debug memory reads guest pages and names the first unmapped byte",
     REQUIRE(std::memcmp(out.data() + 0x10, guest.backing, 0x10) == 0);
     REQUIRE_FALSE(Core::Nx2Debug::ReadGuestMemory(memory, 0x7000, out));
     REQUIRE(std::memcmp(out.data(), guest.backing + 0x2000, out.size()) == 0);
-    REQUIRE(Core::Nx2Debug::ReadGuestMemory(memory, 0x5ff0, out) == 0x6000u);
-    REQUIRE(Core::Nx2Debug::ReadGuestMemory(memory, 0x6800, out) == 0x6800u);
-    REQUIRE(Core::Nx2Debug::ReadGuestMemory(memory, 0x100000, out) == 0x100000u);
+    REQUIRE(Core::Nx2Debug::ReadGuestMemory(memory, 0x5ff0, out) == 0x6000ULL);
+    REQUIRE(Core::Nx2Debug::ReadGuestMemory(memory, 0x6800, out) == 0x6800ULL);
+    REQUIRE(Core::Nx2Debug::ReadGuestMemory(memory, 0x100000, out) == 0x100000ULL);
     // The top 16 bits would alias page 4 through GetPointerSilent's mask.
     REQUIRE(Core::Nx2Debug::ReadGuestMemory(memory, (1ULL << 48) | 0x4000, out) ==
             ((1ULL << 48) | 0x4000));

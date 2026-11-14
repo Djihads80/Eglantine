@@ -25,6 +25,15 @@ ImageViewBase::ImageViewBase(const ImageViewInfo& info, const ImageInfo& image_i
           .height = (std::max)(image_info.size.height >> range.base.level, 1u),
           .depth = (std::max)(image_info.size.depth >> range.base.level, 1u),
       } {
+    if (info.render_size.width != 0 || info.render_size.height != 0) {
+        ASSERT(info.IsRenderTarget() && info.render_size.width != 0 && info.render_size.height != 0);
+        ASSERT(info.render_size.width <= size.width && info.render_size.height <= size.height);
+        if (info.render_size.width != size.width || info.render_size.height != size.height) {
+            flags |= ImageViewFlagBits::RenderSubExtent;
+        }
+        size.width = info.render_size.width;
+        size.height = info.render_size.height;
+    }
     ASSERT_MSG(VideoCore::Surface::IsViewCompatible(image_info.format, info.format, false, true),
                "Image view format {} is incompatible with image format {}", info.format,
                image_info.format);
