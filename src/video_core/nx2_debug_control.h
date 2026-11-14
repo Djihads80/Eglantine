@@ -24,6 +24,8 @@ struct CaptureRequest {
     bool sampled;
     /// The uniform and storage buffers of every draw and dispatch, and dispatch group counts.
     bool buffers;
+    /// Sampled textures larger than this are listed but not read back; 0 reads back all.
+    u64 sampled_max_bytes{};
 };
 
 struct CaptureResult {

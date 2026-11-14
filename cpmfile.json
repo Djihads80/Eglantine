@@ -95,6 +95,13 @@
         "repo": "Djihads80/Eglantine",
         "version": "9.0.2-av1-mingw-1"
     },
+    "ffmpeg-ci-av1-linux": {
+        "ci": true,
+        "name": "ffmpeg",
+        "package": "FFmpeg",
+        "repo": "Eglantine-Community/FFmpeg",
+        "version": "9.0.2-1794581964-946fcce07b"
+    },
     "fmt": {
         "hash": "f0da82c545b01692e9fd30fdfb613dbb8dd9716983dcd0ff19ac2a8d36f74beb5540ef38072fdecc1e34191b3682a8542ecbf3a61ef287dbba0a2679d4e023f2",
         "min_version": "8",

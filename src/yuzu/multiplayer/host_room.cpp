@@ -121,6 +121,10 @@ void HostRoomWindow::Host() {
         NetworkMessage::ErrorManager::ShowError(NetworkMessage::ErrorManager::USERNAME_NOT_VALID);
         return;
     }
+    if (!NetworkMessage::ConfirmDisplayName(this, system, ui->username,
+                                            [this] { emit RequestProfileConfiguration(); })) {
+        return;
+    }
     if (!ui->room_name->hasAcceptableInput()) {
         NetworkMessage::ErrorManager::ShowError(NetworkMessage::ErrorManager::ROOMNAME_NOT_VALID);
         return;

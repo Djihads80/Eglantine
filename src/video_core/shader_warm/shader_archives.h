@@ -71,7 +71,8 @@ private:
 enum class GameFileKind : u8 {
     Other,            ///< Not read
     ShaderArchive,    ///< *.bfsha, *.sarc, *.bnsh, *.cgsb, *.shn or *.sharcb, raw or zstd (.zs)
-    Effect,           ///< Effect/*.vsetb.byml.zs, read after every shader archive
+    Effect,           ///< Effect/*.vsetb.byml.zs or *.esetb.byml.zs and *.ptcl (raw or zstd), read
+                      ///< after every shader archive
     ZstdDictionaries, ///< Pack/ZsDic.pack.zs
 };
 

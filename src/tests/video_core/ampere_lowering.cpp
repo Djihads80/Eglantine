@@ -464,6 +464,39 @@ TEST_CASE("Ampere Ocarina byte constant loads, ULEA carries to UP3 and two-sourc
     INFO(convert.error);
     REQUIRE(static_cast<bool>(convert));
     CHECK(field(FindMaxwell(convert, 0x5cb, 52), 41, 2) == 3);
+
+    // UISETP.LT.U32.AND UPc, UPT, UR4, 0x2, UPT + USEL UR4, UR4, 0x2, UPc:
+    // Matching UP0/UP1/UP2 clamps fold USEL to IMNMX.U32 while preserving UISETP R239 write.
+    for (const u32 cond : {0U, 1U, 2U}) {
+        const auto clamped = LowerToMaxwell(std::array<Instruction, 3>{{
+            {{0x0400788c, 0x00000002, 0x0bf01070U | (cond << 17), 0x000fc800}},
+            {{0x04047887, 0x00000002, 0x08000000U | (cond << 23), 0x000fc800}},
+            EXIT,
+        }});
+        REQUIRE(static_cast<bool>(clamped));
+        CHECK(CountMaxwell(clamped, 0x382003800027dcdcULL, 0) == 1);
+        CHECK(CountMaxwell(
+            clamped, 0x38e800000007efefULL | (u64{1U << (6U - cond)} << 20), 0) == 1);
+    }
+    // Mismatched predicate (UP1 vs UP2), negated USEL (!UP1), or guarded UISETP/USEL must not fold.
+    for (const auto& non_clamp : {
+             std::array<Instruction, 3>{{
+                 {{0x0400788c, 0x00000002, 0x0bf21070, 0x000fc800}},
+                 {{0x04047887, 0x00000002, 0x09000000, 0x000fc800}}, EXIT}},
+             std::array<Instruction, 3>{{
+                 {{0x0400788c, 0x00000002, 0x0bf21070, 0x000fc800}},
+                 {{0x04047887, 0x00000002, 0x0c800000, 0x000fc800}}, EXIT}},
+             std::array<Instruction, 3>{{
+                 {{0x0400088c, 0x00000002, 0x0bf21070, 0x000fc800}},
+                 {{0x04047887, 0x00000002, 0x08800000, 0x000fc800}}, EXIT}},
+             std::array<Instruction, 3>{{
+                 {{0x0400788c, 0x00000002, 0x0bf21070, 0x000fc800}},
+                 {{0x04040887, 0x00000002, 0x08800000, 0x000fc800}}, EXIT}},
+         }) {
+        const auto res = LowerToMaxwell(non_clamp);
+        REQUIRE(static_cast<bool>(res));
+        CHECK(CountMaxwell(res, 0x382003800027dcdcULL, 0) == 0);
+    }
 }
 TEST_CASE("Ampere three-input IADD3 preserves negative immediates", "[video_core][ampere]") {
     // GrassCullGrid's R4 + (-1) + R7 selects the grid level. Bit 63 is the literal's sign bit.

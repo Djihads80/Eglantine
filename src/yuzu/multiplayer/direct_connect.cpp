@@ -68,6 +68,10 @@ void DirectConnectWindow::Connect() {
         NetworkMessage::ErrorManager::ShowError(NetworkMessage::ErrorManager::USERNAME_NOT_VALID);
         return;
     }
+    if (!NetworkMessage::ConfirmDisplayName(this, system, ui->nickname,
+                                            [this] { emit RequestProfileConfiguration(); })) {
+        return;
+    }
     if (system.IsPoweredOn()) {
         if (!NetworkMessage::WarnGameRunning()) {
             return;

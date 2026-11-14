@@ -15,6 +15,7 @@ namespace Settings {
 
 inline constexpr u64 MarioKartWorldProgramId = 0x0400C3F00006E000ULL;
 inline constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
+inline constexpr u64 HyruleWarriorsProgramId = 0x04003F40232DE000ULL;
 
 struct RecommendedSetting {
     std::string key;
@@ -71,6 +72,7 @@ inline const std::map<u64, GamePreset> game_presets{
 // Settings that only affect one game. Per-game configuration shows them in that game's Tweaks tab.
 inline const std::map<u64, std::vector<std::string>> game_tweaks{
     {MarioKartWorldProgramId, {"mkw_30fps", "mkw_dynamic_fps"}},
+    {HyruleWarriorsProgramId, {"hyrule_dynamic_fps", "hyrule_30fps"}},
 };
 
 inline const std::vector<std::string>* FindGameTweaks(u64 program_id) {

@@ -164,10 +164,10 @@ private:
                 continue;
             }
             next_report = clock::now() + std::chrono::seconds(20);
-            const size_t head = this->head.load(std::memory_order_relaxed);
-            for (; consumed < head; ++consumed) {
+            const size_t produced = this->head.load(std::memory_order_relaxed);
+            for (; consumed < produced; ++consumed) {
                 const Sample& sample = ring[consumed % RingSize];
-                if (sample.depth == 0 || head - consumed > RingSize) {
+                if (sample.depth == 0 || produced - consumed > RingSize) {
                     continue;
                 }
                 const auto it = names.find(sample.who);

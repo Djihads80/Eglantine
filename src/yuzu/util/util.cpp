@@ -4,9 +4,11 @@
 // SPDX-FileCopyrightText: 2015 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <QCoreApplication>
 #include <QPainter>
 
 #include "applets/qt_profile_select.h"
+#include "common/fs/path_util.h"
 #include "core/frontend/applets/profile_select.h"
 #include "core/hle/service/acc/profile_manager.h"
 #include "qt_common/qt_common.h"
@@ -70,4 +72,18 @@ std::string GetProfileIDString() {
     auto user_id = uuid->AsU128();
 
     return fmt::format("{:016X}{:016X}", user_id[1], user_id[0]);
+}
+
+QStringList GetLanguageSearchDirectories() {
+    const QString user_lang_dir =
+        QString::fromStdString(Common::FS::GetEdenPathString(Common::FS::EdenPath::ConfigDir)) +
+        QStringLiteral("/languages");
+    const QString exe_lang_dir =
+        QCoreApplication::applicationDirPath() + QStringLiteral("/languages");
+
+    return {
+        user_lang_dir,
+        exe_lang_dir,
+        QStringLiteral(":/languages"),
+    };
 }

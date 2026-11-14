@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <mutex>
 #include <thread>
 #if defined(_M_X64) || defined(__x86_64__)
 #include <immintrin.h>
@@ -18,6 +19,8 @@
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_process.h"
 #include "dynarmic/interface/A64/config.h"
+#include "dynarmic/interface/jit_stats.h"
+#include "video_core/nx2_spikes.h"
 
 namespace Core {
 
@@ -466,6 +469,18 @@ ArmDynarmic64::ArmDynarmic64(System& system, bool uses_wall_clock, Kernel::KProc
     auto& page_table = process->GetPageTable().GetBasePageTable();
     auto& page_table_impl = page_table.GetImpl();
     MakeJit(&page_table_impl, page_table.GetAddressSpaceWidth());
+    static std::once_flag polled;
+    std::call_once(polled, [] {
+        using VideoCommon::Nx2Spikes::Event;
+        VideoCommon::Nx2Spikes::SetPolled(
+            Event::JitCompile,
+            [] { return u64{Dynarmic::g_jit_stats.blocks_compiled.load(std::memory_order_relaxed)}; },
+            [] { return u64{Dynarmic::g_jit_stats.compile_ns.load(std::memory_order_relaxed)}; });
+        VideoCommon::Nx2Spikes::SetPolled(
+            Event::JitFastmemRecompile,
+            [] { return u64{Dynarmic::g_jit_stats.fastmem_recompiles.load(std::memory_order_relaxed)}; },
+            nullptr);
+    });
 }
 
 ArmDynarmic64::~ArmDynarmic64() = default;
@@ -517,6 +532,7 @@ void ArmDynarmic64::SignalInterrupt(Kernel::KThread* thread) {
 void ArmDynarmic64::ClearInstructionCache() {
     m_cb->last_code_addr = u64(-1);
     m_jit->ClearCache();
+    VideoCommon::Nx2Spikes::Note(VideoCommon::Nx2Spikes::Event::JitClear);
 }
 
 void ArmDynarmic64::InvalidateCacheRange(u64 addr, std::size_t size) {
@@ -525,6 +541,7 @@ void ArmDynarmic64::InvalidateCacheRange(u64 addr, std::size_t size) {
     // into or removed from that page).
     m_cb->last_code_addr = u64(-1);
     m_jit->InvalidateCacheRange(addr, size);
+    VideoCommon::Nx2Spikes::Note(VideoCommon::Nx2Spikes::Event::JitInvalidate, {}, size);
 }
 
 } // namespace Core

@@ -169,7 +169,9 @@ public:
     void TickFrame();
     /// Captures the next frame into `directory` for the debug server, which is told `id` once
     /// the manifest is complete. Works without EDEN_NX2_FRAME_DUMP.
-    void Arm(std::filesystem::path directory, bool sampled, bool buffers, u64 id);
+    /// Sampled textures over `sampled_max_bytes` (0: no limit) are listed without readback.
+    void Arm(std::filesystem::path directory, bool sampled, bool buffers, u64 id,
+             size_t sampled_max_bytes = 0);
 
 private:
     enum class DepthEncoding { None, Unorm16, Unorm24, Float32 };
@@ -242,6 +244,7 @@ private:
     std::vector<Readback> readbacks;
     size_t pending_bytes{};
     size_t recorded_bytes{};
+    size_t sampled_max_bytes{};
     size_t written_bytes{};
     u32 sequence{};
     u32 images{};

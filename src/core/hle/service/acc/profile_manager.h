@@ -105,6 +105,8 @@ public:
     bool RemoveUser(Common::UUID uuid);
     bool RemoveProfileAtIndex(std::size_t index);
 
+    bool SetProfileUsername(Common::UUID uuid, const std::string& username);
+
     bool SetProfileBase(Common::UUID uuid, const ProfileBase& profile_new);
     bool SetProfileBaseAndData(Common::UUID uuid, const ProfileBase& profile_new,
                                const UserData& data_new);

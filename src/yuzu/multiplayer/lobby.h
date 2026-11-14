@@ -78,9 +78,10 @@ private slots:
 signals:
     void StateChanged(const Network::RoomMember::State&);
     void SaveConfig();
+    /// Asks the main window to open Configuration > System > Profiles.
+    void RequestProfileConfiguration();
 
 private:
-    std::string GetProfileUsername();
 
     /**
      * Removes all entries in the Lobby before refreshing.

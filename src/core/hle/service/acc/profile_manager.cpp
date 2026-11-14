@@ -55,7 +55,7 @@ ProfileManager::ProfileManager() {
 
     // Create an user if none are present
     if (user_count == 0) {
-        CreateNewUser(UUID::MakeRandom(), "Eden");
+        CreateNewUser(UUID::MakeRandom(), "Eglantine");
         WriteUserSaveFile();
     }
 
@@ -147,11 +147,16 @@ Result ProfileManager::CreateNewUser(UUID uuid, const ProfileUsername& username)
 Result ProfileManager::CreateNewUser(UUID uuid, const std::string& username) {
     ProfileUsername username_output{};
 
-    if (username.size() > username_output.size()) {
-        std::copy_n(username.begin(), username_output.size(), username_output.begin());
-    } else {
-        std::copy(username.begin(), username.end(), username_output.begin());
+    std::size_t length = username.size();
+    if (length > username_output.size()) {
+        // Names are UTF-8, so shorten on a character boundary instead of splitting a sequence
+        length = username_output.size();
+        while (length > 0 && (static_cast<u8>(username[length]) & 0xC0) == 0x80) {
+            --length;
+        }
     }
+    std::copy(username.begin(), username.begin() + static_cast<std::ptrdiff_t>(length),
+              username_output.begin());
     return CreateNewUser(uuid, username_output);
 }
 
@@ -359,6 +364,24 @@ bool ProfileManager::RemoveUser(UUID uuid) {
     }
 
     return RemoveProfileAtIndex(*index);
+}
+
+bool ProfileManager::SetProfileUsername(UUID uuid, const std::string& username) {
+    if (username.empty() || username.size() > profile_username_size) {
+        LOG_ERROR(Service_ACC, "Refusing a {}-byte profile name, the field holds {} bytes",
+                  username.size(), profile_username_size);
+        return false;
+    }
+
+    ProfileBase profile{};
+    if (!GetProfileBase(uuid, profile)) {
+        return false;
+    }
+
+    std::fill(profile.username.begin(), profile.username.end(), '\0');
+    std::copy(username.begin(), username.end(), profile.username.begin());
+
+    return SetProfileBase(uuid, profile);
 }
 
 bool ProfileManager::SetProfileBase(UUID uuid, const ProfileBase& profile_new) {

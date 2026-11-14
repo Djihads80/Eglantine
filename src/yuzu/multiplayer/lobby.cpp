@@ -10,7 +10,6 @@
 #include "common/logging.h"
 #include "common/settings.h"
 #include "core/core.h"
-#include "core/hle/service/acc/profile_manager.h"
 #include "core/internal_network/network_interface.h"
 #include "network/network.h"
 #include "qt_common/config/uisettings.h"
@@ -64,15 +63,17 @@ Lobby::Lobby(QWidget* parent, QStandardItemModel* list,
     ui->nickname->setText(
         QString::fromStdString(UISettings::values.multiplayer_nickname.GetValue()));
 
-    // Try find the best nickname by default
-    if (ui->nickname->text().isEmpty() || ui->nickname->text() == QStringLiteral("Eden")) {
+    // Try find the best nickname by default. Only the name the emulator itself shipped as a default
+    // is replaced here; any other default name was picked by the user and is caught by the warning
+    // before joining instead of being overwritten behind their back.
+    const QString stored_nickname = ui->nickname->text().trimmed();
+    if (stored_nickname.isEmpty() || NetworkMessage::IsShippedDefaultNickname(stored_nickname)) {
+        const std::string profile_name = NetworkMessage::GetProfileUsername(system);
         if (!Settings::values.eden_username.GetValue().empty()) {
             ui->nickname->setText(
                 QString::fromStdString(Settings::values.eden_username.GetValue()));
-        } else if (!GetProfileUsername().empty()) {
-            ui->nickname->setText(QString::fromStdString(GetProfileUsername()));
-        } else {
-            ui->nickname->setText(QStringLiteral("Eden"));
+        } else if (!profile_name.empty()) {
+            ui->nickname->setText(QString::fromStdString(profile_name));
         }
     }
 
@@ -124,6 +125,7 @@ QString Lobby::PasswordPrompt() {
     return ok ? text : QString();
 }
 
+
 void Lobby::OnExpandRoom(const QModelIndex& index) {
     QModelIndex member_index = proxy->index(index.row(), Column::MEMBER);
     auto member_list = proxy->data(member_index, LobbyItemMemberList::MemberListRole).toList();
@@ -165,6 +167,11 @@ void Lobby::OnJoinRoom(const QModelIndex& source) {
     }
     if (!ui->nickname->hasAcceptableInput()) {
         NetworkMessage::ErrorManager::ShowError(NetworkMessage::ErrorManager::USERNAME_NOT_VALID);
+        return;
+    }
+
+    if (!NetworkMessage::ConfirmDisplayName(this, system, ui->nickname,
+                                            [this] { emit RequestProfileConfiguration(); })) {
         return;
     }
 
@@ -308,25 +315,6 @@ void Lobby::OnRefreshLobby() {
     }
 
     ui->room_list->sortByColumn(Column::GAME_NAME, Qt::AscendingOrder);
-}
-
-std::string Lobby::GetProfileUsername() {
-    const auto& current_user =
-        system.GetProfileManager().GetUser(Settings::values.current_user.GetValue());
-    Service::Account::ProfileBase profile{};
-
-    if (!current_user.has_value()) {
-        return "";
-    }
-
-    if (!system.GetProfileManager().GetProfileBase(*current_user, profile)) {
-        return "";
-    }
-
-    const auto text = Common::StringFromFixedZeroTerminatedBuffer(
-        reinterpret_cast<const char*>(profile.username.data()), profile.username.size());
-
-    return text;
 }
 
 LobbyFilterProxyModel::LobbyFilterProxyModel(QWidget* parent, QStandardItemModel* list)

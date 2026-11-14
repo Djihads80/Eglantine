@@ -1920,6 +1920,14 @@ void MainWindow::ConnectWidgetEvents() {
 
     connect(game_list, &GameList::OpenPerGameGeneralRequested, this,
             &MainWindow::OnGameListOpenPerGameProperties);
+    connect(game_list, &GameList::ResetRecommendedSettingsPromptRequested, this,
+            [this](u64 program_id) {
+                UISettings::values.skipped_recommended_settings.erase(program_id);
+                asked_recommended_settings.erase(program_id);
+                const bool players_were_global = Settings::values.players.UsingGlobal();
+                config->SaveAllValues();
+                Settings::values.players.SetGlobal(players_were_global);
+            });
     connect(game_list, &GameList::LinkToRyujinxRequested, this, &MainWindow::OnLinkToRyujinx);
 
     connect(this, &MainWindow::UpdateInstallProgress, this, &MainWindow::IncrementInstallProgress);
@@ -2024,6 +2032,8 @@ void MainWindow::ConnectMenuEvents() {
     connect(ui->action_Show_Room, &QAction::triggered, multiplayer_state,
             &MultiplayerState::OnOpenNetworkRoom);
     connect(multiplayer_state, &MultiplayerState::SaveConfig, this, &MainWindow::OnSaveConfig);
+    connect(multiplayer_state, &MultiplayerState::RequestProfileConfiguration, this,
+            &MainWindow::OnConfigureProfiles);
 
     // Tools
     connect_menu(ui->action_Launch_PhotoViewer, [this] {
@@ -4093,6 +4103,14 @@ void MainWindow::ToggleShowGameName() {
 }
 
 void MainWindow::OnConfigure() {
+    OpenConfigureDialog(false);
+}
+
+void MainWindow::OnConfigureProfiles() {
+    OpenConfigureDialog(true);
+}
+
+void MainWindow::OpenConfigureDialog(bool select_profiles) {
     const auto old_theme = UISettings::values.theme;
     const bool old_discord_presence = UISettings::values.enable_discord_presence.GetValue();
     const auto old_language_index = Settings::values.language_index.GetValue();
@@ -4115,6 +4133,10 @@ void MainWindow::OnConfigure() {
             &MainWindow::OnLanguageChanged);
     connect(&configure_dialog, &ConfigureDialog::ExternalContentDirsChanged, this,
             &MainWindow::OnGameListRefresh);
+
+    if (select_profiles) {
+        configure_dialog.SelectProfilesTab();
+    }
 
     const auto result = configure_dialog.exec();
     if (result != QDialog::Accepted && !UISettings::values.configuration_applied &&
@@ -5904,15 +5926,23 @@ void MainWindow::UpdateUITheme() {
 }
 
 void MainWindow::LoadTranslation() {
-    bool loaded;
+    bool loaded = false;
+    const auto lang = UISettings::values.language.GetValue();
+    const QString lang_str = QString::fromStdString(lang);
 
-    if (UISettings::values.language.GetValue().empty()) {
-        // If the selected language is empty, use system locale
-        loaded = translator.load(QLocale(), {}, {}, QStringLiteral(":/languages/"));
-    } else {
-        // Otherwise load from the specified file
-        loaded = translator.load(QString::fromStdString(UISettings::values.language.GetValue()),
-                                 QStringLiteral(":/languages/"));
+    for (const auto& dir : GetLanguageSearchDirectories()) {
+        const bool is_resource = dir.startsWith(QLatin1Char{':'});
+        if (is_resource || QDir(dir).exists()) {
+            const QString path = dir.endsWith(QLatin1Char{'/'}) ? dir : dir + QLatin1Char{'/'};
+            if (lang.empty()) {
+                loaded = translator.load(QLocale(), {}, {}, path);
+            } else {
+                loaded = translator.load(lang_str, path);
+            }
+            if (loaded) {
+                break;
+            }
+        }
     }
 
     if (loaded)

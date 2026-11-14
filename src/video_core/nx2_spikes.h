@@ -4,6 +4,7 @@
 #pragma once
 
 #include <chrono>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -39,11 +40,53 @@ enum class Event : u32 {
     DriverCompile,   ///< Of those, over 10 ms: compiled, not from the driver's cache
     RuntimePipeline, ///< A pipeline translated and built on the GPU thread
     DrawSkipped,     ///< A draw skipped while its pipeline translates
+    CpuWriteSlowPath,   ///< Guest CPU writes to GPU-cached pages (amount: bytes)
+    CpuWriteInvalidate, ///< Of those, ones that reached the GPU caches (OnCPUWrite)
+    CpuWriteLockWait,   ///< OnCPUWrite waiting for the buffer or texture cache lock
+    ProtectChange,      ///< Host page protection changes for the GPU caches (amount: pages)
+    ReadTrapHit,        ///< Guest CPU reads that hit a read trap
+    JitCompile,         ///< Guest code blocks compiled (polled from the JIT)
+    JitFastmemRecompile, ///< Blocks recompiled after a fastmem fault (polled from the JIT)
+    JitInvalidate,      ///< Guest code cache range invalidations (amount: bytes)
+    JitClear,           ///< Whole guest code cache clears
+    Svc,                ///< Every SVC (time: inside the call, blocked time included)
+    SvcSleep,           ///< SleepThread, yields included
+    SvcWaitSync,        ///< WaitSynchronization
+    SvcMutexCondvar,    ///< ArbitrateLock/Unlock, WaitProcessWideKeyAtomic, SignalProcessWideKey
+    SvcAddressArbiter,  ///< WaitForAddress, SignalToAddress
+    SvcIpc,             ///< SendSyncRequest(WithUserBuffer), ReplyAndReceive(WithUserBuffer)
     Count,
 };
 
-/// Counts an event (any thread), with the time it took when there is one.
-void Note(Event event, Clock::duration time = {});
+/// True while the recorder or a Window counts events: callers can skip timing work otherwise.
+[[nodiscard]] bool Counting();
+
+/// Counts an event (any thread), with the time it took and an amount when there is one.
+void Note(Event event, Clock::duration time = {}, u64 amount = 0);
+
+/// An event counted elsewhere (the JIT's own totals): read at each present and window instead of
+/// counted with Note. The functions return running totals.
+void SetPolled(Event event, u64 (*count)(), u64 (*ns)());
+
+/// A guest thread's CPU ticks so far.
+struct GuestThreadTicks {
+    u64 id{};
+    u64 ticks{};
+    s32 core{};
+};
+
+/// Where guest thread CPU times come from (set by the core while a program runs).
+struct GuestThreadSource {
+    /// Every guest thread's CPU ticks and the guest clock's ticks now; false when there is no
+    /// program.
+    bool (*read)(void* user, std::vector<GuestThreadTicks>& threads, u64& clock){};
+    /// A thread's name ("" when gone).
+    std::string (*name)(void* user, u64 id){};
+    void* user{};
+};
+
+/// Sets or (with an empty source) clears the guest thread source; clearing waits for readers.
+void SetGuestThreadSource(GuestThreadSource source);
 
 struct ZoneTime {
     std::string zone;
@@ -70,6 +113,15 @@ struct EventTimes {
     std::string event;
     u64 count{};
     double ms{};
+    u64 amount{};
+    const char* unit{}; ///< What amount counts, or null when the event has none
+};
+
+struct GuestThreadTimes {
+    u64 id{};
+    std::string name;
+    s32 core{};
+    double cpu_ms{}; ///< Guest CPU time (the kernel's accounting, scaled to host ms)
 };
 
 struct Spike {
@@ -93,6 +145,7 @@ struct Spike {
     u64 major_faults{};
     u64 read_kib{};
     std::vector<EventTimes> events;
+    std::vector<GuestThreadTimes> guest; ///< Busiest guest threads first
     std::vector<std::string> log; ///< Log lines written during the frame (the last ones)
 };
 
@@ -108,6 +161,34 @@ struct Report {
 };
 
 [[nodiscard]] Report Read(size_t limit);
+
+/// What happened over a measured window (perf_sample).
+struct WindowReport {
+    double seconds{};
+    std::vector<EventTimes> events;
+    std::vector<GuestThreadTimes> guest;
+    bool host_sampled{};
+    std::vector<HostThreadTimes> host;
+    u64 minor_faults{};
+    u64 major_faults{};
+    u64 read_kib{};
+};
+
+/// Counts events from construction to Finish, independently of the recorder.
+class Window {
+public:
+    Window();
+    ~Window();
+    Window(const Window&) = delete;
+    Window& operator=(const Window&) = delete;
+
+    /// The events, busiest guest and host threads and page faults since construction.
+    [[nodiscard]] WindowReport Finish(size_t max_threads = 12);
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl;
+};
 
 void Clear();
 
