@@ -188,6 +188,11 @@ void Layer::ConfigureFramebufferTexture(const Tegra::FramebufferConfig& framebuf
         framebuffer_texture.gl_format = GL_RGBA;
         framebuffer_texture.gl_type = GL_UNSIGNED_INT_2_10_10_10_REV;
         break;
+    case Service::android::PixelFormat::RgbaFp16:
+        internal_format = GL_RGBA16F;
+        framebuffer_texture.gl_format = GL_RGBA;
+        framebuffer_texture.gl_type = GL_HALF_FLOAT;
+        break;
     case Service::android::PixelFormat::Rgb565:
         internal_format = GL_RGB565;
         framebuffer_texture.gl_format = GL_RGB;

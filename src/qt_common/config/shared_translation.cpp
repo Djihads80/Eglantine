@@ -136,6 +136,23 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            "other race conditions."));
 
     // Renderer
+    INSERT(Settings, hdr, tr("HDR"),
+           tr("Enables HDR output. Requires Vulkan and an HDR-enabled display.\n"
+              "Supports native HDR10 and scRGB output; SDR content is not converted to HDR.\n"
+              "HDR uses bilinear presentation without post-processing or frame generation.\n"
+              "Takes effect when a game starts."));
+    INSERT(Settings, hdr_reference_white, tr("HDR Reference White"),
+           tr("Reference white in nits reported to the game. Default: 200 nits, matching the "
+              "observed Switch 2 HDR applet's starting value without matching saved display "
+              "calibration. Set to 0 to follow Switch 2 calibration: HDR Peak Luminance divided "
+              "by 1.5, rounded up and clamped to 50-300 nits.\n"
+              "Set a nonzero value to override calibration.\n"
+              "Does not rescale the final image. Takes effect when a game starts."));
+    INSERT(Settings, hdr_peak_luminance, tr("HDR Peak Luminance"),
+           tr("Peak luminance in nits reported to the game. Default: 300 nits, matching the "
+              "observed Switch 2 HDR applet's starting value without matching saved display "
+              "calibration.\n"
+              "Does not rescale the final image. Takes effect when a game starts."));
     INSERT(Settings, renderer_backend, tr("API:"),
            tr("Changes the output graphics API.\nVulkan is recommended."));
     INSERT(Settings, vulkan_device, tr("Device:"),

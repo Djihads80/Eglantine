@@ -24,6 +24,12 @@ enum class BlendMode {
     Coverage,
 };
 
+enum class ColorSpace {
+    RGB709, // Presented as sRGB.
+    RGB2020_PQ,
+    RGB709_Linear,
+};
+
 /**
  * Struct describing framebuffer configuration
  */
@@ -39,6 +45,8 @@ struct FramebufferConfig {
     BlendMode blending{};
     bool native_tiling{};
     u32 layer_stack_mask{Service::Nvnflinger::DefaultLayerStackMask};
+    ColorSpace color_space{ColorSpace::RGB709};
+    u16 linear_unit_luminance{}; // Nits per linear 1.0; typically 80 for scRGB (observed in MKW's SDK).
 };
 
 Common::Rectangle<f32> NormalizeCrop(const FramebufferConfig& framebuffer, u32 texture_width,

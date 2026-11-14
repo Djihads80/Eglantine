@@ -33,9 +33,10 @@ public:
                              vk::ShaderModule&& fragment_shader);
     ~WindowAdaptPass();
 
+    /// Draws the layers to dst, forwarding the selected HDR-output state to each layer.
     void Draw(const Device& device, RasterizerVulkan& rasterizer, Scheduler& scheduler, size_t image_index,
               std::list<Layer>& layers, std::span<const Tegra::FramebufferConfig> configs,
-              const Layout::FramebufferLayout& layout, Frame* dst);
+              const Layout::FramebufferLayout& layout, Frame* dst, bool hdr_output);
 
     VkDescriptorSetLayout GetDescriptorSetLayout();
     VkRenderPass GetRenderPass();

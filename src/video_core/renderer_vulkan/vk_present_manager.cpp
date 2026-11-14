@@ -127,7 +127,6 @@ PresentManager::PresentManager(const vk::Instance& instance_,
     , scheduler{scheduler_}
     , swapchain{swapchain_}
     , surface{surface_}
-    , blit_supported{CanBlitToSwapchain(device.GetPhysical(), swapchain.GetImageViewFormat())}
     , storage_supported{CanStoreToFrame(device.GetPhysical(), swapchain.GetImageFormat())}
     , use_present_thread{Settings::values.async_presentation.GetValue()}
 {
@@ -182,6 +181,7 @@ Frame* PresentManager::GetRenderFrame() {
     // Wait for the presentation to be finished so all frame resources are free
     frame->present_done.Wait();
     frame->present_done.Reset();
+    frame->color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 
     return frame;
 }
@@ -208,12 +208,24 @@ bool PresentManager::NeedsStorage(const Frame* frame, bool required) const {
     return required && frame->storage_capable && !frame->storage_view;
 }
 
+VkFormat PresentManager::GetFrameImageFormat(VkFormat image_view_format) const {
+    if (image_view_format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
+        image_view_format == VK_FORMAT_R16G16B16A16_SFLOAT) {
+        return image_view_format;
+    }
+    // Render SDR through a UNORM view, but preserve the surface's transfer encoding for blits.
+    return swapchain.GetSdrImageFormat();
+}
+
 void PresentManager::RecreateFrame(Frame* frame, u32 width, u32 height, VkFormat image_view_format,
                                    VkRenderPass rd, bool storage) {
     auto& dld = device.GetLogical();
 
     frame->width = width;
     frame->height = height;
+    frame->format = image_view_format;
+    frame->image_format = GetFrameImageFormat(image_view_format);
+    frame->storage_capable = CanStoreToFrame(device.GetPhysical(), frame->image_format);
 
     const bool with_storage = storage && frame->storage_capable;
     VkImageUsageFlags storage_usage = 0;
@@ -226,7 +238,7 @@ void PresentManager::RecreateFrame(Frame* frame, u32 width, u32 height, VkFormat
         .pNext = nullptr,
         .flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT,
         .imageType = VK_IMAGE_TYPE_2D,
-        .format = swapchain.GetImageFormat(),
+        .format = frame->image_format,
         .extent =
             {
                 .width = width,
@@ -277,7 +289,7 @@ void PresentManager::RecreateFrame(Frame* frame, u32 width, u32 height, VkFormat
             .flags = 0,
             .image = *frame->image,
             .viewType = VK_IMAGE_VIEW_TYPE_2D,
-            .format = swapchain.GetImageFormat(),
+            .format = frame->image_format,
             .components =
                 {
                     .r = VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -355,9 +367,32 @@ void PresentManager::PresentThread(std::stop_token token) {
     }
 }
 
-void PresentManager::RecreateSwapchain(Frame* frame) {
-    swapchain.Create(*surface, frame->width, frame->height); // Pass raw pointer
-    SetImageCount();
+// Returns false after discarding a deferred or incompatible frame; creation exceptions propagate.
+bool PresentManager::RecreateSwapchain(Frame* frame) {
+    if (swapchain.Create(*surface, frame->width, frame->height, frame->format,
+                         frame->color_space)) {
+        SetImageCount();
+        ConfigureTransfer(frame);
+        if (transfer_mode != TransferMode::Unsupported) {
+            return true;
+        }
+    }
+    DiscardFrame(frame);
+    return false;
+}
+
+void PresentManager::ConfigureTransfer(const Frame* frame) {
+    transfer_source_format = frame->image_format;
+    transfer_mode = TransferMode::Unsupported;
+    if (frame->image_format == GetFrameImageFormat(frame->format)) {
+        if (CanBlitToSwapchain(device.GetPhysical(), swapchain.GetImageFormat()) &&
+            (device.GetPhysical().GetFormatProperties(frame->image_format).optimalTilingFeatures &
+             VK_FORMAT_FEATURE_BLIT_SRC_BIT) != 0) {
+            transfer_mode = TransferMode::Blit;
+        } else if (frame->image_format == swapchain.GetImageFormat()) {
+            transfer_mode = TransferMode::Copy;
+        }
+    }
 }
 
 void PresentManager::SetImageCount() {
@@ -406,7 +441,9 @@ void PresentManager::CopyToSwapchain(Frame* frame) {
 #ifdef __ANDROID__
                 surface = CreateSurface(instance, render_window.GetWindowInfo());
 #endif
-                RecreateSwapchain(frame);
+                if (!RecreateSwapchain(frame)) {
+                    return;
+                }
             }
 
             // Draw to swapchain.
@@ -425,17 +462,31 @@ void PresentManager::CopyToSwapchain(Frame* frame) {
 
 void PresentManager::CopyToSwapchainImpl(Frame* frame) {
 
-    // If the size of the incoming frames has changed, recreate the swapchain
-    // to account for that.
+    // Recreate for size changes, SDR/HDR10/scRGB transitions, or a suboptimal swapchain.
     const bool is_suboptimal = swapchain.NeedsRecreation();
     const bool size_changed =
         swapchain.GetWidth() != frame->width || swapchain.GetHeight() != frame->height;
-    if (is_suboptimal || size_changed) {
-        RecreateSwapchain(frame);
+    const bool format_changed = swapchain.GetRequestedFormat() != frame->format;
+    const bool color_space_changed = swapchain.GetRequestedColorSpace() != frame->color_space;
+    if (is_suboptimal || size_changed || format_changed || color_space_changed) {
+        if (!RecreateSwapchain(frame)) {
+            return;
+        }
+    }
+
+    // Queued SDR frames can retain an older underlying format after surface recreation.
+    if (transfer_source_format != frame->image_format) {
+        ConfigureTransfer(frame);
+    }
+    if (transfer_mode == TransferMode::Unsupported) {
+        DiscardFrame(frame);
+        return;
     }
 
     while (swapchain.AcquireNextImage(!use_present_thread)) {
-        RecreateSwapchain(frame);
+        if (!RecreateSwapchain(frame)) {
+            return;
+        }
     }
 
     const vk::CommandBuffer cmdbuf{frame->cmdbuf};
@@ -528,7 +579,7 @@ void PresentManager::CopyToSwapchainImpl(Frame* frame) {
     cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER, VK_PIPELINE_STAGE_TRANSFER_BIT, {},
                            {}, {}, pre_barriers);
 
-    if (blit_supported) {
+    if (transfer_mode == TransferMode::Blit) {
         cmdbuf.BlitImage(*frame->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                          MakeImageBlit(frame->width, frame->height, extent.width, extent.height),

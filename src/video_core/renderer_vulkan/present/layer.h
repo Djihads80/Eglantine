@@ -56,11 +56,12 @@ public:
                    const PresentFilters& filters);
     ~Layer();
 
+    /// Prepares layer descriptors and push constants, bypassing SDR effects only for HDR output.
     void ConfigureDraw(const Device& device, PresentPushConstants* out_push_constants,
                        VkDescriptorSet* out_descriptor_set, RasterizerVulkan& rasterizer,
                        VkSampler sampler, size_t image_index,
                        const Tegra::FramebufferConfig& framebuffer,
-                       const Layout::FramebufferLayout& layout);
+                       const Layout::FramebufferLayout& layout, bool hdr_output);
 
 private:
     void CreateDescriptorPool(const Device& device);
