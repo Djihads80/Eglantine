@@ -42,6 +42,8 @@ jobs:
     if: inputs.pgo != 'only'
     runs-on: windows-2025
     env:
+      # Followed-branch builds check for updates too.
+      UPDATE_CHECKER: ${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || (inputs.follow_branch != '' && 'ON') || 'OFF' }}
       PLATFORM: windows-x86_64
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_CACHE_SIZE: 1000M
@@ -108,7 +110,6 @@ jobs:
         shell: bash
         env:
           FOLLOW_BRANCH: ${{ inputs.follow_branch }}
-          UPDATE_CHECKER: ${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || (inputs.follow_branch != '' && 'ON') || 'OFF' }}
         run: >-
           cmake -S . -B build/release -G Ninja
           -DCMAKE_BUILD_TYPE=Release
@@ -135,8 +136,6 @@ jobs:
 
       - name: Build
         shell: bash
-        env:
-          UPDATE_CHECKER: ${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || (inputs.follow_branch != '' && 'ON') || 'OFF' }}
         run: |
           targets="yuzu yuzu-cmd"
           # The updater helper only exists where the update checker is on.
@@ -169,6 +168,8 @@ jobs:
     if: inputs.pgo == 'both' || inputs.pgo == 'only'
     runs-on: windows-2025
     env:
+      # Followed-branch builds check for updates too.
+      UPDATE_CHECKER: ${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || (inputs.follow_branch != '' && 'ON') || 'OFF' }}
       PLATFORM: windows-x86_64-pgo
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 1000M
@@ -230,7 +231,6 @@ jobs:
         shell: msys2 {0}
         env:
           FOLLOW_BRANCH: ${{ inputs.follow_branch }}
-          UPDATE_CHECKER: ${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || (inputs.follow_branch != '' && 'ON') || 'OFF' }}
         run: |
           set -euo pipefail
           profile="-fprofile-use=$(cygpath -m "$PWD/eglantine.profdata") -Wno-backend-plugin \
@@ -263,8 +263,6 @@ jobs:
 
       - name: Build
         shell: msys2 {0}
-        env:
-          UPDATE_CHECKER: ${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || (inputs.follow_branch != '' && 'ON') || 'OFF' }}
         run: |
           targets="yuzu yuzu-cmd"
           # The updater helper only exists where the update checker is on.

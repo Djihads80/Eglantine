@@ -114,6 +114,8 @@ TesterBuildSettings::TesterBuildSettings(QWidget* parent) : QWidget(parent) {
         const auto result = m_check_watcher.result();
         UpdateValidation();
         if (m_checked_source != EnteredSource()) {
+            m_check_text.clear();
+            UpdateStatus();
             return;
         }
         const auto state = TesterBuild::LoadState(TesterLauncher::StateFile());

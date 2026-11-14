@@ -188,7 +188,7 @@ bool StartAndWatch(const QString& program, const QStringList& args, int timeout_
         got = read(exec_pipe[0], &exec_error, sizeof(exec_error));
     } while (got < 0 && errno == EINTR);
     close(exec_pipe[0]);
-    if (got != 0) {
+    if (got > 0) {
         int status = 0;
         while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
         }

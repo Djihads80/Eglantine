@@ -206,7 +206,6 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #ifdef __unix__
 
 #include <csignal>
-#include <utility>
 #include <QSocketNotifier>
 #include <sys/socket.h>
 #include "qt_common/gui_settings.h"
@@ -2258,6 +2257,8 @@ void MainWindow::OnPrepareForSleep(bool prepare_sleep) {
 
 #ifdef __unix__
 std::array<int, 3> MainWindow::sig_interrupt_fds{0, 0, 0};
+// Set by a SIGTERM until the GUI thread picks it up.
+static std::atomic<bool> sig_term_pending{};
 
 void MainWindow::SetupSigInterrupts() {
     if (sig_interrupt_fds[2] == 1) {
@@ -2269,8 +2270,8 @@ void MainWindow::SetupSigInterrupts() {
     struct sigaction sa;
     sa.sa_handler = &MainWindow::HandleSigInterrupt;
     sigemptyset(&sa.sa_mask);
-    // SIGINT exits at once in the handler, and SIGTERM must stay handled so a repeated close
-    // request (a declined confirmation) never falls back to the default kill.
+    // No SA_RESETHAND: a repeated close request (a declined confirmation) must not fall back to
+    // the default kill. The handler does that itself when the GUI thread is not responding.
     sa.sa_flags = 0;
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
@@ -2278,20 +2279,19 @@ void MainWindow::SetupSigInterrupts() {
     sig_interrupt_notifier = new QSocketNotifier(sig_interrupt_fds[1], QSocketNotifier::Read, this);
     connect(sig_interrupt_notifier, &QSocketNotifier::activated, this,
             &MainWindow::OnSigInterruptNotifierActivated);
-    connect(this, &MainWindow::SigInterrupt, this, [this] {
-        // A confirmation dialog runs a nested event loop; do not stack another on top of it.
-        static bool closing = false;
-        if (std::exchange(closing, true)) {
-            return;
-        }
-        close();
-        closing = false;
-    });
+    connect(this, &MainWindow::SigInterrupt, this, &MainWindow::close);
 }
 
 void MainWindow::HandleSigInterrupt(int sig) {
     if (sig == SIGINT) {
         _exit(1);
+    }
+
+    if (sig_term_pending.exchange(true)) {
+        // The GUI thread never picked up the last one: it is stuck, so let this one kill.
+        signal(SIGTERM, SIG_DFL);
+        ::raise(SIGTERM);
+        return;
     }
 
     // Calling into Qt directly from a signal handler is not safe,
@@ -2307,6 +2307,7 @@ void MainWindow::OnSigInterruptNotifierActivated() {
     char a;
     int ret = read(sig_interrupt_fds[1], &a, sizeof(a));
     (void)ret;
+    sig_term_pending = false;
 
     sig_interrupt_notifier->setEnabled(true);
 
@@ -5754,9 +5755,18 @@ bool MainWindow::ConfirmClose() {
 
 /// Confirms closing, waits for emulation to stop, then saves state and shuts down.
 void MainWindow::closeEvent(QCloseEvent* event) {
-    if (!close_pending && !ConfirmClose()) {
-        event->ignore();
-        return;
+    if (!close_pending) {
+        // The confirmation runs a nested event loop, where another close request can arrive.
+        if (std::exchange(close_confirming, true)) {
+            event->ignore();
+            return;
+        }
+        const bool confirmed = ConfirmClose();
+        close_confirming = false;
+        if (!confirmed) {
+            event->ignore();
+            return;
+        }
     }
     close_pending = true;
     game_list->SetScanEnabled(false);

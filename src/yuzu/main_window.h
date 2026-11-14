@@ -579,6 +579,7 @@ private:
     bool emulation_running = false;
     bool boot_in_progress = false;
     bool close_pending = false;
+    bool close_confirming = false;
 
     /// Starts the built-in MCP server if enabled by setting or command line (no-op without it).
     void MaybeStartMcpServer(bool cli_enable, std::optional<u16> cli_port, bool cli_allow_writes);

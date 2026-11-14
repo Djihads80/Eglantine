@@ -58,6 +58,14 @@ void TesterBuildMonitor::OnResult() {
     const auto result = m_future.result();
     const auto title = tr("Check for Updates");
 
+    // The builder may have saved a newer build since the check started.
+    const auto state = TesterBuild::LoadState(TesterLauncher::StateFile());
+    if (state.source != m_source) {
+        // The followed source changed in settings while the check ran: the result describes the
+        // old one, so ask again for the new one.
+        Check(manual);
+        return;
+    }
     if (!result.info) {
         if (manual) {
             QMessageBox::warning(
@@ -67,14 +75,6 @@ void TesterBuildMonitor::OnResult() {
                           .arg(result.status)
                     : tr("Could not reach GitHub. Check your internet connection and try again."));
         }
-        return;
-    }
-    // The builder may have saved a newer build since the check started.
-    const auto state = TesterBuild::LoadState(TesterLauncher::StateFile());
-    if (state.source != m_source) {
-        // The followed source changed in settings while the check ran: the result describes the
-        // old one, so ask again for the new one.
-        Check(manual);
         return;
     }
     const auto name = QString::fromStdString(state.source->DisplayName());
