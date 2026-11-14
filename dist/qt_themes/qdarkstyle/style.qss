@@ -1973,3 +1973,221 @@ QDialog#OverlayDialog QFrame[frameShape="0"] {
     border-radius: 0px;
     border: none;
 }
+
+QWidget {
+    font-size: 10pt;
+    selection-background-color: #167d76;
+    selection-color: #f5fffd;
+}
+
+QMainWindow,
+QDialog {
+    background-color: #171d25;
+}
+
+QMenuBar {
+    background-color: #1d2630;
+    border-bottom: 1px solid #303c48;
+    padding: 4px 8px;
+}
+
+QMenuBar::item {
+    background: transparent;
+    border-radius: 5px;
+    padding: 6px 10px;
+}
+
+QMenuBar::item:selected,
+QMenu::item:selected {
+    background-color: #263b42;
+    color: #72e0cb;
+}
+
+QMenu {
+    background-color: #202a34;
+    border: 1px solid #35434f;
+    padding: 5px;
+}
+
+QMenu::item {
+    border-radius: 4px;
+    padding: 7px 28px 7px 10px;
+}
+
+QToolBar {
+    background-color: #1b242d;
+    border: none;
+    spacing: 6px;
+    padding: 6px;
+}
+
+QToolBar QToolButton {
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 6px;
+}
+
+QToolBar QToolButton:hover,
+QToolBar QToolButton:checked {
+    background-color: #263b42;
+    border-color: #3d6868;
+}
+
+QPushButton {
+    background-color: #26333e;
+    border: 1px solid #3a4a57;
+    border-radius: 6px;
+    padding: 7px 12px;
+}
+
+QPushButton:hover {
+    background-color: #30414d;
+    border-color: #4a9b91;
+}
+
+QPushButton:pressed,
+QPushButton:checked {
+    background-color: #20534f;
+    border-color: #52b8a7;
+}
+
+QPushButton:disabled {
+    color: #77838e;
+    background-color: #202830;
+    border-color: #303a44;
+}
+
+QLineEdit,
+QComboBox,
+QSpinBox,
+QDoubleSpinBox,
+QPlainTextEdit,
+QTextEdit {
+    background-color: #151c24;
+    border: 1px solid #35434f;
+    border-radius: 5px;
+    padding: 6px 8px;
+    selection-background-color: #167d76;
+}
+
+QLineEdit:focus,
+QComboBox:focus,
+QSpinBox:focus,
+QDoubleSpinBox:focus,
+QPlainTextEdit:focus,
+QTextEdit:focus {
+    border-color: #58b9aa;
+}
+
+QTreeView,
+QListView,
+QTableView {
+    alternate-background-color: #1b242d;
+    background-color: #171e26;
+    border: 1px solid #2d3944;
+    border-radius: 6px;
+    outline: none;
+    padding: 3px;
+}
+
+QTreeView::item,
+QListView::item,
+QTableView::item {
+    border-radius: 4px;
+    padding: 5px 7px;
+}
+
+QTreeView::item:hover,
+QListView::item:hover,
+QTableView::item:hover {
+    background-color: #24343b;
+}
+
+QHeaderView::section {
+    background-color: #202a34;
+    border: none;
+    border-bottom: 1px solid #35434f;
+    color: #aab8c4;
+    font-weight: 600;
+    padding: 8px 10px;
+}
+
+QTabBar::tab {
+    background-color: #202a34;
+    border: 1px solid #303c48;
+    border-top-left-radius: 5px;
+    border-top-right-radius: 5px;
+    margin-right: 3px;
+    padding: 7px 12px;
+}
+
+QTabBar::tab:selected {
+    background-color: #293943;
+    border-color: #47736f;
+    color: #72e0cb;
+}
+
+QGroupBox {
+    border: 1px solid #303d49;
+    border-radius: 6px;
+    margin-top: 18px;
+    padding: 8px;
+}
+
+QGroupBox::title {
+    color: #c1ccd5;
+    padding: 0 5px;
+}
+
+QStatusBar {
+    background-color: #1d2630;
+    border-top: 1px solid #303c48;
+}
+
+QStatusBar::item {
+    border: none;
+}
+
+QPushButton#TogglableStatusBarButton,
+QPushButton#RendererStatusBarButton,
+QPushButton#GPUStatusBarButton,
+QPushButton#DockingStatusBarButton,
+QPushButton#RefreshButton {
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 4px 6px;
+}
+
+QPushButton#TogglableStatusBarButton:hover,
+QPushButton#RendererStatusBarButton:hover,
+QPushButton#GPUStatusBarButton:hover,
+QPushButton#DockingStatusBarButton:hover,
+QPushButton#RefreshButton:hover {
+    background-color: #2a3944;
+    border-color: #3a4a57;
+}
+
+QScrollBar:vertical {
+    background: #171e26;
+    border: none;
+    margin: 2px;
+    width: 10px;
+}
+
+QScrollBar::handle:vertical {
+    background: #44535f;
+    border-radius: 5px;
+    min-height: 24px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #5a7881;
+}
+
+QToolTip {
+    background-color: #26333e;
+    border: 1px solid #4a5c68;
+    border-radius: 4px;
+    color: #f0f5f7;
+    padding: 5px 7px;
+}
