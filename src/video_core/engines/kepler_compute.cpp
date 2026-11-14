@@ -22,6 +22,7 @@
 #include "shader_recompiler/exception.h"
 #include "core/core.h"
 #include "video_core/gpu_split.h"
+#include "video_core/nx2_debug_control.h"
 #include "video_core/nx2_diag.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
@@ -824,6 +825,11 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
     }
 
     const bool emulates_tensor = EmulatesNativeTensorPrograms();
+    // Programs the debug server rejected failed here too: retry them once it restores any.
+    if (const u64 epoch = VideoCore::Nx2Debug::UnrejectEpoch(); epoch != seen_unreject_epoch) {
+        seen_unreject_epoch = epoch;
+        rejected_compute_programs.clear();
+    }
     if (const auto rejected = rejected_compute_programs.find(program);
         rejected != rejected_compute_programs.end() &&
         rejected->second.emulates_tensor == emulates_tensor &&

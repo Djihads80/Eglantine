@@ -93,6 +93,11 @@ u64 SetRejected(std::span<const u64> hashes, bool rejected);
 [[nodiscard]] std::optional<RejectChange> TakeRejectChange();
 /// Rasterizer thread: the cached programs of this generation were dropped.
 void NoteRejectApplied(u64 generation);
+/// Rasterizer thread: an applied change took hashes off the list (bumps UnrejectEpoch).
+void NoteUnrejectApplied();
+/// Changes after every applied change that took hashes off the list: caches of programs that
+/// failed to dispatch must forget them, the debug server may have caused the failure.
+[[nodiscard]] u64 UnrejectEpoch() noexcept;
 /// Server thread: waits until the rasterizer applied the generation.
 [[nodiscard]] bool WaitRejectApplied(u64 generation, std::chrono::milliseconds timeout);
 

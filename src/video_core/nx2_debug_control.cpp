@@ -31,6 +31,7 @@ struct State {
 State state;
 std::atomic<bool> pending{};
 std::atomic<bool> any_rejected{};
+std::atomic<u64> unreject_epoch{};
 
 void UpdatePending() {
     pending.store(!state.captures.empty() || !state.gpu_reads.empty() || state.reject_pending,
@@ -225,6 +226,14 @@ void NoteRejectApplied(u64 generation) {
         state.applied_generation = (std::max)(state.applied_generation, generation);
     }
     state.changed.notify_all();
+}
+
+void NoteUnrejectApplied() {
+    unreject_epoch.fetch_add(1, std::memory_order_release);
+}
+
+u64 UnrejectEpoch() noexcept {
+    return unreject_epoch.load(std::memory_order_acquire);
 }
 
 bool WaitRejectApplied(u64 generation, std::chrono::milliseconds timeout) {
