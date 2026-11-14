@@ -11,7 +11,9 @@
 #include <compare>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
+#include <vector>
 #include "common/common_types.h"
 #include "common/net/net.h"
 
@@ -119,13 +121,23 @@ struct CheckResult {
 // 403 and 429 are rate limiting, other HTTP errors are Http, and no response is Network.
 Failure ClassifyFailure(int status);
 
-// The newest release strictly newer than current_tag that the channel allows. Daily builds and
-// tagged releases come from different branches and cannot be ordered, so when current_tag is of
-// the other kind, the newest release of the channel is offered as a switch. When platform is not
-// empty, releases without an asset for it are skipped. Does no I/O.
+// True when going from current_tag to tag crosses between a daily build and a tagged release.
+bool IsChannelSwitch(std::string_view current_tag, std::string_view tag);
+
+// The tags the channel allows that are newer than current_tag, best first. Daily builds and tagged
+// releases come from different branches and cannot be ordered, so when current_tag is of the other
+// kind, every tag of the channel is offered as a switch. A daily build is rebuilt under the same
+// tag, so a tag of its own day at a commit other than current_commit also counts as newer. Does
+// no I/O.
+std::vector<std::string> RankUpdates(std::span<const Common::Net::Tag> tags,
+                                     std::string_view current_tag, std::string_view current_commit,
+                                     Channel channel);
+
+// The best release of RankUpdates. When platform is not empty, releases without an asset for it
+// are skipped. Does no I/O.
 std::optional<Common::Net::Release> SelectUpdate(
     std::span<const Common::Net::Release> releases, std::string_view current_tag,
-    Channel channel, std::string_view platform,
+    std::string_view current_commit, Channel channel, std::string_view platform,
     Common::Net::LinuxPackage package = Common::Net::LinuxPackage::Any);
 
 // Queries the releases of the running build's repository.
