@@ -17,6 +17,15 @@
 #endif
 
 #include "zstd.h"
+// zstd.c declares the ASan poisoning functions itself, which gives them C++ linkage here and
+// breaks ASan links. Declaring them first through the sanitizer header keeps C linkage.
+#if defined(__SANITIZE_ADDRESS__)
+#include <sanitizer/asan_interface.h>
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#include <sanitizer/asan_interface.h>
+#endif
+#endif
 #define g_ZSTD_threading_useless_symbol g_ZSTD_zbic_threading_useless_symbol
 #include "zstd.c"
 #undef g_ZSTD_threading_useless_symbol

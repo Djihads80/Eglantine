@@ -110,12 +110,13 @@ void CoreTiming::ClearPendingEvents() {
 }
 
 void CoreTiming::Pause(bool is_paused) {
+    if (!is_paused) {
+        // Store the boundary before clearing paused: the timer thread runs Advance as soon as
+        // it reads paused == false, and that (sequentially consistent) load makes it visible.
+        pause_end_time.store(GetGlobalTimeNs().count(), std::memory_order_relaxed);
+    }
     paused = is_paused;
     pause_event.Set();
-
-    if (!is_paused) {
-        pause_end_time = GetGlobalTimeNs().count();
-    }
 }
 
 void CoreTiming::SyncPause(bool is_paused) {
@@ -131,10 +132,6 @@ void CoreTiming::SyncPause(bool is_paused) {
         event.Set();
         while (paused_set != is_paused)
             ;
-    }
-
-    if (!is_paused) {
-        pause_end_time = GetGlobalTimeNs().count();
     }
 }
 
@@ -283,8 +280,9 @@ std::optional<s64> CoreTiming::Advance() {
                 // If this event was scheduled into a pause, its time now is going to be way
                 // behind. Re-set this event to continue from the end of the pause.
                 auto next_time{evt.time + next_schedule_time};
-                if (evt.time < pause_end_time) {
-                    next_time = pause_end_time + next_schedule_time;
+                const s64 last_pause_end = pause_end_time.load(std::memory_order_relaxed);
+                if (evt.time < last_pause_end) {
+                    next_time = last_pause_end + next_schedule_time;
                 }
 
                 event_queue.update(evt.handle, Event{next_time, event_fifo_id++, evt.type,

@@ -66,7 +66,11 @@ struct GPU::Impl {
         , is_async{is_async_}
     {}
 
-    ~Impl() = default;
+    ~Impl() {
+        // The renderer's teardown still flushes work that touches the bound channel's state,
+        // and `channels` is declared after `renderer`, so it would be freed first.
+        renderer.reset();
+    }
 
     std::shared_ptr<Control::ChannelState> CreateChannel(s32 channel_id) {
         auto channel_state = std::make_shared<Tegra::Control::ChannelState>(channel_id);

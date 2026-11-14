@@ -9,6 +9,7 @@
 #include "common/logging.h"
 #include "common/math_util.h"
 #include "common/param_package.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #include "common/vector_math.h"
@@ -538,6 +539,12 @@ void SDLDriver::InitJoystick(SDL_JoystickID joystick_id) {
         }
     }
 
+    // SDL calls its event watcher with the joystick lock held, and the watcher then takes
+    // joystick_map_mutex. Take SDL's lock first here, since SDLJoystick calls into SDL.
+    SDL_LockJoysticks();
+    SCOPE_EXIT {
+        SDL_UnlockJoysticks();
+    };
     std::scoped_lock lock{joystick_map_mutex};
     if (joystick_map.find(guid) == joystick_map.end()) {
         auto joystick = std::make_shared<SDLJoystick>(guid, 0, sdl_joystick, sdl_gamecontroller);
@@ -656,6 +663,11 @@ void SDLDriver::HandleGameControllerEvent(const SDL_Event& event) {
 }
 
 void SDLDriver::CloseJoysticks() {
+    // Same lock order as InitJoystick: clearing the map closes SDL handles.
+    SDL_LockJoysticks();
+    SCOPE_EXIT {
+        SDL_UnlockJoysticks();
+    };
     std::scoped_lock lock{joystick_map_mutex};
     joystick_map.clear();
 }

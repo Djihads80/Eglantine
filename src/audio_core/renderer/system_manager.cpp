@@ -57,11 +57,9 @@ bool SystemManager::Add(System& system_) {
         LOG_ERROR(Service_Audio, "Maximum AudioRenderer Systems active, cannot add more!");
         return false;
     }
-    {
-        std::scoped_lock l{mutex1};
-        if (systems.empty())
-            InitializeUnsafe();
-    }
+    std::scoped_lock l{mutex1};
+    if (systems.empty())
+        InitializeUnsafe();
     systems.push_back(&system_);
     return true;
 }

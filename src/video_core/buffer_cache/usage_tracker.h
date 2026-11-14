@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <utility>
 #include <vector>
@@ -71,6 +72,9 @@ public:
         }
         if (IsPageUsed(page, offset, size)) {
             return true;
+        }
+        if (page == page_end) {
+            return false;
         }
         for (size_t i = page + 1; i < page_end; i++) {
             if (pages[i] != 0) {
