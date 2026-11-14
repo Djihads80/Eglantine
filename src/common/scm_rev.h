@@ -19,7 +19,6 @@ extern const char g_build_fullname[];
 extern const char g_build_version[];
 extern const char g_display_version[];
 extern const char g_build_flavour[];
-extern const char g_release_tag[];
 extern const char g_build_id[];
 extern const char g_title_bar_format_idle[];
 extern const char g_title_bar_format_running[];

@@ -43,13 +43,6 @@ constexpr const char g_build_fullname[] = BUILD_FULLNAME;
 constexpr const char g_build_version[] = BUILD_VERSION;
 constexpr const char g_display_version[] = EGLANTINE_DISPLAY_VERSION;
 constexpr const char g_build_flavour[] = EGLANTINE_BUILD_FLAVOUR;
-
-// The tag this build was published under, as the forge knows it ("v0.1.0-rc3",
-// "daily-20261114", "branch-<slug>"). Written as GIT-TAG by every CI leg, so it
-// is available even on a build the release path does not consider a release.
-// Deliberately separate from g_build_version: that one is a display label, this
-// one is a name a published release can be matched against.
-constexpr const char g_release_tag[] = "@GIT_TAG@";
 constexpr const char g_build_id[] = BUILD_ID;
 constexpr const char g_title_bar_format_idle[] = TITLE_BAR_FORMAT_IDLE;
 constexpr const char g_title_bar_format_running[] = TITLE_BAR_FORMAT_RUNNING;

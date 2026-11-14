@@ -301,11 +301,11 @@ buildEdenEmulator (
       #    Watch it if nixpkgs moves its unversioned ffmpeg default.
 
       "-DENABLE_WERROR=OFF"
-      # Off by default, and every other CI leg passes it explicitly. Say it here
-      # too: an updater cannot update a Nix package (the flake input is the
-      # source of truth), and the endpoints baked into the binary point at
-      # eden-emu/eden rather than this project, so enabling it by a default flip
-      # upstream would ship a binary that offers a different emulator.
+      # The plain legs turn this on for release and daily builds; keep it off
+      # here. A package manager owns updates, and an in-app download would put a
+      # tarball or AppImage inside a store-managed tree that the flake input
+      # knows nothing about. Pinned explicitly rather than left to the default,
+      # so a default flip upstream cannot silently change this package.
       "-DENABLE_UPDATE_CHECKER=OFF"
     ]
     # sirit and gamemode are Linux-only in nixpkgs, so both their packages
