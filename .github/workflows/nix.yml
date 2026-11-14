@@ -1,0 +1,103 @@
+name: nix
+
+# manual dispatch for Nix troubleshooting
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Which systems to build
+        type: choice
+        options: [all, linux, macos]
+        default: all
+      pgo:
+        description: PGO variants (both is what ci.yml builds for a release)
+        type: choice
+        options: [none, both, only]
+        default: both
+      save_cache:
+        description: Save the compiler-object cache at the end of the job (otherwise restore only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-${{ github.ref }}-${{ inputs.os }}-${{ inputs.pgo }}
+  cancel-in-progress: true
+
+jobs:
+  # build-nix.yml takes the display identity as an input, exactly like every
+  # other reusable workflow. A manual dispatch has no ci.yml prepare job, so it
+  # gets its own, running the same script over the same values.
+  prepare:
+    name: prepare
+    runs-on: ubuntu-24.04
+    outputs:
+      display: ${{ steps.display.outputs.display }}
+      display_pgo: ${{ steps.display.outputs.display_pgo }}
+      display_store: ${{ steps.display.outputs.display_store }}
+      display_pgo_store: ${{ steps.display.outputs.display_pgo_store }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compose the display identity
+        id: display
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--owner "$GITHUB_REPOSITORY_OWNER" --repo "${GITHUB_REPOSITORY##*/}"
+                --branch "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" --sha "$(git rev-parse HEAD)")
+          {
+            printf 'display=%s\n' "$(tools/ci/display-version.sh "${args[@]}")"
+            printf 'display_pgo=%s\n' "$(tools/ci/display-version.sh "${args[@]}" --pgo)"
+            printf 'display_store=%s\n' "$(tools/ci/display-version.sh "${args[@]}" --store)"
+            printf 'display_pgo_store=%s\n' "$(tools/ci/display-version.sh "${args[@]}" --pgo --store)"
+          } >> "$GITHUB_OUTPUT"
+
+  nix:
+    needs: prepare
+    uses: ./.github/workflows/build-nix.yml
+    with:
+      sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      display: ${{ needs.prepare.outputs.display }}
+      display_pgo: ${{ needs.prepare.outputs.display_pgo }}
+      display_store: ${{ needs.prepare.outputs.display_store }}
+      display_pgo_store: ${{ needs.prepare.outputs.display_pgo_store }}
+      linux: ${{ inputs.os == 'all' || inputs.os == 'linux' }}
+      macos: ${{ inputs.os == 'all' || inputs.os == 'macos' }}
+      # A manual run has no prepare job; label it with the ref it was started on.
+      refspec: ${{ github.ref_name }}
+      tag: manual
+      pgo: ${{ inputs.pgo || 'both' }}
+      save_cache: ${{ inputs.save_cache }}
+    secrets:
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+  # same as ci.yml
+  nix-failure-notice:
+    name: Nix failure notice
+    needs: [nix]
+    if: always() && needs.nix.result == 'failure'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Announce the failure
+        shell: bash
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_DEV_WEBHOOK_URL }}
+        run: |
+          set -uo pipefail
+          URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          SHA="${GITHUB_SHA::7}"
+          echo "::warning::Nix failed on ${GITHUB_REF_NAME} (${SHA}, ${GITHUB_EVENT_NAME}). ${URL}"
+          if [ -z "$WEBHOOK" ]; then echo "No DISCORD_DEV_WEBHOOK_URL secret, skipping."; exit 0; fi
+          MSG=$(printf '## Nix CI failed on `%s` (%s)\n%s' "${GITHUB_REF_NAME}" "${SHA}" "${URL}")
+          jq -n --arg content "$MSG" '{content: $content}' |
+            curl -fsS -H "Content-Type: application/json" -d @- "$WEBHOOK" ||
+            echo "::warning::Could not post the notice to Discord."
+          exit 0

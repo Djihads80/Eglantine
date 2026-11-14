@@ -11,6 +11,14 @@ on:
       version:
         type: string
         required: true
+      display:
+        description: Human-facing build identity (plain variant)
+        type: string
+        default: ""
+      display_pgo:
+        description: Human-facing build identity (PGO variant)
+        type: string
+        default: ""
       refspec:
         type: string
         required: true
@@ -27,6 +35,10 @@ on:
         description: none or both
         type: string
         default: none
+      save_cache:
+        description: Force-save the compiler and CPM caches at the end of the job
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -42,8 +54,6 @@ jobs:
     name: linux-${{ matrix.arch }}${{ matrix.pgo && '-pgo' || '' }}
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 1000M
       PLATFORM: linux-${{ matrix.arch }}${{ matrix.pgo && '-pgo' || '' }}
       SHA: ${{ inputs.sha }}
 
@@ -69,6 +79,8 @@ jobs:
           refspec: ${{ inputs.refspec }}
           tag: ${{ inputs.tag }}
           release: ${{ inputs.release }}
+          save-cache: ${{ inputs.save_cache }}
+          display: ${{ matrix.pgo && inputs.display_pgo || inputs.display }}
 
       - name: Setup build from compatibility pin
         if: hashFiles('.github/actions/setup-build/action.yml') == ''
@@ -79,14 +91,7 @@ jobs:
           refspec: ${{ inputs.refspec }}
           tag: ${{ inputs.tag }}
           release: ${{ inputs.release }}
-
-      - name: Cache APT packages
-        uses: actions/cache@v6
-        with:
-          path: /var/cache/apt/archives
-          key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/*.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-apt-
+          save-cache: ${{ inputs.save_cache }}
 
       - name: Install Linux dependencies
         shell: bash
@@ -190,11 +195,19 @@ jobs:
           fi
           cmake -S . -B build/release -G Ninja "${flags[@]}"
 
+      - name: ccache settings
+        shell: bash
+        run: |
+          ccache --version | head -1
+          ccache -p | grep -vE '^#' | grep -E '(cache_dir|compiler_check|base_dir|hash_dir|sloppiness|max_size|umask)' || true
+          if [ '${{ matrix.pgo }}' = 'true' ]; then clang-$PGO_LLVM_VERSION --version | head -1; fi
+
       - name: Build
         shell: bash
         run: |
+          ccache --zero-stats
           cmake --build build/release --target yuzu yuzu-cmd --parallel
-          ccache --show-stats
+          ccache --show-stats -vv
 
       # Plain tar.gz with the two programs. GitHub artifacts drop the executable bit, so a tar is
       # what keeps it. This one is not self-contained: it needs Qt 6 and the usual libraries
@@ -263,3 +276,10 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ccache-debug-${{ env.PLATFORM }}
+          path: ccache-debug
+          retention-days: 2
