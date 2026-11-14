@@ -58,7 +58,6 @@ case "$mode" in
     day=$(date -u +%Y%m%d)
     tag="daily-$day"
     refspec="$tag"
-    version="$day-${sha:0:7}"
     title="Eglantine Build $(date -u +%d/%m/%Y)"
     branch="$daily_branch"
     latest=$(daily_tags | head -n1 || true)
@@ -72,7 +71,6 @@ case "$mode" in
   push)
     tag="v$base"
     refspec="$tag"
-    version="$tag"
     title="Eglantine $tag"
     nightly=false
     if [[ "$base" == *-rc* ]]; then
@@ -107,7 +105,6 @@ case "$mode" in
     slug=$(bash "$here/slugify.sh" "$branch")
     tag="branch-$slug"
     refspec="$slug"
-    version="$slug-${sha:0:7}"
     title="Eglantine Branch: ${pr_title:-$branch}"
     ;;
 
@@ -149,6 +146,12 @@ display_pgo=$(bash "$here/display-version.sh" "${display_args[@]}" --pgo)
 # that rule lives, so the legs do not re-derive it.
 display_store=$(bash "$here/display-version.sh" "${display_args[@]}" --store)
 display_pgo_store=$(bash "$here/display-version.sh" "${display_args[@]}" --pgo --store)
+
+# The file naming follows the identity: an AppImage, an artifact and a Nix store
+# path then carry the same string, so a downloaded file says which build it is.
+# `tag` stays a separate, shorter, URL-safe thing: it is the only field a client
+# can compare against a published release, and it must not carry slashes.
+version=$display_store
 
 title=$(oneline "$title")
 
