@@ -1,0 +1,183 @@
+name: sanitizers
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: &paths
+      - "src/**"
+      - "CMakeLists.txt"
+      - "CMakeModules/**"
+      - "externals/**"
+      - ".patch/**"
+      - "cpmfile.json"
+      - ".github/workflows/sanitizers.yml"
+      - ".github/sanitizer-controls/**"
+  push:
+    branches:
+      - nx2
+    paths: *paths
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sanitizers-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Fail-closed gate (pattern from prosper's CI): a docs-only PR skips the expensive builds, but
+  # if this job errors its output is empty and `!= 'false'` still runs the sanitizers.
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      code_changed: ${{ steps.filter.outputs.code_changed }}
+      ids: ${{ steps.ids.outputs.ids }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+      # TSan is slow and still noisy, so pull requests run only ASan + UBSan; TSan runs on pushes,
+      # the weekly schedule and manual dispatch.
+      - id: ids
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          asan='{"id":"asan-ubsan","name":"ASan + UBSan","flags":"-fsanitize=address,undefined -fno-sanitize-recover=undefined -DZSTD_ASAN_DONT_POISON_WORKSPACE","control":"asan.cpp","diagnostic":"AddressSanitizer|runtime error","options":"ASAN_OPTIONS=detect_stack_use_after_return=0:strict_string_checks=1:detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1","experimental":false}'
+          tsan='{"id":"tsan","name":"TSan","flags":"-fsanitize=thread","control":"tsan.cpp","diagnostic":"ThreadSanitizer.*data race","options":"TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1","experimental":true}'
+          if [ "$EVENT" = "pull_request" ]; then
+            echo "ids=[$asan]" >> "$GITHUB_OUTPUT"
+          else
+            echo "ids=[$asan,$tsan]" >> "$GITHUB_OUTPUT"
+          fi
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "code_changed=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          CHANGED=$(git diff --name-only HEAD^1 HEAD)
+          echo "$CHANGED"
+          if [ -z "$CHANGED" ] || echo "$CHANGED" | grep -qvE '\.md$|^docs/'; then
+            echo "code_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ASan and TSan cannot share a binary, so each gets its own build of the Catch2 `tests` target.
+  sanitize:
+    name: ${{ matrix.name }}
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code_changed != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2000M
+      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cache/cpm
+    strategy:
+      fail-fast: false
+      matrix:
+        # Falls back to the same event-dependent choice the ids step makes when its output is
+        # empty (checkout failed before it ran), so fromJSON never gets an empty string.
+        include: ${{ fromJSON(needs.changes.outputs.ids || (github.event_name == 'pull_request' && '[{"id":"asan-ubsan","name":"ASan + UBSan","flags":"-fsanitize=address,undefined -fno-sanitize-recover=undefined -DZSTD_ASAN_DONT_POISON_WORKSPACE","control":"asan.cpp","diagnostic":"AddressSanitizer|runtime error","options":"ASAN_OPTIONS=detect_stack_use_after_return=0:strict_string_checks=1:detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1","experimental":false}]' || '[{"id":"asan-ubsan","name":"ASan + UBSan","flags":"-fsanitize=address,undefined -fno-sanitize-recover=undefined -DZSTD_ASAN_DONT_POISON_WORKSPACE","control":"asan.cpp","diagnostic":"AddressSanitizer|runtime error","options":"ASAN_OPTIONS=detect_stack_use_after_return=0:strict_string_checks=1:detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1","experimental":false},{"id":"tsan","name":"TSan","flags":"-fsanitize=thread","control":"tsan.cpp","diagnostic":"ThreadSanitizer.*data race","options":"TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1","experimental":true}]')) }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf cmake g++ gcc git glslang-tools libglu1-mesa-dev \
+            libpulse-dev libtool libudev-dev mesa-common-dev nasm ninja-build \
+            libavfilter-dev libavcodec-dev libswscale-dev pkg-config zlib1g-dev \
+            libva-dev libvdpau-dev spirv-tools spirv-headers libusb-1.0-0-dev \
+            libboost-dev libboost-fiber-dev libboost-context-dev \
+            libopus-dev libasound2-dev ccache catch2 mold
+
+      # Pull requests only read the caches; nx2 pushes and the weekly run write them, so every PR
+      # starts from a warm nx2 cache instead of each one storing its own copy.
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: sanitizers-${{ matrix.id }}-${{ github.sha }}
+          restore-keys: sanitizers-${{ matrix.id }}-
+
+      # Positive control: a deliberate bug must make the instrumented binary fail. If it passes,
+      # the flags or runtime are not actually sanitizing and a green test run means nothing.
+      - name: Verify sanitizer catches a known bug
+        run: |
+          g++ -g -O1 ${{ matrix.flags }} .github/sanitizer-controls/${{ matrix.control }} -o control -pthread
+          # The control returns 0 unless a sanitizer intervenes, so require the report text too.
+          env ${{ matrix.options }} ./control > control.log 2>&1 || true
+          cat control.log
+          if ! grep -qE "${{ matrix.diagnostic }}" control.log; then
+            echo "::error::sanitizer positive control produced no report; instrumentation is not active"
+            exit 1
+          fi
+
+      - name: Restore dependency sources
+        id: cpm
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/cpm
+          # Exact key only: CPMUtil does not recheck a cached source's URL or hash, so a broad
+          # restore key could hand back sources from before a cpmfile.json change.
+          key: cpm-${{ hashFiles('cpmfile.json', 'CMakeModules/**', '.patch/**') }}
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="${{ matrix.flags }} -g1 -fno-omit-frame-pointer" \
+            -DCMAKE_CXX_FLAGS="${{ matrix.flags }} -g1 -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }} -fuse-ld=mold" \
+            -DBUILD_TESTING=ON \
+            -DYUZU_TESTS=ON \
+            -DENABLE_QT=OFF \
+            -DYUZU_CMD=OFF \
+            -DYUZU_ROOM=OFF \
+            -DYUZU_ROOM_STANDALONE=OFF \
+            -DYUZU_USE_BUNDLED_SDL3=ON \
+            -DVulkanHeaders_FORCE_BUNDLED=ON \
+            -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_UPDATE_CHECKER=OFF \
+            -DUSE_DISCORD_PRESENCE=OFF \
+            -DENABLE_WERROR=OFF \
+            -DUSE_CCACHE=ON
+
+      - name: Build tests
+        run: |
+          ccache -z
+          cmake --build build --target tests --parallel
+          ccache -s
+
+      - name: Verify tests are registered
+        run: |
+          ctest --test-dir build -N | tee ctest-list.txt
+          grep -q "Total Tests: [1-9]" ctest-list.txt || { echo "::error::no tests registered"; exit 1; }
+
+      - name: Run tests
+        continue-on-error: ${{ matrix.experimental == true }}
+        run: env ${{ matrix.options }} ctest --test-dir build --no-tests=error --output-on-failure
+
+      - name: Save ccache
+        if: ${{ always() && github.ref == 'refs/heads/nx2' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: sanitizers-${{ matrix.id }}-${{ github.sha }}
+
+      - name: Save dependency sources
+        if: ${{ always() && github.ref == 'refs/heads/nx2' && steps.cpm.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/cpm
+          key: cpm-${{ hashFiles('cpmfile.json', 'CMakeModules/**', '.patch/**') }}
