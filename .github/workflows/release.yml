@@ -111,6 +111,16 @@ jobs:
               (cd "$artifact" && zip -qr "${GITHUB_WORKSPACE}/release-assets/$(strip_sha "$name").zip" .)
             fi
           done
+          # Stable AppImages point update tools at <asset>.zsync on the latest release. Made here,
+          # after the rename, because a .zsync records the file name it was made for.
+          if [ "$KIND" = stable ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zsync > /dev/null
+            for file in release-assets/*.AppImage; do
+              name=$(basename "$file")
+              (cd release-assets && zsyncmake -u "$name" -o "$name.zsync" "$name")
+            done
+          fi
           files=(release-assets/*)
           ((${#files[@]} > 0)) || { echo "Build artifacts contained no release files" >&2; exit 1; }
           printf 'Prepared %s release assets\n' "${#files[@]}"
