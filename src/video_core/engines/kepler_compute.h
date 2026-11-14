@@ -23,6 +23,7 @@
 #include "video_core/macro.h"
 #include "video_core/native_qmd.h"
 #include "video_core/split_write_tracker.h"
+#include "video_core/nx2_list_grid.h"
 #include "video_core/textures/texture.h"
 
 namespace Core {
@@ -262,6 +263,10 @@ public:
     std::optional<GPUVAddr> GetIndirectComputeAddress() const {
         return indirect_compute;
     }
+    /// The dispatch takes its grid from a list's kept words (nx2_list_grid.h): their keep id.
+    std::optional<u64> GetKeptGrid() const {
+        return kept_grid;
+    }
 
     bool IsNativeMode() const {
         return native_mode;
@@ -293,6 +298,20 @@ public:
     void FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
                               const u32* base_start, u32 amount, u32 methods_pending,
                               const GPUVAddr* segment);
+    /// List-fed grid macros (nx2_list_grid.h): if a call of macro `method`, none begun, is one
+    /// the front takes without reading its three parameters, the keep id of its list, whose kept
+    /// slot it claimed (Nx2ListGrid::ClaimSlot).
+    std::optional<u64> FrontClaimListGrid(VideoCommon::GpuSplit& split, u32 method);
+    /// Takes that call: the parameters are the GPU-written words at `address`. The data RAM gets
+    /// markers for them, and the back keeps a copy of the words. Verify mode: `real` are the
+    /// words read the old way, else empty.
+    void FrontTakeListGrid(VideoCommon::GpuSplit& split, u32 method, u64 keep_id,
+                           GPUVAddr address, const Nx2ListGrid::ListReader& reader,
+                           std::span<const u32> real);
+    /// Where the channel tracks the markers of the data RAM it shares with its 3D engine.
+    void SetGridMarker(Nx2ListGrid::GridMarker* marker) {
+        grid_marker = marker;
+    }
 
 private:
     struct FrontState;
@@ -306,6 +325,18 @@ private:
     VideoCommon::SplitWriteTracker::Effect FrontEffect(u32 method) const;
     /// After sending it: the memory it writes, for the front's reads.
     void FrontNoteWrites(VideoCommon::GpuSplit& split, FrontState& state, u32 method);
+    struct FrontMacro;
+    /// The macro at `start` of `engine`'s current code: its CodeHash and, for an HleMacros
+    /// entry, where it stores its parameters.
+    const FrontMacro& FrontMacroInfo(FrontState& state, const MacroEngine& engine, u32 start);
+    /// Tells the back that the word at `address` will carry `marker`, to patch from its kept copy.
+    void FrontExpectKeptWord(GPUVAddr address, u32 marker);
+    /// Before a macro runs while markers are live: runs it dry and gives it the real words
+    /// unless it only moves the markers (Nx2ListGrid::Admit).
+    void FrontGuardListGrid(VideoCommon::GpuSplit& split, FrontState& state, MacroEngine& engine,
+                            u32 start);
+    /// Before the kept slot of list `keep_id` is reused (Nx2ListGrid::SlotOwner::evict).
+    bool FrontEvictList(u64 keep_id);
     std::unique_ptr<FrontState> front;
     bool front_macros{}; ///< The front owns the macro code and bindings (the back skips them)
 
@@ -448,6 +479,11 @@ private:
     };
     std::vector<UploadInfo> uploads;
     std::optional<GPUVAddr> indirect_compute{};
+    std::optional<u64> kept_grid{};
+    /// The lists the grid markers of the QMD read last stand for (Nx2ListGrid::QmdWordList), 0
+    /// for a word that is no marker. Set by the QMD read before its dispatch.
+    std::array<u64, 3> qmd_grid_lists{};
+    Nx2ListGrid::GridMarker* grid_marker{};
 };
 
 #define ASSERT_REG_POSITION(field_name, position)                                                  \

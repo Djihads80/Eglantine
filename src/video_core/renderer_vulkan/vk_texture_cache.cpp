@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <limits>
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <optional>
 #include <span>
@@ -173,6 +174,42 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
     return bytes * info.resources.layers > (u64{1} << 30);
 }
 
+// Whether a block-compressed copy of `info` has a mip level whose size in 4x4 blocks is not its
+// level 0 block count shifted down (341 texels: 86 blocks at level 0, 85 texels = 22 blocks at
+// level 2, not 86 >> 2 = 21). On AMD (RX 6600 XT, Windows driver) the BC1/BC3 copies of such
+// images show dark lines along the seams of distant terrain in title 1; RGBA8 copies don't.
+[[nodiscard]] bool HasUnevenBlockMips(const ImageInfo& info) {
+    const u32 blocks_x = Common::DivCeil(info.size.width, 4U);
+    const u32 blocks_y = Common::DivCeil(info.size.height, 4U);
+    for (s32 level = 1; level < info.resources.levels; ++level) {
+        const u32 level_x = Common::DivCeil((std::max)(info.size.width >> level, 1U), 4U);
+        const u32 level_y = Common::DivCeil((std::max)(info.size.height >> level, 1U), 4U);
+        if (level_x != (std::max)(blocks_x >> level, 1U) ||
+            level_y != (std::max)(blocks_y >> level, 1U)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ASTC that would be re-compressed to BC1/BC3 but has uneven block mips (HasUnevenBlockMips) on
+// an AMD driver, which samples those wrong: kept as the GPU decoder's RGBA8 instead, like huge
+// arrays.
+[[nodiscard]] bool IsUnevenMipRgba8Astc(const Device& device, const ImageInfo& info) {
+    if (!IsPixelFormatASTC(info.format) || device.IsOptimalAstcSupported() ||
+        info.type != ImageType::e2D || info.size.depth != 1 || info.resources.levels <= 1 ||
+        Settings::values.accelerate_astc.GetValue() != Settings::AstcDecodeMode::Gpu ||
+        Settings::GetAstcRecompression() == Settings::AstcRecompression::Uncompressed) {
+        return false;
+    }
+    const VkDriverIdKHR id = device.GetDriverID();
+    if (id != VK_DRIVER_ID_AMD_PROPRIETARY && id != VK_DRIVER_ID_AMD_OPEN_SOURCE &&
+        id != VK_DRIVER_ID_MESA_RADV) {
+        return false;
+    }
+    return HasUnevenBlockMips(info) && !IsHugeAstcArray(device, info);
+}
+
 // A large image over Switch 2 sparse blocks nobody has written (title 1's terrain layer pools, 2.9
 // GB of R8/RG16/R16 that stay empty in the attract demo) is all zeros: it gets no device memory
 // until a write makes the texture cache replace it.
@@ -284,9 +321,10 @@ enum class SparseTilesMode {
                                                            : (VkDeviceSize{768} << 20);
 }
 
-// The host format of a huge ASTC array: the GPU decoder's RGBA8 (sRGB kept for sampling).
+// The host format of a huge ASTC array or of ASTC with uneven block mips: the GPU decoder's RGBA8
+// (sRGB kept for sampling).
 [[nodiscard]] std::optional<VkFormat> HugeAstcHostFormat(const Device& device, const ImageInfo& info) {
-    if (!IsHugeAstcArray(device, info)) {
+    if (!IsHugeAstcArray(device, info) && !IsUnevenMipRgba8Astc(device, info)) {
         return std::nullopt;
     }
     return VideoCore::Surface::IsPixelFormatSRGB(info.format) ? VK_FORMAT_A8B8G8R8_SRGB_PACK32
@@ -298,7 +336,8 @@ constexpr std::array<VkFormat, 2> HugeAstcViewFormats{VK_FORMAT_A8B8G8R8_UNORM_P
 
 // Opaque ASTC (ImageInfo::astc_opaque) re-compressed to BC1 instead of BC3.
 [[nodiscard]] bool IsOpaqueBc1Astc(const Device& device, const ImageInfo& info) {
-    return info.astc_opaque && IsPixelFormatASTC(info.format) && !IsHugeAstcArray(device, info);
+    return info.astc_opaque && IsPixelFormatASTC(info.format) && !IsHugeAstcArray(device, info) &&
+           !IsUnevenMipRgba8Astc(device, info);
 }
 
 constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM_BLOCK,
@@ -316,7 +355,8 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
 // decode, so streamed textures are ready the frame they are first used instead of seconds later.
 [[nodiscard]] bool WillUseGpuBcnTranscode(const Device& device, const ImageInfo& info) {
     if (!IsPixelFormatASTC(info.format) || device.IsOptimalAstcSupported() ||
-        IsHugeAstcArray(device, info) || info.type != ImageType::e2D || info.size.depth != 1) {
+        IsHugeAstcArray(device, info) || IsUnevenMipRgba8Astc(device, info) ||
+        info.type != ImageType::e2D || info.size.depth != 1) {
         return false;
     }
     return Settings::values.accelerate_astc.GetValue() == Settings::AstcDecodeMode::Gpu &&
@@ -327,7 +367,7 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
     if (!IsPixelFormatASTC(info.format) || device.IsOptimalAstcSupported()) {
         return false;
     }
-    if (IsHugeAstcArray(device, info)) {
+    if (IsHugeAstcArray(device, info) || IsUnevenMipRgba8Astc(device, info)) {
         return true;
     }
     if (Settings::values.accelerate_astc.GetValue() != Settings::AstcDecodeMode::Gpu) {
@@ -2734,7 +2774,8 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
       runtime{&runtime_},
       original_image(MakeImage(runtime_.device, runtime_.memory_allocator,
                                TrimmedHostInfo(runtime_.device, info, host_level_offset),
-                               IsHugeAstcArray(runtime_.device, info)
+                               IsHugeAstcArray(runtime_.device, info) ||
+                                       IsUnevenMipRgba8Astc(runtime_.device, info)
                                    ? std::span<const VkFormat>{HugeAstcViewFormats}
                                : IsOpaqueBc1Astc(runtime_.device, info)
                                    ? std::span<const VkFormat>{OpaqueAstcViewFormats}
@@ -2774,6 +2815,17 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
             if (WillUseAcceleratedAstcDecode(runtime->device, info) ||
                 WillUseGpuBcnTranscode(runtime->device, info)) {
                 flags |= VideoCommon::ImageFlagBits::AcceleratedUpload;
+            }
+            if (IsUnevenMipRgba8Astc(runtime->device, info)) {
+                static std::atomic<u32> uneven_images{0};
+                const u32 count = ++uneven_images;
+                if (count <= 4 || (count & (count - 1)) == 0) {
+                    LOG_INFO(Render_Vulkan,
+                             "ASTC {}x{}x{} with {} levels kept as RGBA8 (uneven BC block mips), "
+                             "{} images so far",
+                             info.size.width, info.size.height, info.resources.layers,
+                             info.resources.levels, count);
+                }
             }
             break;
         case Settings::AstcDecodeMode::CpuAsynchronous:
@@ -4045,7 +4097,7 @@ ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::ImageViewI
         }
     }
     auto format_info = MaxwellToVK::SurfaceFormat(*device, FormatType::Optimal, true, format);
-    if (IsHugeAstcArray(*device, image.info)) {
+    if (IsHugeAstcArray(*device, image.info) || IsUnevenMipRgba8Astc(*device, image.info)) {
         format_info.format = VideoCore::Surface::IsPixelFormatSRGB(format)
                                  ? VK_FORMAT_A8B8G8R8_SRGB_PACK32
                                  : VK_FORMAT_A8B8G8R8_UNORM_PACK32;
@@ -4404,6 +4456,10 @@ Sampler::VariantKey Sampler::MakeKey(const ImageView& image_view, bool is_depth)
     key.drop_reduction = has_minmax_reduction && !image_view.SupportsMinmaxFilter();
     key.drop_custom_border = has_custom_border_colors && image_view.RequiresBorderColorFormat();
     key.srgb_border = has_srgb_border_color && IsPixelFormatSRGB(image_view.format);
+    // A compare-enabled TSC read by a plain (non-Dref) sample: Maxwell ignores the comparison,
+    // Vulkan leaves it undefined and AMD returns the 0/1 compare result (Ocarina forest fog
+    // composite read alpha 0 -> black screen). Use a variant without comparison.
+    key.drop_compare = has_depth_comparison && !is_depth;
     if (needs_swizzle_mapping && !key.drop_custom_border && !image_view.HasIdentitySwizzle()) {
         const VkComponentMapping& mapping = image_view.Swizzle();
         key.swizzle = {mapping.r, mapping.g, mapping.b, mapping.a};
@@ -4467,6 +4523,9 @@ VkSampler Sampler::Emplace(VariantKey key) {
     }
 
     VkSamplerCreateInfo create_info = base_ci;
+    if (key.drop_compare) {
+        create_info.compareEnable = VK_FALSE;
+    }
     create_info.pNext = chain;
     if (key.force_nearest) {
         create_info.magFilter = VK_FILTER_NEAREST;

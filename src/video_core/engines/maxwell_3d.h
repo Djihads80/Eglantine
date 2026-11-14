@@ -27,6 +27,8 @@
 #include "video_core/gpu.h"
 #include "video_core/macro.h"
 #include "video_core/split_write_tracker.h"
+#include "video_core/nx2_list_grid.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/textures/texture.h"
 #include "video_core/engines/maxwell_3d.h"
 
@@ -3243,6 +3245,9 @@ public:
     /// programs.
     [[nodiscard]] static bool Nx2DrawProgramsOf(const Regs& regs, bool native, u64 memory_id,
                                                 u64 map_serial, Tegra::Nx2DrawPrograms& out);
+    /// List-fed grid macros (nx2_list_grid.h): the markers of the data RAM, which the compute
+    /// engine shares and stores them in (KeplerCompute::FrontTakeListGrid).
+    Nx2ListGrid::GridMarker grid_marker;
 
     bool ShouldExecute() const {
         return execute_on;
@@ -3310,9 +3315,27 @@ private:
 
     void ProcessMacro(Core::System& system, u32 method, const u32* base_start, u32 amount, bool is_last_call);
 
-    u32 ProcessShadowRam(u32 method, u32 argument);
+    u32 ProcessShadowRam(u32 method, u32 argument) {
+        // Keep track of the register value in shadow_state when requested.
+        auto const c = shadow_state.shadow_ram_control;
+        if (c == Regs::ShadowRamControl::Track || c == Regs::ShadowRamControl::TrackWithFilter)
+            return shadow_state.reg_array[method] = argument;
+        else if (c == Regs::ShadowRamControl::Replay)
+            return shadow_state.reg_array[method];
+        return argument;
+    }
 
-    void ProcessDirtyRegisters(u32 method, u32 argument);
+    void ProcessDirtyRegisters(u32 method, u32 argument) {
+        // The instances after the first are drawn together once their loop ends, and they must see
+        // the state they were begun with: NVN's draw macros reset the base instance (and its copy in
+        // c[0][0x644]) right after the loop, before the macro returns.
+        if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method)) [[unlikely]] {
+            draw_manager.DrawDeferred(*this, true);
+        }
+        regs.reg_array[method] = argument;
+        for (auto const& table : dirty.tables)
+            dirty.flags[table[method]] = true;
+    }
 
     void ConsumeSinkImpl(Core::System& system) override;
 

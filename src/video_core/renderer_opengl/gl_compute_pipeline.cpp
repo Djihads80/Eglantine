@@ -108,7 +108,8 @@ void ComputePipeline::Configure() {
     const bool via_header_index{qmd.linked_tsc != 0};
     const auto read_handle{[&](const auto& desc, u32 index) {
         if (desc.handle_program != ~0U) {
-            // Read by the shader from a storage buffer: computed for this dispatch.
+            // Read by the shader from a storage buffer: computed for this dispatch (for an
+            // array, for each element).
             return TexturePair(VideoCommon::EvaluateTextureHandle(
                                    info, desc.handle_program, *gpu_memory,
                                    [&](u32 cbuf) -> GPUVAddr {
@@ -118,7 +119,7 @@ void ComputePipeline::Configure() {
                                                   ? cbufs[cbuf].Address()
                                                   : GPUVAddr{};
                                    },
-                                   storage_buffer_alignment),
+                                   storage_buffer_alignment, index),
                                via_header_index);
         }
         ASSERT(((qmd.const_buffer_enable_mask >> desc.cbuf_index) & 1) != 0);

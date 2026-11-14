@@ -5,6 +5,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 add_executable(tests
+    video_core/spirv_nan_safe_min_max.cpp
+    video_core/command_snapshot_suspensions.cpp
+    video_core/usage_tracker.cpp
+    video_core/texture_handles.cpp
+    video_core/nx2_list_grid.cpp
     core/nx2_frame_interval.cpp
     video_core/upload_batch.cpp
     core/nx2_oot_time.cpp
@@ -20,6 +25,7 @@ add_executable(tests
     core/nx2_debug_server.cpp
     core/system_test_context.h
     video_core/ampere_logged_numeric.cpp
+    video_core/query_stream.cpp
     video_core/pipeline_optimization.cpp
     video_core/spirv_atomic_retry.cpp
     video_core/spirv_storage_alignment.cpp
@@ -35,6 +41,7 @@ add_executable(tests
     common/host_memory.cpp
     common/page_table.cpp
     common/param_package.cpp
+    common/poll_window.cpp
     common/range_map.cpp
     common/range_set_subtract.cpp
     common/ring_buffer.cpp

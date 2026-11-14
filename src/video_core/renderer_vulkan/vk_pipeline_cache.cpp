@@ -87,7 +87,7 @@ using VideoCommon::GraphicsEnvironment;
 // translated again at boot and written back under the new one. Bump MIN_COMPATIBLE_CACHE_VERSION
 // too only when the record layout (environment or key serialization) changes, which deletes older
 // caches. 20 changed the environment layout; the keys last changed before it.
-constexpr u32 CACHE_VERSION = 34;
+constexpr u32 CACHE_VERSION = 36;
 static_assert(CACHE_VERSION == VideoCommon::ShaderWarm::WarmCacheVersion,
               "Shader precache files use the pipeline cache version");
 constexpr u32 MIN_COMPATIBLE_CACHE_VERSION = 20;
@@ -373,6 +373,33 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
     }
     info.force_early_z = key.state.early_z != 0;
     info.y_negate = key.state.y_negate != 0;
+    // Transform feedback would capture the scaled values, a passthrough geometry shader doesn't
+    // scale the outputs it writes itself, and indexed attribute reads in the fragment stage don't
+    // undo the scaling, so all three keep native noperspective interpolation.
+    const bool geometry_passthrough{key.unique_hashes[4] != 0 &&
+                                    programs[4].is_geometry_passthrough};
+    if (key.unique_hashes[5] != 0 && !geometry_passthrough && key.state.xfb_enabled == 0 &&
+        !programs[5].info.loads_indexed_attributes) {
+        const bool has_tess{key.unique_hashes[3] != 0};
+        const bool last_pre_raster{
+            (stage == Shader::Stage::VertexB && !has_tess && !has_geometry) ||
+            (stage == Shader::Stage::TessellationEval && !has_geometry) ||
+            (stage == Shader::Stage::Geometry && has_geometry)};
+        if (stage == Shader::Stage::Fragment) {
+            info.scaled_noperspective_inputs =
+                previous_program && (previous_program->stage == Shader::Stage::VertexB ||
+                                     previous_program->stage == Shader::Stage::TessellationEval ||
+                                     previous_program->stage == Shader::Stage::Geometry);
+        }
+        if (last_pre_raster) {
+            const auto& fragment_info{programs[5].info};
+            for (size_t index = 0; index < 32; ++index) {
+                if (fragment_info.interpolation[index] == Shader::Interpolation::NoPerspective) {
+                    info.noperspective_outputs.set(index);
+                }
+            }
+        }
+    }
     return info;
 }
 
@@ -605,6 +632,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .has_broken_unsigned_image_offsets = false,
         .has_broken_signed_operations = false,
         .has_broken_fp16_float_controls = driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY,
+        .max_compute_shared_memory_size = device.GetMaxComputeSharedMemorySize(),
         .has_broken_fp32_denorm_flush = driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY,
         .has_broken_mesh_global_memory_calls =
             device.IsNvidia() && device.GetNvidiaArch() <= NvidiaArchitecture::Arch_Pascal,
@@ -622,12 +650,18 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .max_user_clip_distances = device.GetMaxUserClipDistances()};
     profile.support_cooperative_hmma =
         device.IsCooperativeHmmaSupported() && TestCooperativeHmma(device);
+    profile.support_cooperative_hmma_16x16x16 =
+        !profile.support_cooperative_hmma && device.IsCooperativeHmma16x16x16Supported();
+    if (profile.support_cooperative_hmma_16x16x16) {
+        LOG_INFO(Render_Vulkan, "Guest tensor operations run on 16x16x16 cooperative matrices");
+    }
 
     host_info = Shader::HostTranslateInfo{
         .min_ssbo_alignment = device.GetStorageBufferAlignment(),
         .max_per_stage_descriptor_sampled_images = device.GetMaxPerStageDescriptorSampledImages(),
         .max_per_stage_resources = device.GetMaxPerStageResources(),
         .max_per_stage_descriptor_storage_buffers = device.GetMaxPerStageDescriptorStorageBuffers(),
+        .max_per_stage_descriptor_samplers = device.GetMaxPerStageDescriptorSamplers(),
         .max_descriptor_set_samplers = device.GetMaxDescriptorSetSamplers(),
         .max_descriptor_set_uniform_buffers = device.GetMaxDescriptorSetUniformBuffers(),
         .max_descriptor_set_uniform_buffers_dynamic =
@@ -650,8 +684,16 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .support_geometry_shader_passthrough = device.IsNvGeometryShaderPassthroughSupported(),
         .support_conditional_barrier = device.SupportsConditionalBarriers(),
         .single_lane_geometry_subgroups = !profile.SupportsSubgroupStage(Shader::Stage::Geometry),
+        // The arrays are indexed per invocation, which needs nonuniform indexing to be defined.
+        .support_handle_table_arrays = device.IsSampledImageArrayNonUniformIndexingSupported(),
     };
     host_info.ApplyDescriptorLimitPolicy();
+
+    LOG_INFO(Render_Vulkan,
+             "Bindless handle tables: sampled image arrays indexed per invocation {}, up to {} "
+             "sampled images per stage",
+             device.IsSampledImageArrayNonUniformIndexingSupported() ? "supported" : "unsupported",
+             device.GetMaxPerStageDescriptorSampledImages());
 
     if (device.GetMaxVertexInputAttributes() < Maxwell::NumVertexAttributes) {
         LOG_WARNING(Render_Vulkan, "maxVertexInputAttributes is too low: {} < {}",
@@ -2615,6 +2657,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             auto& program_va{programs[0]};
             auto program_vb{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
             programs[index] = MergeDualVertexPrograms(program_va, program_vb, env, host_info);
+            // Each half fit its texture arrays to the stage limits on its own; joined, they are
+            // one stage.
+            Shader::Optimization::LimitSampledTextureArrays(programs[index], host_info);
         }
 
         if (device.GetDriverID() != VK_DRIVER_ID_NVIDIA_PROPRIETARY &&
@@ -2646,6 +2691,22 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                 total_storage_buffers, host_info.max_descriptor_set_storage_buffers);
         }
     }
+    {
+        // Fit the set before mesh fallback chooses its auxiliary buffer bindings: cutting arrays
+        // can merge descriptors, so both their element counts and their binding counts can change.
+        std::array<Shader::IR::Program*, Maxwell::MaxShaderProgram> stages{};
+        size_t num_stages{};
+        for (size_t index = uses_vertex_a && uses_vertex_b ? 1 : 0;
+             index < Maxwell::MaxShaderProgram; ++index) {
+            const bool is_emulated_stage = layer_source_program != nullptr &&
+                                           index == static_cast<u32>(Maxwell::ShaderType::Geometry);
+            if (key.unique_hashes[index] != 0 || is_emulated_stage) {
+                stages[num_stages++] = &programs[index];
+            }
+        }
+        Shader::Optimization::LimitPipelineSampledTextureArrays(
+            std::span{stages.data(), num_stages}, host_info);
+    }
     // Mesh emulation without VK_EXT_mesh_shader (prototype): a mesh program, after an optional
     // task program, drawing triangles without per-primitive outputs, before a pixel program only.
     std::optional<MeshEmulationSetup> mesh_emulation;
@@ -2673,13 +2734,17 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         if (!eligible) {
             return nullptr;
         }
-        // The output buffer's binding follows every program's (unified bindings, one per
-        // descriptor element, as the SPIR-V backend numbers them). The task and mesh programs
-        // share the compute stage, so their descriptors and the emulation's own buffers count
-        // against one set of per-stage limits.
+        // Task and mesh share the compute stage, including the fallback's storage buffers.
+        // Shrink their arrays before counting resources and assigning auxiliary bindings.
+        std::array<Shader::IR::Program*, 2> compute_programs{&programs[mesh_index], &programs[1]};
+        Shader::Optimization::LimitSharedStageSampledTextureArrays(
+            std::span{compute_programs.data(), has_task ? size_t{2} : size_t{1}}, host_info,
+            has_task ? 4U : 1U);
+        // Descriptor arrays occupy one binding, just as in DefineTextures and the layout builder.
         u32 output_binding{};
         u32 compute_storage_buffers{has_task ? 4U : 1U};
         u32 compute_sampled_images{};
+        u32 compute_samplers{};
         u32 compute_resources{compute_storage_buffers};
         for (size_t index = 1; index < Maxwell::MaxShaderProgram; ++index) {
             if (key.unique_hashes[index] == 0) {
@@ -2689,7 +2754,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             const bool emulated{index == mesh_index || (has_task && index == 1)};
             const auto add = [&](const auto& descriptors, u32* category) {
                 const u32 count{Shader::NumDescriptors(descriptors)};
-                output_binding += count;
+                output_binding += static_cast<u32>(descriptors.size());
                 if (emulated) {
                     compute_resources += count;
                     if (category) {
@@ -2703,14 +2768,20 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             add(info.image_buffer_descriptors, nullptr);
             add(info.texture_descriptors, &compute_sampled_images);
             add(info.image_descriptors, nullptr);
+            if (emulated) {
+                compute_samplers += Shader::NumDescriptors(info.texture_descriptors);
+            }
         }
         if (compute_storage_buffers > device.GetMaxPerStageDescriptorStorageBuffers() ||
             compute_sampled_images > device.GetMaxPerStageDescriptorSampledImages() ||
+            compute_samplers > device.GetMaxPerStageDescriptorSamplers() ||
             compute_resources > device.GetMaxPerStageResources()) {
-            LOG_WARNING(Render_Vulkan,
-                        "Mesh emulation skipped: {} storage buffers, {} sampled images and {} "
-                        "resources exceed the compute stage limits",
-                        compute_storage_buffers, compute_sampled_images, compute_resources);
+            LOG_WARNING(
+                Render_Vulkan,
+                "Mesh emulation skipped: {} storage buffers, {} sampled images, {} samplers "
+                "and {} resources exceed the compute stage limits",
+                compute_storage_buffers, compute_sampled_images, compute_samplers,
+                compute_resources);
             return nullptr;
         }
         mesh_emulation.emplace();
@@ -2828,8 +2899,14 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                 : (reused[index] ? reused[index].get() : recorded[index].get())};
         std::vector<u8> runtime_key;
         std::shared_ptr<const StageCache::Emitted> emitted;
+        u32 sampled_array_limit{};
+        for (const auto& desc : program.info.texture_descriptors) {
+            if (desc.is_descriptor_array || desc.count > 1) {
+                sampled_array_limit = (std::max)(sampled_array_limit, desc.count);
+            }
+        }
         if (translation) {
-            runtime_key = StageCache::RuntimeKey(runtime_info, binding);
+            runtime_key = StageCache::RuntimeKey(runtime_info, binding, sampled_array_limit);
             if (reused[index]) {
                 emitted = stage_cache.FindEmitted(*reused[index], runtime_key);
             }
@@ -2848,6 +2925,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                     static_cast<u32>(env.StartAddress() + sizeof(Shader::ProgramHeader))};
                 Shader::Maxwell::Flow::CFG cfg(env, pools.flow_block, cfg_offset, index == 0);
                 program = TranslateProgram(pools.inst, pools.block, env, cfg, host_info);
+                if (sampled_array_limit != 0) {
+                    Shader::Optimization::LimitSampledTextureArrayElements(program,
+                                                                           sampled_array_limit);
+                }
             }
             if (mesh_emulation &&
                 (program.stage == Shader::Stage::Mesh || program.stage == Shader::Stage::Task)) {
@@ -3619,9 +3700,17 @@ vk::PipelineCache PipelineCache::LoadVulkanPipelineCache(const std::filesystem::
         file.read(cache_data.data(), cache_size);
 
         LOG_INFO(Render_Vulkan,
-                 "Loaded Vulkan driver pipeline cache: ", Common::FS::PathToUTF8String(filename));
+                 "Loaded Vulkan driver pipeline cache: {}", Common::FS::PathToUTF8String(filename));
 
-        return create_pipeline_cache(cache_size, cache_data.data());
+        try {
+            return create_pipeline_cache(cache_size, cache_data.data());
+        } catch (const vk::Exception& e) {
+            LOG_WARNING(Render_Vulkan,
+                        "Driver rejected Vulkan pipeline cache {} ({}); starting empty",
+                        Common::FS::PathToUTF8String(filename), e.what());
+            Common::FS::RemoveFile(filename);
+            return create_pipeline_cache(0, nullptr);
+        }
 
     } catch (const std::ios_base::failure& e) {
         LOG_ERROR(Common_Filesystem, "{}", e.what());

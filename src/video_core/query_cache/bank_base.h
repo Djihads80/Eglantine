@@ -3,10 +3,12 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <deque>
 #include <utility>
 
+#include "common/assert.h"
 #include "common/common_types.h"
 
 namespace VideoCommon {
@@ -15,8 +17,14 @@ class BankBase {
 protected:
     const size_t base_bank_size{};
     size_t bank_size{};
-    std::atomic<size_t> references{};
     size_t current_slot{};
+    // Queries take their slots' references where they are recorded (the GPU thread) and drop them
+    // where their results land (the fencing thread), a report at a time: one counter each, on its
+    // own cache line, so neither thread pulls the line from the other at every report.
+    alignas(64) std::atomic<size_t> added{};
+    alignas(64) std::atomic<size_t> dropped{};
+    /// Keeps a derived bank's members off dropped's line (MSVC's layout puts them right after).
+    std::array<char, 64 - sizeof(std::atomic<size_t>)> dropped_padding{};
 
 public:
     explicit BankBase(size_t bank_size_) : base_bank_size{bank_size_}, bank_size(bank_size_) {}
@@ -33,7 +41,8 @@ public:
 
     virtual void Reset() {
         current_slot = 0;
-        references = 0;
+        added = 0;
+        dropped = 0;
         bank_size = base_bank_size;
     }
 
@@ -42,14 +51,20 @@ public:
     }
 
     void AddReference(size_t how_many = 1) {
-        references.fetch_add(how_many, std::memory_order_relaxed);
+        added.fetch_add(how_many, std::memory_order_relaxed);
     }
 
     void CloseReference(size_t how_many = 1) {
-        if (how_many > references.load(std::memory_order_relaxed)) {
-            UNREACHABLE();
-        }
-        references.fetch_sub(how_many, std::memory_order_relaxed);
+        dropped.fetch_add(how_many, std::memory_order_relaxed);
+    }
+
+    /// The references taken and not dropped yet. Called where references are taken, so every
+    /// reference dropped was taken before: more dropped than taken is a double free.
+    size_t References() const {
+        const size_t dropped_now = dropped.load(std::memory_order_acquire);
+        const size_t added_now = added.load(std::memory_order_acquire);
+        ASSERT(dropped_now <= added_now);
+        return added_now - dropped_now;
     }
 
     void Close() {
@@ -61,7 +76,7 @@ public:
     }
 
     bool IsDead() const {
-        return IsClosed() && references == 0;
+        return IsClosed() && References() == 0;
     }
 };
 

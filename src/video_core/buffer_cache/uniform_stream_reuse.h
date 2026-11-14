@@ -47,11 +47,15 @@ public:
     static constexpr u32 MaxBytes = 4096; // BufferCache's DEFAULT_SKIP_CACHE_SIZE
     static constexpr size_t NumStages = 5;
     static constexpr size_t NumSlots = 18; // Maxwell constant buffers per stage
+    static constexpr u16 MissStreak = 8;
+    static constexpr u16 DirectBinds = 64;
 
     struct Slot {
         Ref ref{};
         u64 tick{};
         u32 size{}; // 0: nothing streamed yet
+        u16 misses{};
+        u16 direct{};
         std::array<u8, MaxBytes> bytes{};
     };
 
@@ -60,11 +64,15 @@ public:
             for (Slot& slot : stage) {
                 slot.size = 0;
                 slot.tick = 0;
+                slot.misses = 0;
+                slot.direct = 0;
             }
         }
         for (Slot& slot : compute_slots) {
             slot.size = 0;
             slot.tick = 0;
+            slot.misses = 0;
+            slot.direct = 0;
         }
     }
 
@@ -103,6 +111,16 @@ template <class Runtime, class DeviceMemory>
     }
     Reuse& reuse = UniformStreamReuseState<typename Runtime::StreamUniformRef>();
     typename Reuse::Slot& slot = reuse.slots[stage][index];
+    if (slot.direct != 0) {
+        --slot.direct;
+        device_memory.ReadBlockUnsafe(device_addr, slot.bytes.data(), size);
+        slot.size = size;
+        const auto span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
+        std::memcpy(span.data(), slot.bytes.data(), size);
+        slot.ref = runtime.LastStreamUniformRef();
+        slot.tick = runtime.CurrentTick();
+        return true;
+    }
     u8* const scratch = reuse.scratch.data();
     device_memory.ReadBlockUnsafe(device_addr, scratch, size);
 
@@ -120,6 +138,7 @@ template <class Runtime, class DeviceMemory>
         }
     }
     if (same_tick) {
+        slot.misses = 0;
         runtime.RebindStreamUniform(slot.ref, size);
         return true;
     }
@@ -128,9 +147,15 @@ template <class Runtime, class DeviceMemory>
     slot.ref = runtime.LastStreamUniformRef();
     // After the allocation: the tick the stream region is tagged with is the one current now.
     slot.tick = runtime.CurrentTick();
-    if (!same_bytes) {
+    if (same_bytes) {
+        slot.misses = 0;
+    } else {
         slot.size = size;
         std::memcpy(slot.bytes.data(), scratch, size);
+        if (++slot.misses >= Reuse::MissStreak) {
+            slot.misses = 0;
+            slot.direct = Reuse::DirectBinds;
+        }
     }
     return true;
 }

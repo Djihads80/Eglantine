@@ -313,16 +313,6 @@ size_t Maxwell3D::EstimateIndexBufferSize() {
     return std::min<size_t>(memory_manager.GetMemoryLayoutSize(start_address, byte_size * max_size) / byte_size, lower_cap);
 }
 
-u32 Maxwell3D::ProcessShadowRam(u32 method, u32 argument) {
-    // Keep track of the register value in shadow_state when requested.
-    auto const c = shadow_state.shadow_ram_control;
-    if (c == Regs::ShadowRamControl::Track || c == Regs::ShadowRamControl::TrackWithFilter)
-        return shadow_state.reg_array[method] = argument;
-    else if (c == Regs::ShadowRamControl::Replay)
-        return shadow_state.reg_array[method];
-    return argument;
-}
-
 void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
     const auto control = shadow_state.shadow_ram_control;
     // Sunk methods are state writes only (not in execution_mask): skip unchanged values, as
@@ -346,18 +336,6 @@ void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
             process(method, value);
     }
     method_sink.clear();
-}
-
-void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
-    // The instances after the first are drawn together once their loop ends, and they must see
-    // the state they were begun with: NVN's draw macros reset the base instance (and its copy in
-    // c[0][0x644]) right after the loop, before the macro returns.
-    if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method)) [[unlikely]] {
-        draw_manager.DrawDeferred(*this, true);
-    }
-    regs.reg_array[method] = argument;
-    for (auto const& table : dirty.tables)
-        dirty.flags[table[method]] = true;
 }
 
 void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call) {
@@ -492,6 +470,14 @@ void Maxwell3D::CallStateMethod(Core::System&, u32 method, u32 method_argument) 
 void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
     if (front_macros && !VideoCommon::GpuSplit::OnBackThread()) [[unlikely]] {
         ReleaseFront();
+    }
+    if (fast_maxwell3d && executing_macro == 0 && method < MacroRegistersStart &&
+        !execution_mask[method] && !VideoCommon::Nx2Perf::Verify()) {
+        const u32 argument = ProcessShadowRam(method, method_argument);
+        if (!SkipSameValueWrites() || regs.reg_array[method] != argument) {
+            ProcessDirtyRegisters(method, argument);
+        }
+        return;
     }
     if (!fast_maxwell3d || executing_macro != 0 || method >= MacroRegistersStart ||
         method == MAXWELL3D_REG_INDEX(shadow_ram_control)) {
@@ -1149,6 +1135,10 @@ struct Maxwell3D::FrontState {
     /// change of program epoch makes every entry until then a writer.
     bool draw_window_writer{};
     u64 draw_window_epoch{};
+    /// By start in the macro code of data_ram_generation: 0 unknown, 1 the macro can't use the
+    /// data RAM, 2 it can.
+    std::vector<u8> data_ram_macros;
+    u64 data_ram_generation{~u64{0}};
 };
 
 namespace {
@@ -1505,6 +1495,10 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
 // split stopped (accuracy settings changed mid-game). Hand the macros back: the front's copy
 // goes stale from now on, and a restart copies the registers again (Front).
 void Maxwell3D::ReleaseFront() {
+    // The engine's macros run unguarded from now on.
+    if (grid_marker.set) {
+        Nx2ListGrid::ResolveCells(grid_marker, native_data_ram);
+    }
     executing_macro = front->executing_macro;
     macro_params = std::move(front->parameters);
     std::memcpy(shadow_state.reg_array.data(), front->shadow.data(), sizeof(front->shadow));
@@ -1868,6 +1862,25 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
     auto& engine = GetNativeMacroEngine();
     const auto positions = GetNativeMacroPositions();
     const u32 start = positions[((method - MacroRegistersStart) >> 1) % positions.size()];
+    // List-fed grid markers (nx2_list_grid.h) in the data RAM: a 3D macro that can read it gets
+    // the real words first.
+    if (grid_marker.set && grid_marker.In(native_data_ram)) {
+        if (fs.data_ram_generation != engine.native_code_generation) {
+            fs.data_ram_macros.assign(engine.native_code.size() / 3, 0);
+            fs.data_ram_generation = engine.native_code_generation;
+        }
+        if (start < fs.data_ram_macros.size()) {
+            u8& uses = fs.data_ram_macros[start];
+            if (uses == 0) {
+                uses = TuringMacroInterpreter::AnalyzeEffects(engine.native_code, start).data_ram
+                           ? 2
+                           : 1;
+            }
+            if (uses == 2) {
+                Nx2ListGrid::ResolveCells(grid_marker, native_data_ram);
+            }
+        }
+    }
     const auto& options = FrontMacroOptions();
     const bool profile = Profile::Enabled();
     // EDEN_NX2_MACRO_TRACE=<macro index>: log the first 32 calls of one macro (its parameters,

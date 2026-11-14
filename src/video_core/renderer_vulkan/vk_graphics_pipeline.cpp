@@ -575,17 +575,15 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             }
             return value;
         }};
+        const auto cbuf_address{[&cbufs](u32 cbuf) -> GPUVAddr {
+            return cbuf < cbufs.size() && cbufs[cbuf].enabled ? cbufs[cbuf].address : GPUVAddr{};
+        }};
         const auto read_handle{[&](const auto& desc, u32 index) {
             if (desc.handle_program != ~0U) {
                 // Read by the shader from a storage buffer: computed for this draw.
                 return TexturePair(VideoCommon::EvaluateTextureHandle(
-                                       info, desc.handle_program, *gpu_memory,
-                                       [&](u32 cbuf) -> GPUVAddr {
-                                           return cbuf < cbufs.size() && cbufs[cbuf].enabled
-                                                      ? cbufs[cbuf].address
-                                                      : GPUVAddr{};
-                                       },
-                                       device.GetStorageBufferAlignment()),
+                                       info, desc.handle_program, *gpu_memory, cbuf_address,
+                                       device.GetStorageBufferAlignment(), index),
                                    via_header_index);
             }
             ASSERT(cbufs[desc.cbuf_index].enabled);
@@ -628,16 +626,26 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                 add_image(desc, false);
             }
         }
+        const auto append_texture = [&](const auto& handle) {
+            views.push_back({handle.first});
+            if (handle.second != last_sampler_handle) {
+                last_sampler_handle = handle.second;
+                last_sampler = texture_cache.GetSamplerId(handle.second, false);
+            }
+            samplers.push_back(last_sampler);
+        };
         for (const auto& desc : info.texture_descriptors) {
+            if (desc.count > 1 && desc.handle_program != ~0U) {
+                VideoCommon::EvaluateTextureHandles(
+                    info, desc.handle_program, *gpu_memory, cbuf_address,
+                    device.GetStorageBufferAlignment(), desc.count,
+                    [&](u32, u32 raw) { append_texture(TexturePair(raw, via_header_index)); });
+                continue;
+            }
             for (u32 index = 0; index < desc.count; ++index) {
-                const auto handle{read_handle(desc, index)};
-                views.push_back({handle.first});
-
-                if (handle.second != last_sampler_handle) {
-                    last_sampler_handle = handle.second;
-                    last_sampler = texture_cache.GetSamplerId(handle.second, false);
-                }
-                samplers.push_back(last_sampler);
+                append_texture(VideoCommon::HandleIsStoragePointer(info, desc, index)
+                                   ? VideoCommon::NULL_TEXTURE_HANDLE
+                                   : read_handle(desc, index));
             }
         }
         if constexpr (Spec::has_images) {

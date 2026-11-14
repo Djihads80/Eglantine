@@ -366,10 +366,10 @@ Id CasFunction(EmitContext& ctx, Operation operation, Id value_type) {
         result = ctx.OpFAdd(value_type, op_a, op_b);
         break;
     case Operation::FPMin:
-        result = ctx.OpFMin(value_type, op_a, op_b);
+        result = ctx.OpNMin(value_type, op_a, op_b);
         break;
     case Operation::FPMax:
-        result = ctx.OpFMax(value_type, op_a, op_b);
+        result = ctx.OpNMax(value_type, op_a, op_b);
         break;
     default:
         break;
@@ -465,13 +465,12 @@ Id DescType(EmitContext& ctx, Id sampled_type, Id pointer_type, u32 count) {
         return pointer_type;
     }
 }
-// EDEN_NX2_LEAN_SSBO=0 turns it off: the global memory helpers are kept as calls and route
-// with one switch. Inlined at each of their calls, a program with ~30 candidate buffers took
-// NVIDIA's compiler 2.4 s (Ocarina's foliage compute programs; 0.6 s this way, same accesses).
+// Keep branch-based global accesses and let the driver inline the helpers. The smaller
+// call/switch form trades runtime optimization for compilation time: EDEN_NX2_LEAN_SSBO=1.
 bool LeanGlobalMemory() {
     static const bool enabled = [] {
         const char* value = std::getenv("EDEN_NX2_LEAN_SSBO");
-        return value == nullptr || value[0] != '0';
+        return value != nullptr && value[0] == '1';
     }();
     return enabled;
 }
@@ -1750,7 +1749,13 @@ void EmitContext::DefineInputs(const IR::Program& program) {
         layer = DefineInput(*this, U32[1], false, spv::BuiltIn::Layer);
         Decorate(layer, spv::Decoration::Flat);
     }
-    if (loads.AnyComponent(IR::Attribute::PositionX)) {
+    const bool noperspective_as_smooth{
+        stage == Stage::Fragment && runtime_info.scaled_noperspective_inputs &&
+        std::ranges::any_of(info.interpolation, [](Interpolation mode) {
+            return mode == Interpolation::NoPerspective;
+        })};
+    if (loads.AnyComponent(IR::Attribute::PositionX) ||
+        info.passthrough.AnyComponent(IR::Attribute::PositionX) || noperspective_as_smooth) {
         const bool is_fragment{stage == Stage::Fragment};
         if (!is_fragment && profile.has_broken_spirv_position_input) {
             need_input_position_indirect = true;
@@ -1854,7 +1859,12 @@ void EmitContext::DefineInputs(const IR::Program& program) {
             case Interpolation::Smooth:
                 break;
             case Interpolation::NoPerspective:
-                Decorate(id, spv::Decoration::NoPerspective);
+                // The previous stage may write it times Position.w (noperspective_outputs).
+                if (!runtime_info.scaled_noperspective_inputs) {
+                    Decorate(id, spv::Decoration::NoPerspective);
+                } else {
+                    noperspective_as_smooth_inputs[index] = true;
+                }
                 break;
             case Interpolation::Flat:
                 Decorate(id, spv::Decoration::Flat);

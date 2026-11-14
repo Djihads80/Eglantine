@@ -44,3 +44,22 @@ TEST_CASE("GPUDirtyMemoryManager gathers nothing until a write and every write a
     CHECK(runs[1] == std::pair<PAddr, size_t>{0x40040, 64});
     CHECK(GatherAll(manager).empty());
 }
+
+TEST_CASE("GPUDirtyMemoryManager retains writes across tracking-page boundaries",
+          "[core][gpu_dirty_memory]") {
+    Core::GPUDirtyMemoryManager manager;
+    manager.Collect(0x107f0, 32);
+    auto runs = GatherAll(manager);
+    REQUIRE(runs.size() == 2);
+    CHECK(runs[0] == std::pair<PAddr, size_t>{0x107c0, 64});
+    CHECK(runs[1] == std::pair<PAddr, size_t>{0x10800, 64});
+    CHECK(GatherAll(manager).empty());
+
+    manager.Collect(0x20000, 0x3000);
+    runs = GatherAll(manager);
+    REQUIRE(runs.size() == 6);
+    for (size_t i = 0; i < runs.size(); ++i) {
+        CHECK(runs[i] == std::pair<PAddr, size_t>{0x20000 + i * 0x800, 0x800});
+    }
+    CHECK(GatherAll(manager).empty());
+}

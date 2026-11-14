@@ -51,6 +51,19 @@ struct WrittenPages {
 
 } // namespace
 
+TEST_CASE("GPU-written range queries include partial pages and unknown addresses",
+          "[video_core][nx2_written_pages]") {
+    WrittenPages pages;
+    CHECK_FALSE(Tegra::Nx2MayBeGpuWritten(0x1000, 1));
+    Tegra::Nx2MarkGpuWritten(0x2000, 4);
+    CHECK(Tegra::Nx2MayBeGpuWritten(0x2001, 1));
+    CHECK(Tegra::Nx2MayBeGpuWritten(0x1fff, 2));
+    CHECK_FALSE(Tegra::Nx2MayBeGpuWritten(0x1000, 0x1000));
+    CHECK_FALSE(Tegra::Nx2MayBeGpuWritten(0x2000, 0));
+    CHECK(Tegra::Nx2MayBeGpuWritten(AddressLimit, 1));
+    CHECK(Tegra::Nx2MayBeGpuWritten(std::numeric_limits<u64>::max(), 2));
+}
+
 TEST_CASE("GPU-written page marking preserves boundaries and wrapping arithmetic",
           "[video_core][nx2_written_pages]") {
     constexpr u64 Max = std::numeric_limits<u64>::max();

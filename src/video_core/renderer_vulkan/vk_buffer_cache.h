@@ -6,7 +6,11 @@
 
 #pragma once
 
+#include <array>
 #include <limits>
+#include <optional>
+#include <span>
+#include <utility>
 
 #include <boost/container/small_vector.hpp>
 
@@ -300,6 +304,34 @@ public:
         return max_dynamic_storage_buffers;
     }
 
+    // List-fed grid macros (nx2_list_grid.h): copies of a command list's three words made at the
+    // list's place in the stream, by keep id. The front reads them back when it needs the values,
+    // uploads that carry their markers get them copied over, and dispatches take their grid there.
+    struct ListKeep {
+        u64 keep_id{};
+        u64 tick{}; ///< The submission that copies them
+        bool verified{};
+        u64 hash{};                ///< If verified: the macro the list fed
+        std::array<u32, 3> real{}; ///< If verified: the words the front read the old way
+    };
+    /// Records, outside the render pass, the copy of the three words at `offset` of `source`.
+    /// Verify mode: `real` are the words the front read the old way for the macro `hash`, else
+    /// empty.
+    void KeepListWords(u64 keep_id, VkBuffer source, VkDeviceSize offset, u64 hash,
+                       std::span<const u32> real);
+    /// The keep id ending in `keep_bits` whose slot still holds its words.
+    [[nodiscard]] std::optional<u64> FindKeptList(u32 keep_bits) const;
+    /// The kept words (or with `arguments`, the dispatch arguments made from them), after waiting
+    /// for their copy. False if the slot holds another list.
+    [[nodiscard]] bool ReadKeptListWords(u64 keep_id, std::span<u32> words, bool arguments = false);
+    /// Verify mode: the kept list `keep_id`, if its words were also read the old way.
+    [[nodiscard]] const ListKeep* KeptVerify(u64 keep_id) const;
+    /// Records the copy of kept word `index` over the word at `offset` of `destination`.
+    void CopyKeptWord(u64 keep_id, u32 index, VkBuffer destination, VkDeviceSize offset);
+    /// Where the kept list's dispatch arguments are: x, then y and z as 16 bits, as
+    /// KeplerCompute::DispatchNativeCompute takes them from a QMD.
+    [[nodiscard]] std::pair<VkBuffer, VkDeviceSize> KeptGrid(u64 keep_id) const;
+
 private:
     void BindBuffer(const Buffer& buffer, u32 offset, u32 size) {
         const VkBuffer handle = buffer.Handle();
@@ -326,6 +358,21 @@ private:
     std::shared_ptr<QuadStripIndexBuffer> quad_strip_index_buffer;
 
     vk::Buffer null_buffer;
+
+    /// Kept list words: a host-readable slot per keep id (modulo the slot count) holding the
+    /// three words at 0 and the dispatch arguments at LIST_KEEP_GRID (ListGridArgumentsPass).
+    static constexpr u32 LIST_KEEP_SLOTS = 1024;
+    static constexpr u32 LIST_KEEP_SLOT_BYTES = 32;
+    static constexpr VkDeviceSize LIST_KEEP_GRID = 16;
+    void EnsureListKeepBuffer();
+    [[nodiscard]] static VkDeviceSize ListKeepOffset(u64 keep_id) {
+        return VkDeviceSize{keep_id % LIST_KEEP_SLOTS} * LIST_KEEP_SLOT_BYTES;
+    }
+    vk::Buffer list_keep_buffer;
+    std::unique_ptr<ListGridArgumentsPass> list_grid_arguments_pass;
+    DescriptorPool* list_pass_descriptor_pool{};
+    ComputePassDescriptorQueue* list_pass_descriptor_queue{};
+    std::array<ListKeep, LIST_KEEP_SLOTS> list_keeps{};
 
     std::unique_ptr<Uint8Pass> uint8_pass;
     std::unique_ptr<VertexRepackPass> vertex_repack_pass;

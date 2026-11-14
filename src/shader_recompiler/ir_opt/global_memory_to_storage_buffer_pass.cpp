@@ -1705,9 +1705,11 @@ size_t StorageBufferLimit(const HostTranslateInfo& host_info) {
     return limit;
 }
 
-void JoinStorageInfo(Info& base, Info& source, size_t limit) {
+std::vector<u32> JoinStorageInfo(Info& base, Info& source, size_t limit) {
+    base.requires_coherent_global_memory |= source.requires_coherent_global_memory;
     base.native_global_bounds |= source.native_global_bounds;
     auto& descriptors = base.storage_buffers_descriptors;
+    std::vector<u32> bindings;
     for (auto& desc : source.storage_buffers_descriptors) {
         auto it{std::ranges::find_if(descriptors, [&desc](const auto& existing) {
             return desc.cbuf_index == existing.cbuf_index &&
@@ -1716,13 +1718,84 @@ void JoinStorageInfo(Info& base, Info& source, size_t limit) {
         })};
         if (it != descriptors.end()) {
             it->is_written |= desc.is_written;
+            bindings.push_back(static_cast<u32>(it - descriptors.begin()));
             continue;
         }
         if (descriptors.size() >= limit) {
             throw NotImplementedException("Binding {} storage buffers to a stage that binds {}",
                                           descriptors.size() + 1, limit);
         }
+        bindings.push_back(static_cast<u32>(descriptors.size()));
         descriptors.push_back(desc);
+    }
+    return bindings;
+}
+
+void RemapStorageBindings(IR::Program& program, std::span<const u32> bindings) {
+    for (IR::Block* const block : program.post_order_blocks) {
+        for (IR::Inst& inst : block->Instructions()) {
+            // Each takes the binding as its first argument (see GlobalToStorage and Replace).
+            switch (inst.GetOpcode()) {
+            case IR::Opcode::LoadStorageU8:
+            case IR::Opcode::LoadStorageS8:
+            case IR::Opcode::LoadStorageU16:
+            case IR::Opcode::LoadStorageS16:
+            case IR::Opcode::LoadStorage32:
+            case IR::Opcode::LoadStorage64:
+            case IR::Opcode::LoadStorage128:
+            case IR::Opcode::WriteStorageU8:
+            case IR::Opcode::WriteStorageS8:
+            case IR::Opcode::WriteStorageU16:
+            case IR::Opcode::WriteStorageS16:
+            case IR::Opcode::WriteStorage32:
+            case IR::Opcode::WriteStorage64:
+            case IR::Opcode::WriteStorage128:
+            case IR::Opcode::StorageAtomicIAdd32:
+            case IR::Opcode::StorageAtomicSMin32:
+            case IR::Opcode::StorageAtomicUMin32:
+            case IR::Opcode::StorageAtomicSMax32:
+            case IR::Opcode::StorageAtomicUMax32:
+            case IR::Opcode::StorageAtomicInc32:
+            case IR::Opcode::StorageAtomicDec32:
+            case IR::Opcode::StorageAtomicAnd32:
+            case IR::Opcode::StorageAtomicOr32:
+            case IR::Opcode::StorageAtomicXor32:
+            case IR::Opcode::StorageAtomicExchange32:
+            case IR::Opcode::StorageAtomicCompareExchange32:
+            case IR::Opcode::StorageAtomicIAdd64:
+            case IR::Opcode::StorageAtomicSMin64:
+            case IR::Opcode::StorageAtomicUMin64:
+            case IR::Opcode::StorageAtomicSMax64:
+            case IR::Opcode::StorageAtomicUMax64:
+            case IR::Opcode::StorageAtomicAnd64:
+            case IR::Opcode::StorageAtomicOr64:
+            case IR::Opcode::StorageAtomicXor64:
+            case IR::Opcode::StorageAtomicExchange64:
+            case IR::Opcode::StorageAtomicIAdd32x2:
+            case IR::Opcode::StorageAtomicSMin32x2:
+            case IR::Opcode::StorageAtomicUMin32x2:
+            case IR::Opcode::StorageAtomicSMax32x2:
+            case IR::Opcode::StorageAtomicUMax32x2:
+            case IR::Opcode::StorageAtomicAnd32x2:
+            case IR::Opcode::StorageAtomicOr32x2:
+            case IR::Opcode::StorageAtomicXor32x2:
+            case IR::Opcode::StorageAtomicExchange32x2:
+            case IR::Opcode::StorageAtomicAddF32:
+            case IR::Opcode::StorageAtomicAddF16x2:
+            case IR::Opcode::StorageAtomicAddF32x2:
+            case IR::Opcode::StorageAtomicMinF16x2:
+            case IR::Opcode::StorageAtomicMinF32x2:
+            case IR::Opcode::StorageAtomicMaxF16x2:
+            case IR::Opcode::StorageAtomicMaxF32x2:
+                break;
+            default:
+                continue;
+            }
+            const IR::Value binding{inst.Arg(0)};
+            if (binding.IsImmediate() && binding.U32() < bindings.size()) {
+                inst.SetArg(0, IR::Value{bindings[binding.U32()]});
+            }
+        }
     }
 }
 

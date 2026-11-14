@@ -21,6 +21,7 @@
 #include "common/vector_math.h"
 #include "video_core/host_shaders/astc_decoder_comp_spv.h"
 #include "video_core/host_shaders/bc_encoder_comp_spv.h"
+#include "video_core/host_shaders/nx2_list_grid_arguments_comp_spv.h"
 #include "video_core/host_shaders/queries_prefix_scan_sum_comp_spv.h"
 #include "video_core/host_shaders/queries_prefix_scan_sum_nosubgroups_comp_spv.h"
 #include "video_core/host_shaders/resolve_conditional_render_comp_spv.h"
@@ -424,6 +425,51 @@ std::pair<VkBuffer, VkDeviceSize> Uint8Pass::Assemble(u32 num_vertices, VkBuffer
     });
     scheduler.InvalidateDescriptorBuffer();
     return {staging.buffer, staging.offset};
+}
+
+ListGridArgumentsPass::ListGridArgumentsPass(
+    const Device& device_, Scheduler& scheduler_, DescriptorPool& descriptor_pool_,
+    ComputePassDescriptorQueue& compute_pass_descriptor_queue_)
+    : ComputePass(device_, scheduler_, descriptor_pool_, INPUT_OUTPUT_DESCRIPTOR_SET_BINDINGS,
+                  INPUT_OUTPUT_DESCRIPTOR_UPDATE_TEMPLATE, INPUT_OUTPUT_BANK_INFO,
+                  COMPUTE_PUSH_CONSTANT_RANGE<sizeof(u32) * 2>,
+                  NX2_LIST_GRID_ARGUMENTS_COMP_SPV),
+      scheduler{scheduler_}, compute_pass_descriptor_queue{compute_pass_descriptor_queue_} {}
+
+void ListGridArgumentsPass::Convert(VkBuffer buffer, VkDeviceSize size, u32 words,
+                                    u32 arguments) {
+    compute_pass_descriptor_queue.Acquire(scheduler, 2);
+    compute_pass_descriptor_queue.AddBuffer(buffer, 0, size);
+    compute_pass_descriptor_queue.AddBuffer(buffer, 0, size);
+    const void* const descriptor_data{compute_pass_descriptor_queue.UpdateData()};
+    scheduler.RequestOutsideRenderPassOperationContext();
+    scheduler.Record([this, descriptor_data, words, arguments](vk::CommandBuffer cmdbuf) {
+        static constexpr VkMemoryBarrier READ_BARRIER{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+        };
+        static constexpr VkMemoryBarrier WRITE_BARRIER{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_HOST_READ_BIT,
+        };
+        const std::array<u32, 2> indices{words, arguments};
+        const VkDescriptorSet set = descriptor_allocator.Commit();
+        device.GetLogical().UpdateDescriptorSet(set, *descriptor_template, descriptor_data);
+        // After the copy of the words, and after earlier dispatches read the old arguments.
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, READ_BARRIER);
+        cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline);
+        cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, *layout, 0, set, {});
+        cmdbuf.PushConstants(*layout, VK_SHADER_STAGE_COMPUTE_BIT, indices);
+        cmdbuf.Dispatch(1, 1, 1);
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                               VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0,
+                               WRITE_BARRIER);
+    });
 }
 
 QuadIndexedPass::QuadIndexedPass(const Device& device_, Scheduler& scheduler_,

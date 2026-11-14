@@ -18,6 +18,7 @@ add_library(video_core STATIC
     buffer_cache/buffer_cache_base.h
     buffer_cache/buffer_cache.cpp
     buffer_cache/buffer_cache.h
+    buffer_cache/indirect_buffer.h
     buffer_cache/memory_tracker_base.h
     buffer_cache/usage_tracker.h
     buffer_cache/virtual_range_cache.h
@@ -113,6 +114,8 @@ add_library(video_core STATIC
     native_qmd.h
     native_query_trace.h
     nx2.h
+    nx2_list_grid.cpp
+    nx2_list_grid.h
     nx2_debug_control.cpp
     nx2_debug_control.h
     nx2_diag.h

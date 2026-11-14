@@ -122,6 +122,7 @@ protected:
 
     std::array<const ShaderInfo*, NUM_PROGRAMS> shader_infos{};
     bool last_shaders_valid = false;
+    u64 seen_stage_invalidation_serial{};
     /// Nx2Perf MacroReadWriterSet: Tegra::g_nx2_code_epoch read before shader_infos were last
     /// resolved (0: they are not valid), and the device code range of each program (size 0: none).
     u64 nx2_resolved_epoch{};

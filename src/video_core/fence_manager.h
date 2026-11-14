@@ -105,8 +105,13 @@ public:
                 uncommitted_operations.emplace_back(std::move(func));
             }
             pending_operations.emplace_back(std::move(uncommitted_operations));
-            uncommitted_operations.clear(); // moved-from: make it empty explicitly
-            uncommitted_operations.reserve(64);
+            if (!spare_operations.empty()) {
+                uncommitted_operations = std::move(spare_operations.back());
+                spare_operations.pop_back();
+            } else {
+                uncommitted_operations = OperationList{}; // moved-from: make it empty explicitly
+                uncommitted_operations.reserve(64);
+            }
         }
         pending_flushes.push_back(committed_flushes);
         QueueFence(new_fence);
@@ -118,8 +123,13 @@ public:
             rasterizer.FlushCommands();
         }
         if constexpr (can_async_check) {
+            // The fencing thread waits for the host GPU while it has fences: it needs waking (a
+            // system call) only when it waits for fences to be made.
+            const bool wake = fence_thread_waiting;
             guard.unlock();
-            cv.notify_all();
+            if (wake) {
+                cv.notify_all();
+            }
         }
         rasterizer.InvalidateGPUCache();
     }
@@ -259,7 +269,11 @@ private:
         while (!stop_token.stop_requested()) {
             {
                 std::unique_lock lock(guard);
-                cv.wait(lock, [&] { return stop_token.stop_requested() || !fences.empty(); });
+                cv.wait(lock, [&] {
+                    fence_thread_waiting = !stop_token.stop_requested() && fences.empty();
+                    return !fence_thread_waiting;
+                });
+                fence_thread_waiting = false;
                 if (stop_token.stop_requested()) [[unlikely]] {
                     return;
                 }
@@ -305,6 +319,16 @@ private:
                 for (auto& operation : released.operations) {
                     operation();
                 }
+                released.operations.clear();
+            }
+            {
+                std::scoped_lock lock{uncommitted_guard};
+                for (Released& released : batch) {
+                    if (spare_operations.size() < MaxSpareOperationLists &&
+                        released.operations.capacity() != 0) {
+                        spare_operations.push_back(std::move(released.operations));
+                    }
+                }
             }
             {
                 std::unique_lock lock(ring_guard);
@@ -324,6 +348,7 @@ private:
 
     static constexpr u8 TextureFlushes = 1;
     static constexpr u8 BufferFlushes = 2;
+    static constexpr size_t MaxSpareOperationLists = 32;
 
     /// committed: what CommitAsyncFlushes returned for this fence.
     void PopAsyncFlushes(u8 committed) {
@@ -400,6 +425,9 @@ private:
     using OperationList = std::vector<std::function<void()>>;
     OperationList uncommitted_operations;
     std::deque<OperationList> pending_operations;
+    /// Lists the fencing thread ran, kept with their capacity for the next fences (a list grew
+    /// from 64 operations at most fences: ~30 a fence at Ocarina of Time's water, in bursts).
+    std::vector<OperationList> spare_operations; ///< Guarded by uncommitted_guard
     std::deque<u8> pending_flushes; ///< Per fence: the caches that committed downloads
     u32 skipped_fences{}; ///< Empty fences skipped since the last one made (GPU thread only)
 
@@ -407,6 +435,7 @@ private:
     std::mutex ring_guard;
     std::mutex uncommitted_guard; ///< Guards uncommitted_operations
     std::condition_variable cv;
+    bool fence_thread_waiting{}; ///< The fencing thread waits on cv for fences (guarded by guard)
 
     std::jthread fence_thread;
 

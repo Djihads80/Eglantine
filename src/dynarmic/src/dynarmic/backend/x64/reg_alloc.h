@@ -8,7 +8,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <functional>
 #include <optional>
 
@@ -144,7 +146,7 @@ class RegAlloc final {
 public:
     using ArgumentInfo = std::array<Argument, IR::max_arg_count>;
     RegAlloc() noexcept = default;
-    RegAlloc(std::bitset<32> gpr_order, std::bitset<32> xmm_order) noexcept;
+    void Reset(std::bitset<32> new_gpr_order, std::bitset<32> new_xmm_order) noexcept;
 
     ArgumentInfo GetArgumentInfo(const IR::Inst* inst) noexcept;
     void RegisterPseudoOperation(const IR::Inst* inst) noexcept;
@@ -206,13 +208,30 @@ public:
     void ReleaseStackSpace(BlockOfCode& code, const size_t stack_space) noexcept;
 
     inline void EndOfAllocScope() noexcept {
-        // After every IR instruction: skip the locations it left alone.
-        for (auto& iter : hostloc_info)
-            if (!iter.IsReleased())
-                iter.ReleaseAll();
+        // Release only locations touched during this IR instruction instead of scanning all 102 slots.
+        u64 lo = dirty_lo;
+        dirty_lo = 0;
+        while (lo) {
+            const size_t idx = std::countr_zero(lo);
+            lo &= lo - 1;
+            if (!hostloc_info[idx].IsReleased())
+                hostloc_info[idx].ReleaseAll();
+            SetOccupied(idx, !hostloc_info[idx].values.empty());
+        }
+        u64 hi = dirty_hi;
+        dirty_hi = 0;
+        while (hi) {
+            const size_t idx = 64 + std::countr_zero(hi);
+            hi &= hi - 1;
+            if (!hostloc_info[idx].IsReleased())
+                hostloc_info[idx].ReleaseAll();
+            SetOccupied(idx, !hostloc_info[idx].values.empty());
+        }
+        DEBUG_ASSERT(std::all_of(hostloc_info.begin(), hostloc_info.end(), [](const auto& h) noexcept { return h.IsReleased(); }));
     }
     inline void AssertNoMoreUses() noexcept {
-        ASSERT(std::all_of(hostloc_info.begin(), hostloc_info.end(), [](const auto& i) noexcept { return i.IsEmpty(); }));
+        ASSERT((occupied_lo | occupied_hi) == 0);
+        DEBUG_ASSERT(std::all_of(hostloc_info.begin(), hostloc_info.end(), [](const auto& i) noexcept { return i.IsEmpty(); }));
     }
 #ifndef NDEBUG
     inline void EmitVerboseDebuggingOutput(BlockOfCode& code) noexcept {
@@ -252,11 +271,40 @@ private:
     void EmitMove(BlockOfCode& code, const size_t bit_width, const HostLoc to, const HostLoc from) noexcept;
     void EmitExchange(BlockOfCode& code, const HostLoc a, const HostLoc b) noexcept;
 
+    inline void MarkDirty(size_t idx) noexcept {
+        if (idx < 64) {
+            dirty_lo |= u64(1) << idx;
+        } else {
+            dirty_hi |= u64(1) << (idx - 64);
+        }
+    }
+    inline void MarkDirty(HostLoc loc) noexcept {
+        MarkDirty(size_t(loc));
+    }
+    inline void SetOccupied(size_t idx, bool occ) noexcept {
+        if (idx < 64) {
+            const u64 bit = u64(1) << idx;
+            occupied_lo = occ ? (occupied_lo | bit) : (occupied_lo & ~bit);
+        } else {
+            const u64 bit = u64(1) << (idx - 64);
+            occupied_hi = occ ? (occupied_hi | bit) : (occupied_hi & ~bit);
+        }
+    }
+    inline void SetOccupied(HostLoc loc, bool occ) noexcept {
+        SetOccupied(size_t(loc), occ);
+    }
+
 //data
+    static_assert(NonSpillHostLocCount + SpillCount <= 128);
     alignas(64) std::array<HostLocInfo, NonSpillHostLocCount + SpillCount> hostloc_info;
     std::bitset<32> gpr_order;
     std::bitset<32> xmm_order;
     size_t reserved_stack_space = 0;
+    u64 dirty_lo = 0;
+    u64 dirty_hi = 0;
+    u64 occupied_lo = 0;
+    u64 occupied_hi = 0;
+    mutable u32 touched_regs = 0;
 };
 
 }  // namespace Dynarmic::Backend::X64

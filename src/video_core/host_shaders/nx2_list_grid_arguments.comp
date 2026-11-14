@@ -1,0 +1,28 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#version 450
+
+// A kept command list's grid words (nx2_list_grid.h) as the dispatch arguments
+// KeplerCompute::DispatchNativeCompute would take from a QMD: x as 31 bits, y and z as 16.
+
+layout(local_size_x = 1) in;
+
+layout(std430, binding = 0) readonly buffer Words {
+    uint words[];
+};
+
+layout(std430, binding = 1) writeonly buffer Arguments {
+    uint arguments[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint word_index;
+    uint argument_index;
+};
+
+void main() {
+    arguments[argument_index] = words[word_index] & 0x7fffffffu;
+    arguments[argument_index + 1u] = words[word_index + 1u] & 0xffffu;
+    arguments[argument_index + 2u] = words[word_index + 2u] & 0xffffu;
+}

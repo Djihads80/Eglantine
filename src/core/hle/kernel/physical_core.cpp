@@ -4,11 +4,14 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <thread>
+#include "common/logging.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
+#include "common/thread.h"
 #include "core/core.h"
 #include "core/debugger/debugger.h"
 #include "core/hle/kernel/k_process.h"
@@ -18,6 +21,12 @@
 #include "core/hle/kernel/svc.h"
 
 namespace Kernel {
+
+namespace {
+// EDEN_NX2_IDLE_STATS=1: every 10 s, each core logs how often it went idle, how many of those
+// periods its poll caught, and how long blocked periods took to wake after the interrupt.
+const bool g_idle_stats = std::getenv("EDEN_NX2_IDLE_STATS") != nullptr;
+} // Anonymous namespace
 
 PhysicalCore::PhysicalCore(KernelCore& kernel, std::size_t core_index)
     : m_core_index{core_index}
@@ -226,8 +235,8 @@ void PhysicalCore::LogBacktrace(KernelCore& kernel) {
 
 void PhysicalCore::Idle(KernelCore& kernel) {
     // Guest job systems hand work between cores many times per frame; blocking at once adds the
-    // host's thread wake-up latency to every handoff. EDEN_NX2_IDLE_SPIN_US=<n>: poll for that
-    // many microseconds before blocking. Switch 2 titles poll 100 us by default outside Android
+    // host's thread wake-up latency to every handoff. EDEN_NX2_IDLE_SPIN_US=<n>: poll for up to
+    // that many microseconds before blocking. Switch 2 titles poll 100 us by default outside Android
     // (title 1's frames: 42 ms without, 35 ms with 50 us, 34 ms with 100 us, 36 ms with 300 us).
     static const long long spin_setting = [] {
         const char* text = std::getenv("EDEN_NX2_IDLE_SPIN_US");
@@ -242,16 +251,75 @@ void PhysicalCore::Idle(KernelCore& kernel) {
         spin_us = process != nullptr && process->IsSwitch2() ? 100 : 0;
 #endif
     }
-    const auto spin = std::chrono::microseconds{spin_us};
-    if (spin.count() > 0) {
-        const auto deadline = std::chrono::steady_clock::now() + spin;
-        while (!m_is_interrupted.load(std::memory_order_acquire) &&
-               std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::yield();
+    // That poll is a hardware wait on the interrupt flag (Common::WaitForFlag) rather than a spin
+    // of yields, and only as long as recent idle periods suggest it pays (Common::NextPollWindow):
+    // a core that keeps idling past the limit polls less, and blocks sooner.
+    const std::chrono::nanoseconds limit = std::chrono::microseconds{spin_us};
+    const auto start = std::chrono::steady_clock::now();
+    bool polled = false;
+    std::chrono::steady_clock::rep interrupt_time{};
+    if (limit.count() > 0) {
+        if (m_idle_poll.count() <= 0 || m_idle_poll > limit) {
+            m_idle_poll = limit;
         }
+        polled = Common::WaitForFlag(m_is_interrupted, start + m_idle_poll);
     }
-    std::unique_lock lk{m_guard};
-    m_on_interrupt.wait(lk, [this] { return m_is_interrupted.load(); });
+    if (!polled) {
+        std::unique_lock lk{m_guard};
+        m_on_interrupt.wait(lk, [this] { return m_is_interrupted.load(); });
+        // Under m_guard, as Interrupt writes it: no later interrupt can replace it yet.
+        interrupt_time = m_interrupt_time.load(std::memory_order_relaxed);
+    }
+    const auto end = std::chrono::steady_clock::now();
+    const auto poll = m_idle_poll;
+    if (limit.count() > 0) {
+        m_idle_poll = Common::NextPollWindow(m_idle_poll, end - start, limit);
+    }
+
+    if (!g_idle_stats) {
+        return;
+    }
+    if (m_stats_start == std::chrono::steady_clock::time_point{}) {
+        m_stats_start = end;
+    }
+    ++m_stats_idles;
+    m_stats_poll_sum += std::min<std::chrono::nanoseconds>(poll, end - start);
+    if (polled) {
+        ++m_stats_polled;
+    } else {
+        const std::chrono::steady_clock::time_point interrupt{
+            std::chrono::steady_clock::duration{interrupt_time}};
+        m_stats_blocked_wakes.push_back(end - std::max(interrupt, start));
+    }
+    if (end - m_stats_start < std::chrono::seconds{10}) {
+        return;
+    }
+    auto& wakes = m_stats_blocked_wakes;
+    const auto percentile = [&wakes](size_t percent) {
+        if (wakes.empty()) {
+            return 0.0;
+        }
+        const auto it = wakes.begin() + (wakes.size() - 1) * percent / 100;
+        std::nth_element(wakes.begin(), it, wakes.end());
+        return std::chrono::duration<double, std::micro>{*it}.count();
+    };
+    const double p50 = percentile(50);
+    const double p99 = percentile(99);
+    LOG_INFO(Core_ARM,
+             "Guest core {} idle over {:.1f} s: {} periods, {} woken while polling, {:.1f} us "
+             "polled on average; {} blocked, woken {:.1f} us (p50) {:.1f} us (p99) after the "
+             "interrupt; poll now {:.1f} us",
+             m_core_index, std::chrono::duration<double>{end - m_stats_start}.count(),
+             m_stats_idles, m_stats_polled,
+             std::chrono::duration<double, std::micro>{m_stats_poll_sum}.count() /
+                 static_cast<double>(m_stats_idles),
+             wakes.size(), p50, p99,
+             std::chrono::duration<double, std::micro>{m_idle_poll}.count());
+    m_stats_start = end;
+    m_stats_idles = 0;
+    m_stats_polled = 0;
+    m_stats_poll_sum = {};
+    wakes.clear();
 }
 
 bool PhysicalCore::IsInterrupted() const {
@@ -265,6 +333,11 @@ void PhysicalCore::Interrupt() {
     // Load members.
     auto* arm_interface = m_arm_interface;
     auto* thread = m_current_thread;
+
+    if (g_idle_stats) {
+        m_interrupt_time.store(std::chrono::steady_clock::now().time_since_epoch().count(),
+                               std::memory_order_relaxed);
+    }
 
     // Add interrupt flag.
     m_is_interrupted = true;

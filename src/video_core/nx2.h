@@ -69,6 +69,25 @@ inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
     }
 }
 
+// Every buffer-cache GPU write marks this bitmap before arming CPU read traps. Unknown ranges
+// conservatively require a cache lookup.
+[[nodiscard]] inline bool Nx2MayBeGpuWritten(u64 device_address, u64 size) {
+    if (size == 0) {
+        return false;
+    }
+    const u64 first = device_address >> Nx2WrittenPageBits;
+    const u64 last = (device_address + size - 1) >> Nx2WrittenPageBits;
+    if (last < first || last >= g_nx2_gpu_written_pages.size() * 64) {
+        return true;
+    }
+    for (u64 page = first; page <= last; ++page) {
+        if ((g_nx2_gpu_written_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // GPU-written device pages the front has read command lists from (same layout as above). The
 // buffer cache copies these pages into host memory right after the compute or copy work that
 // writes them and submits, so the front reads the copy once the GPU is done instead of draining

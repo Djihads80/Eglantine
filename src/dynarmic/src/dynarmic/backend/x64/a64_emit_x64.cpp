@@ -78,14 +78,14 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
     }
 
     code.EnableWriting();
-    new (&this->reg_alloc) RegAlloc{[this] {
+    this->reg_alloc.Reset([this] {
         std::bitset<32> gprs = any_gpr;
         if (conf.fastmem_pointer)
             gprs.reset(size_t(HostLoc::R13));
         if (conf.page_table)
             gprs.reset(size_t(HostLoc::R14));
         return gprs;
-    }(), any_xmm};
+    }(), any_xmm);
 
     A64EmitContext ctx{conf, reg_alloc, block, shared_labels};
 

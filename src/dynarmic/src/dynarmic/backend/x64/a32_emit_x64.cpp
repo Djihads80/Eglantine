@@ -103,7 +103,7 @@ A32EmitX64::BlockDescriptor A32EmitX64::Emit(IR::Block& block) {
     }
 
     code.EnableWriting();
-    new (&this->reg_alloc) RegAlloc([this] {
+    this->reg_alloc.Reset([this] {
         std::bitset<32> gprs{any_gpr};
         if (conf.fastmem_pointer)
             gprs.reset(size_t(HostLoc::R13));

@@ -7,7 +7,9 @@
 #pragma once
 
 #include <deque>
+#include <mutex>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "common/assert.h"
@@ -69,6 +71,13 @@ public:
 
     virtual void Free(size_t query_id) = 0;
 
+    /// Free for each id, as one batch.
+    virtual void FreeMany(std::span<const size_t> query_ids) {
+        for (const size_t query_id : query_ids) {
+            Free(query_id);
+        }
+    }
+
     size_t GetId() const {
         return id;
     }
@@ -121,17 +130,33 @@ protected:
         ReleaseQuery(query_id);
     }
 
+    virtual void FreeMany(std::span<const size_t> query_ids) override {
+        std::scoped_lock lk(guard);
+        for (const size_t query_id : query_ids) {
+            ReleaseQuery(query_id);
+        }
+    }
+
+    /// Called by the one thread that records reports (the GPU thread, or the split's back while it
+    /// runs). Free ids are taken from `reusable`, which only this thread touches, and moved there
+    /// from `old_queries` in batches: one lock per batch instead of one per query (a report per
+    /// draw builds two).
     template <typename... Args, typename = decltype(QueryType(std::declval<Args>()...))>
     size_t BuildQuery(Args&&... args) {
-        std::scoped_lock lk(guard);
-        if (!old_queries.empty()) {
-            size_t new_id = old_queries.front();
-            old_queries.pop_front();
-            new (&slot_queries[new_id]) QueryType(std::forward<Args>(args)...);
-            return new_id;
+        if (reusable_head == reusable.size()) {
+            reusable.clear();
+            reusable_head = 0;
+            std::scoped_lock lk(guard);
+            if (old_queries.empty()) {
+                const size_t new_id = slot_queries.size();
+                slot_queries.emplace_back(std::forward<Args>(args)...);
+                return new_id;
+            }
+            // Oldest first, as they were freed.
+            reusable.swap(old_queries);
         }
-        size_t new_id = slot_queries.size();
-        slot_queries.emplace_back(std::forward<Args>(args)...);
+        const size_t new_id = reusable[reusable_head++];
+        new (&slot_queries[new_id]) QueryType(std::forward<Args>(args)...);
         return new_id;
     }
 
@@ -146,7 +171,12 @@ protected:
 
     std::mutex guard;
     std::deque<QueryType> slot_queries;
-    std::deque<size_t> old_queries;
+    /// Free ids, oldest first, until BuildQuery takes them all: MSVC's deque of size_t allocated
+    /// a block every two pushes, and a report per draw frees two queries.
+    std::vector<size_t> old_queries;
+    /// Free ids BuildQuery took from old_queries, used from reusable_head (its thread only).
+    std::vector<size_t> reusable;
+    size_t reusable_head{};
 };
 
 } // namespace VideoCommon

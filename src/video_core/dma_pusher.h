@@ -113,6 +113,39 @@ inline CommandHeader BuildCommandHeader(BufferMethods method, u32 arg_count, Sub
     return result;
 }
 
+/// Keeps the blocks of the command lists' submit-time copies for reuse. The guest's submit
+/// thread allocated ~1000 a second, of up to hundreds of KiB, and the GPU thread freed them:
+/// in Ocarina of Time each free took the heap ~30 us of the GPU thread, and each allocation the
+/// submit thread almost as long.
+namespace CommandWordsPool {
+[[nodiscard]] void* Allocate(std::size_t bytes);
+void Deallocate(void* pointer, std::size_t bytes) noexcept;
+/// Frees the blocks kept for reuse (when a channel goes away).
+void Trim() noexcept;
+/// Bytes kept for reuse.
+[[nodiscard]] std::size_t PooledBytes() noexcept;
+} // namespace CommandWordsPool
+
+template <typename T>
+struct CommandWordsAllocator {
+    using value_type = T;
+
+    CommandWordsAllocator() noexcept = default;
+    template <typename U>
+    CommandWordsAllocator(const CommandWordsAllocator<U>&) noexcept {}
+
+    [[nodiscard]] T* allocate(std::size_t count) {
+        return static_cast<T*>(CommandWordsPool::Allocate(count * sizeof(T)));
+    }
+    void deallocate(T* pointer, std::size_t count) noexcept {
+        CommandWordsPool::Deallocate(pointer, count * sizeof(T));
+    }
+    template <typename U>
+    bool operator==(const CommandWordsAllocator<U>&) const noexcept {
+        return true;
+    }
+};
+
 struct CommandList final {
     CommandList() = default;
     explicit CommandList(std::size_t size) : command_lists(size) {}
@@ -125,7 +158,7 @@ struct CommandList final {
     std::vector<u64> submit_hashes;
     /// The entries' words when they were submitted (NX2), each entry's at submitted_offsets[i]:
     /// executed instead of the memory, which the game may already be refilling for a later frame.
-    std::vector<CommandHeader> submitted_words;
+    std::vector<CommandHeader, CommandWordsAllocator<CommandHeader>> submitted_words;
     std::vector<u32> submitted_offsets;
     /// Entries (ascending) not copied when submitted, because a GPU map still queued covers them:
     /// DmaPusher::Push copies them after the map, and until then they read memory.
@@ -134,6 +167,9 @@ struct CommandList final {
     /// that waited behind one, reads memory instead: games write the commands it runs before they
     /// release the acquire.
     u64 snapshot_suspensions = 0;
+    /// The snapshot copier's job that copies the words again (DmaPusher::QueueSnapshotCopy), 0
+    /// for none: the GPU thread waits for it before it parses or copies the list itself.
+    u64 copy_job = 0;
 };
 
 /// FNV-1a over pushbuffer words (EDEN_NX2_PB_CHECK).
@@ -220,8 +256,15 @@ public:
     void RecordParsedEntry(const CommandListHeader& header, std::span<const CommandHeader> commands);
     /// Whether the entry lies on device pages the GPU has written (NX2).
     bool IsGpuWrittenCommands(GPUVAddr address, size_t size);
-    /// Copies the list's words from memory again, as of suspension count `now`.
-    void RefreshSnapshot(CommandList& list, u64 now);
+    /// Copies the list's words from memory again, as of suspension count `now`, from entry
+    /// `first_entry` on (the entries before it ran already). Waits for the list's copier job first.
+    void RefreshSnapshot(CommandList& list, u64 now, size_t first_entry = 0);
+    /// RefreshSnapshot on the snapshot copier's thread. False when its queue is full (the caller
+    /// copies).
+    bool QueueSnapshotCopy(CommandList& list, u64 now);
+    /// Waits until the snapshot copier copied everything queued (before work that may change the
+    /// GPU's mappings, and before a channel goes away).
+    static void WaitForSnapshotCopies();
     /// Copies the list's deferred entries (CommandList::deferred_entries) from memory.
     void RefreshDeferredEntries(CommandList& list);
 
@@ -238,6 +281,13 @@ public:
     /// since. False when not all are current (or the list isn't GPU-written): the caller drains,
     /// flushes and reads guest memory.
     bool ReadGpuWrittenCommands(GPUVAddr address, u32 count);
+    /// List-fed grid macros (nx2_list_grid.h): the entry at `address` is the three GPU-written
+    /// parameters of a call the compute engine stores as markers. Returns whether it took them
+    /// without reading them (no wait for the back, the host GPU or a copy).
+    bool TakeListGrid(GPUVAddr address, u32 count);
+    /// The three words of the list kept as `keep_id`, after everything sent so far (a wait for
+    /// the back and the host GPU). False if they are no longer kept.
+    bool ReadListWords(GPUVAddr address, u64 keep_id, std::span<u32> words);
     /// Brings command list words the GPU wrote (still only in host buffers) to guest memory.
     void FlushGpuWrittenCommands(GPUVAddr address, size_t size);
 

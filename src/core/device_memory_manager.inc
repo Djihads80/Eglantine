@@ -8,6 +8,8 @@
 #include <chrono>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <type_traits>
 #include <algorithm>
 #include <vector>
@@ -158,7 +160,35 @@ struct DeviceMemoryManagerAllocator {
         return addr >= 0 && addr + size <= max_device_area;
     }
 
+    // The main allocator only hands out fresh space until it reaches the end of the address space,
+    // so a range freed and mapped again every frame would climb through it, and caches keyed by
+    // device address would see new memory each time. Freed blocks are kept for the next allocation
+    // of the same size instead, up to this many bytes.
+    static constexpr size_t max_recycled_bytes = 1ULL << 30;
+
+    std::mutex recycle_mutex;
+    std::vector<std::pair<DAddr, size_t>> recycled;
+    size_t recycled_bytes = 0;
+
     DAddr Allocate(size_t size) {
+        std::scoped_lock lock(recycle_mutex);
+        const auto it = std::find_if(recycled.rbegin(), recycled.rend(),
+                                     [size](const auto& block) { return block.second == size; });
+        if (it != recycled.rend()) {
+            const DAddr address = it->first;
+            recycled.erase(std::next(it).base());
+            recycled_bytes -= size;
+            return address;
+        }
+        if (const DAddr address = main_allocator.Allocate(size); address != 0) {
+            return address;
+        }
+        // Out of space: give the kept blocks back so the allocator can merge them.
+        for (const auto& [address, block_size] : recycled) {
+            main_allocator.Free(address, block_size);
+        }
+        recycled.clear();
+        recycled_bytes = 0;
         return main_allocator.Allocate(size);
     }
 
@@ -167,7 +197,15 @@ struct DeviceMemoryManagerAllocator {
     }
 
     void Free(DAddr b_address, size_t b_size) {
-        main_allocator.Free(b_address, b_size);
+        std::scoped_lock lock(recycle_mutex);
+        recycled.emplace_back(b_address, b_size);
+        recycled_bytes += b_size;
+        while (recycled_bytes > max_recycled_bytes) {
+            const auto [address, size] = recycled.front();
+            recycled.erase(recycled.begin());
+            recycled_bytes -= size;
+            main_allocator.Free(address, size);
+        }
     }
 };
 
@@ -319,6 +357,9 @@ void DeviceMemoryManager<Traits>::Unmap(DAddr address, size_t size) {
     size_t start_page_d = address >> Memory::YUZU_PAGEBITS;
     size_t num_pages = Common::AlignUp(size, Memory::YUZU_PAGESIZE) >> Memory::YUZU_PAGEBITS;
     device_inter->InvalidateRegion(address, size);
+    while (deferred_cached_updates.load(std::memory_order_acquire) != 0) {
+        std::this_thread::yield();
+    }
     std::scoped_lock lk(mapping_guard);
 
     tracked_entries.CommitRegion(start_page_d, start_page_d + num_pages); // should already be committed, but just in case

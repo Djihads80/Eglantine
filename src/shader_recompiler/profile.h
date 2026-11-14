@@ -89,6 +89,8 @@ struct Profile {
     bool has_broken_signed_operations{};
     /// Float controls break when fp16 is enabled
     bool has_broken_fp16_float_controls{};
+    /// Shared memory limit for compute shaders in bytes (0 = unknown).
+    u32 max_compute_shared_memory_size{};
     /// Declaring fp32 denorm flush to zero miscompiles on some drivers
     bool has_broken_fp32_denorm_flush{};
     /// Non-inlined task and mesh global-memory loads may return incorrect values.
@@ -108,6 +110,8 @@ struct Profile {
     bool has_broken_spirv_subgroup_shuffle{};
     /// The guest's HMMA.16816.F16 runs on a cooperative matrix, in compute shaders
     bool support_cooperative_hmma{};
+    /// Without the above, HMMA runs on 16x16x16 cooperative matrices through shared memory
+    bool support_cooperative_hmma_16x16x16{};
     bool has_broken_spirv_fragment_shuffle{};
     u32 max_subgroup_size{};
 

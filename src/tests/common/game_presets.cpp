@@ -7,6 +7,7 @@
 #include <thread>
 #ifdef _WIN32
 #include <windows.h>
+#undef LoadString
 #endif
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>

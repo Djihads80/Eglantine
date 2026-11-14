@@ -10,6 +10,9 @@
 #include <chrono>
 #include <optional>
 #include <span>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 
 #include <boost/container/static_vector.hpp>
 
@@ -18,6 +21,7 @@
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_list_grid.h"
 #include "video_core/ocarina_upscale.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_vulkan/blit_image.h"
@@ -109,6 +113,12 @@ public:
     GpuWrittenList ReadGpuWrittenCommandList(DAddr addr, std::span<u8> out,
                                              bool past_sync) override;
     void NoteGpuWrittenCommandListSynced(DAddr page) override;
+    [[nodiscard]] bool Nx2ListGridSupported() const override;
+    void Nx2KeepListWords(u64 keep_id, GPUVAddr address, u64 hash,
+                          std::span<const u32> real) override;
+    void Nx2ExpectKeptWord(DAddr device_addr, u64 keep_id, u32 index) override;
+    [[nodiscard]] bool Nx2ReadKeptListWords(u64 keep_id, std::span<u32> words) override;
+    [[nodiscard]] std::optional<u64> Nx2FindKeptWord(DAddr device_addr, u32 marker) override;
     bool MustFlushRegion(DAddr addr, u64 size,
                          VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
     VideoCore::RasterizerDownloadArea GetFlushArea(DAddr addr, u64 size) override;
@@ -208,6 +218,14 @@ private:
     void FrameDumpPass(const Framebuffer* framebuffer);
     /// Records the uniform and storage buffers of the current draw or dispatch for the frame dump.
     bool FrameDumpBuffers(bool compute, std::span<const u64> shader_hashes);
+    /// Verify mode (nx2_list_grid.h): an indirect dispatch's kept grid against the real one.
+    void VerifyKeptGrid(u64 keep_id);
+    /// AccelerateInlineToMemory for a write that carries list-fed grid markers: uploaded at once,
+    /// with the kept words copied over the markers on the host GPU.
+    void InlineKeptWords(DAddr device_addr, std::span<const u8> data,
+                         std::span<const Tegra::Nx2ListGrid::KeptPatch> patches);
+    /// Nx2ExpectKeptWord's words not yet written: keep id and word by device address (back).
+    std::unordered_map<DAddr, std::pair<u64, u32>> nx2_expected_words;
 
     /// Records the dynamic state of the draw being prepared with `pipeline` (null for
     /// DrawTexture's blit).

@@ -59,7 +59,7 @@ public:
     ~SamplesQueryBank() = default;
 
     void Reset() override {
-        ASSERT(references == 0);
+        ASSERT(References() == 0);
         VideoCommon::BankBase::Reset();
         if (device.IsHostQueryResetSupported()) {
             const auto& dev = device.GetLogical();
@@ -118,8 +118,10 @@ private:
     Scheduler& scheduler;
     const size_t index;
     vk::QueryPool query_pool;
-    std::array<u64, BANK_SIZE> host_results;
-    u64 last_used_tick{};
+    /// The fencing thread writes the results (Sync): on lines of their own, away from the
+    /// members the GPU thread reads at every report.
+    alignas(64) std::array<u64, BANK_SIZE> host_results;
+    alignas(64) u64 last_used_tick{};
 };
 
 using BaseStreamer = VideoCommon::SimpleStreamer<VideoCommon::HostQueryBase>;
@@ -515,6 +517,17 @@ private:
         ReleaseQuery(query_id);
     }
 
+    void FreeMany(std::span<const size_t> query_ids) override {
+        std::scoped_lock lk(guard);
+        for (const size_t query_id : query_ids) {
+            auto* query = GetQuery(query_id);
+            ApplyBankOp(query, [](SamplesQueryBank* bank, size_t start, size_t amount) {
+                bank->CloseReference(amount);
+            });
+            ReleaseQuery(query_id);
+        }
+    }
+
     void AbandonCurrentQuery() {
         if (!current_query) {
             return;
@@ -645,7 +658,7 @@ public:
     ~TFBQueryBank() = default;
 
     void Reset() override {
-        ASSERT(references == 0);
+        ASSERT(References() == 0);
         VideoCommon::BankBase::Reset();
     }
 

@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: 2021 Skyline Team and Contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
+
 #include "common/address_space.h"
 #include "common/assert.h"
 
@@ -294,6 +296,12 @@ ALLOC_MEMBER_CONST()::FlatAllocator(VaType virt_start_, VaType va_limit_)
 ALLOC_MEMBER(VaType)::Allocate(VaType size) {
     std::scoped_lock lock(this->block_mutex);
 
+    // Once the linear pass runs out, restart it where the free space at the end of the map begins.
+    // The gap search below never looks past the last block, and needs a mapped block to search.
+    if (current_linear_alloc_end + size > this->va_limit && this->blocks.back().Unmapped()) {
+        current_linear_alloc_end = std::max(virt_start, this->blocks.back().virt);
+    }
+
     VaType alloc_start{UnmappedVa};
     VaType alloc_end{current_linear_alloc_end + size};
 
@@ -336,7 +344,7 @@ ALLOC_MEMBER(VaType)::Allocate(VaType size) {
         current_linear_alloc_end = alloc_start + size;
     } else { // If linear allocation overflows the AS then find a gap
         if (this->blocks.size() <= 2) {
-            ASSERT_MSG(false, "Unexpected allocator state!");
+            return {}; // Nothing to search between: the linear pass already tried the free space
         }
 
         auto search_predecessor{std::next(this->blocks.begin())};

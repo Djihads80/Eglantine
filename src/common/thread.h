@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -114,5 +115,28 @@ void SetCurrentThreadToAllCores();
 
 void RefreshThreadPolicies();
 void PollThreadPolicies();
+
+/// How long to poll before blocking next time, after a wait of `waited` that polled `poll`, with
+/// `limit` the longest poll. This is the cpuidle-haltpoll governor's rule (Linux,
+/// drivers/cpuidle/governors/haltpoll.c): a wait a longer poll would have caught doubles the poll,
+/// and one longer than the limit, which no poll catches, halves it. The poll never drops below an
+/// eighth of the limit, so the quickest wake-ups stay cheap.
+constexpr std::chrono::nanoseconds NextPollWindow(std::chrono::nanoseconds poll,
+                                                  std::chrono::nanoseconds waited,
+                                                  std::chrono::nanoseconds limit) {
+    if (waited <= poll) {
+        return poll;
+    }
+    if (waited <= limit) {
+        return std::min(poll * 2, limit);
+    }
+    return std::max(poll / 2, limit / 8);
+}
+
+/// Waits until flag is true or the deadline passes, and returns the flag. Where the CPU has a
+/// user-mode wait on an address (MWAITX on AMD, UMWAIT on Intel) the thread waits in it: a store to
+/// the flag's cache line ends the wait within a few hundred nanoseconds, and the core neither
+/// issues instructions nor enters the OS meanwhile. Other CPUs yield until then.
+bool WaitForFlag(const std::atomic<bool>& flag, std::chrono::steady_clock::time_point deadline);
 
 } // namespace Common

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <span>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace Tegra {
@@ -251,6 +252,297 @@ public:
         }
         if (error.empty()) error = "instruction limit exceeded";
         return {false, pc, consumed, error};
+    }
+
+    /// What a call from `start` can do on any path through the code (each branch either way,
+    /// each loop any number of times), as Execute runs it: the methods it can write, each a
+    /// constant of the code unless `methods_known` is false, and whether it uses the data RAM.
+    struct Effects {
+        std::vector<Word> methods; ///< Ascending, each once
+        bool methods_known{true};
+        bool data_ram{};
+        std::vector<Word> instructions; ///< The PCs a call can run, ascending
+    };
+
+    static Effects AnalyzeEffects(std::span<const Word> code, Word start) {
+        // The values the code fixes, before an instruction runs: registers, carry, the method
+        // and its increment. Unknown values are always {false, 0}.
+        struct Value {
+            bool known;
+            Word value;
+            bool operator==(const Value&) const = default;
+        };
+        struct State {
+            std::array<Value, 24> regs;
+            Value carry, method, increment;
+            bool operator==(const State&) const = default;
+        };
+        // Where an instruction may continue: unchanged, at `pc` (a taken branch also sets
+        // whether it cancels an END), or nowhere (a branch that stops the call).
+        struct Flow {
+            enum Kind { Next, Jump, Branch, Stop } kind;
+            Word pc;
+            bool cancel_end;
+        };
+        constexpr Value unknown{false, 0};
+        const auto known = [](Word value) { return Value{true, value}; };
+        const Word count = static_cast<Word>(code.size() / 3);
+        Effects effects;
+        // By instruction, and whether an END before it makes it the call's last (pc * 2 + 1).
+        std::unordered_map<Word, State> states;
+        // By a loop's last instruction: where its loops start over.
+        std::unordered_map<Word, std::vector<Word>> loop_starts;
+        std::vector<Word> work;
+        const auto reach = [&](Word pc, bool last, const State& state) {
+            if (pc >= count) {
+                return; // The call fails there
+            }
+            const Word index = pc * 2 + (last ? 1U : 0U);
+            const auto [it, inserted] = states.try_emplace(index, state);
+            if (!inserted) {
+                State joined = it->second;
+                const auto join = [](Value& to, const Value& from) {
+                    if (to != from) to = Value{false, 0};
+                };
+                for (std::size_t i = 0; i < joined.regs.size(); ++i) {
+                    join(joined.regs[i], state.regs[i]);
+                }
+                join(joined.carry, state.carry);
+                join(joined.method, state.method);
+                join(joined.increment, state.increment);
+                if (joined == it->second) return;
+                it->second = joined;
+            }
+            work.push_back(index);
+        };
+        State entry;
+        entry.regs.fill(unknown); // Reading one before writing it fails the call
+        entry.carry = entry.method = entry.increment = known(0);
+        reach(start, false, entry);
+        while (!work.empty()) {
+            const Word index = work.back();
+            work.pop_back();
+            const Word pc = index / 2;
+            const bool last = (index & 1) != 0;
+            const State before = states.at(index);
+            const Decoded d = Decode({code[pc * 3 + 2], code[pc * 3 + 1], code[pc * 3]});
+            const auto get = [&d](const State& state, Word reg, Word lane) -> Value {
+                if (reg < 24) return state.regs[reg];
+                switch (reg) {
+                case 24: return Value{true, 0};
+                case 25: return Value{true, Word(std::int32_t(std::int16_t(d.imm[lane])))};
+                case 26: return Value{true, Word(std::int32_t(std::int16_t(d.imm[1 - lane])))};
+                case 27: return Value{true, (d.imm[0] << 16) | d.imm[1]};
+                default: return Value{false, 0}; // FIFO loads
+                }
+            };
+            // The lanes and outputs the predicate enables, both sets if its register is unknown.
+            std::array<Word, 2> masks{15, 15};
+            std::size_t mask_count = 1;
+            if (d.pred_mode) {
+                const Value predicate = get(before, d.pred_reg, 0);
+                masks = {d.mask_true, d.mask_false};
+                if (predicate.known) masks[0] = predicate.value ? d.mask_true : d.mask_false;
+                else mask_count = 2;
+            }
+            for (std::size_t m = 0; m < mask_count; ++m) {
+                const Word mask = masks[m];
+                State state = before;
+                std::array<Value, 2> xs{unknown, unknown}, ys{unknown, unknown};
+                for (Word lane = 0; lane < 2; ++lane) {
+                    if (mask & (1U << lane)) {
+                        xs[lane] = get(before, d.src_a[lane], lane);
+                        ys[lane] = get(before, d.src_b[lane], lane);
+                    }
+                }
+                std::array<Value, 2> alu{known(0), known(0)};
+                std::array<std::array<Flow, 2>, 2> flows{};
+                std::array<std::size_t, 2> flow_counts{1, 1}; // Flow::Next by default
+                for (Word lane = 0; lane < 2; ++lane) {
+                    if (!(mask & (1U << lane))) continue;
+                    const Value x = xs[lane], y = ys[lane];
+                    const bool both = x.known && y.known;
+                    const Word a = x.value, b = y.value, imm = d.imm[lane];
+                    auto& flow = flows[lane];
+                    auto& flow_count = flow_counts[lane];
+                    const auto taken = [&](Word op) {
+                        switch (op) {
+                        case 17: case 25: return std::int32_t(a) < std::int32_t(b);
+                        case 18: case 26: return a < b;
+                        case 19: case 27: return std::int32_t(a) <= std::int32_t(b);
+                        case 20: case 28: return a <= b;
+                        default: return a == b;
+                        }
+                    };
+                    Value value = known(0);
+                    switch (d.op[lane]) {
+                    case 0: case 2: {
+                        const Word result = d.op[lane] == 0 ? a + b : a - b;
+                        value = both ? known(result) : unknown;
+                        const bool carry = d.op[lane] == 0 ? result < a : result > a;
+                        state.carry = both ? known(carry) : unknown;
+                        break;
+                    }
+                    case 1: case 3:
+                        value = both && state.carry.known
+                                    ? known(d.op[lane] == 1 ? a + b + state.carry.value
+                                                            : a - b - state.carry.value)
+                                    : unknown;
+                        break;
+                    case 4: case 6: {
+                        const std::uint64_t product =
+                            d.op[lane] == 4 ? std::uint64_t(std::int64_t(std::int32_t(a))) *
+                                                  std::uint64_t(std::int64_t(std::int32_t(b)))
+                                            : std::uint64_t{a} * b;
+                        value = both ? known(Word(product)) : unknown;
+                        state.carry = both ? known(Word(product >> 32)) : unknown;
+                        break;
+                    }
+                    case 5: value = state.carry; break;
+                    case 8: value = x.known ? known(Word(std::countl_zero(a))) : unknown; break;
+                    case 9: value = both ? known(a << (b & 31)) : unknown; break;
+                    case 10: value = both ? known(a >> (b & 31)) : unknown; break;
+                    case 11:
+                        value = both ? known(Word(std::int32_t(a) >> (b & 31))) : unknown;
+                        break;
+                    case 12: value = both ? known(a & b) : unknown; break;
+                    case 13: value = both ? known(~(a & b)) : unknown; break;
+                    case 14: value = both ? known(a | b) : unknown; break;
+                    case 15: value = both ? known(a ^ b) : unknown; break;
+                    case 16: {
+                        const Word dest = (imm >> 10) & 63, bits = (imm >> 5) & 31;
+                        const Word bits_mask = (1U << bits) - 1;
+                        value = both && dest < 32
+                                    ? known((a & ~(bits_mask << dest)) |
+                                            (((b >> (imm & 31)) & bits_mask) << dest))
+                                    : unknown;
+                        break;
+                    }
+                    case 17: case 18: case 19: case 20: case 21:
+                        value = both ? known(taken(d.op[lane]) ? ~0U : 0) : unknown;
+                        break;
+                    case 22: value = unknown; break; // A register
+                    case 23:
+                        if (imm < 2) break;
+                        // Entered, or skipped with a count of 0. Its last instruction may start
+                        // it over: reached already, that instruction now continues here too.
+                        if (const Word end = pc + imm - 1; end < count) {
+                            auto& starts = loop_starts[end];
+                            if (std::ranges::find(starts, pc + 1) == starts.end()) {
+                                starts.push_back(pc + 1);
+                                for (const Word end_index : {end * 2, end * 2 + 1}) {
+                                    if (states.contains(end_index)) work.push_back(end_index);
+                                }
+                            }
+                        }
+                        flow_count = 0;
+                        if (!x.known || a != 0) flow[flow_count++] = {Flow::Next, 0, false};
+                        if (!x.known || a == 0) flow[flow_count++] = {Flow::Jump, pc + imm, false};
+                        break;
+                    case 24: flow[0] = {Flow::Jump, pc + (imm & 0x7fff), false}; break;
+                    case 25: case 26: case 27: case 28: case 29: {
+                        const auto offset = std::int32_t(imm << 19) >> 19;
+                        const Word target = Word(std::int32_t(pc) + offset);
+                        const bool jumps = taken(d.op[lane]) == bool(imm & 0x8000);
+                        flow_count = 0;
+                        if (!both || jumps) {
+                            const bool cancel_end = (imm & 0x4000) != 0;
+                            flow[flow_count++] = offset == -4096
+                                                     ? Flow{Flow::Stop, 0, false}
+                                                     : Flow{Flow::Branch, target, cancel_end};
+                        }
+                        if (!both || !jumps) flow[flow_count++] = {Flow::Next, 0, false};
+                        break;
+                    }
+                    case 30: effects.data_ram = true; value = unknown; break;
+                    case 31: effects.data_ram = true; break;
+                    default: break; // 7: the load barrier
+                    }
+                    alu[lane] = value;
+                    if (d.dst[lane] < 24) state.regs[d.dst[lane]] = value;
+                }
+                const auto output = [&](Word selector) -> Value {
+                    switch (selector) {
+                    case 1: return alu[0];
+                    case 2: return alu[1];
+                    case 5: return known(d.imm[0]);
+                    case 6: return known(d.imm[1]);
+                    case 8: return known(d.imm[0] >> 12);
+                    case 9: return known(d.imm[1] >> 12);
+                    case 10: return known((d.imm[0] << 16) | d.imm[1]);
+                    default: return unknown; // FIFO loads (the rest fail the call)
+                    }
+                };
+                for (Word lane = 0; lane < 2; ++lane) {
+                    if (!(mask & (4U << lane))) continue;
+                    if (d.out_method[lane]) {
+                        const Value address = output(d.out_method[lane]);
+                        state.method = address.known ? known(address.value & 0xfff) : unknown;
+                        state.increment =
+                            address.known ? known((address.value >> 12) & 15) : unknown;
+                    }
+                    if (d.out_emit[lane]) {
+                        if (state.method.known) effects.methods.push_back(state.method.value);
+                        else effects.methods_known = false;
+                        state.method = state.method.known && state.increment.known
+                                           ? known(state.method.value + state.increment.value)
+                                           : unknown;
+                    }
+                }
+                if (last) continue; // An END before this instruction ends the call after it
+                // Lane 1's control flow overrides lane 0's; a loop's last instruction may also
+                // start it over.
+                const auto loop = loop_starts.find(pc);
+                const std::vector<Word> repeats =
+                    loop != loop_starts.end() ? loop->second : std::vector<Word>{};
+                for (std::size_t i = 0; i < flow_counts[0]; ++i) {
+                    for (std::size_t j = 0; j < flow_counts[1]; ++j) {
+                        Word next = pc + 1;
+                        bool cancel_end = false, stopped = false;
+                        for (const Flow& flow : {flows[0][i], flows[1][j]}) {
+                            if (flow.kind == Flow::Jump || flow.kind == Flow::Branch) {
+                                next = flow.pc;
+                            }
+                            if (flow.kind == Flow::Branch) cancel_end = flow.cancel_end;
+                            stopped |= flow.kind == Flow::Stop;
+                        }
+                        if (stopped) continue;
+                        const bool end_next = d.end && !cancel_end;
+                        reach(next, end_next, state);
+                        for (const Word repeat : repeats) reach(repeat, end_next, state);
+                    }
+                }
+            }
+        }
+        std::ranges::sort(effects.methods);
+        effects.methods.erase(std::unique(effects.methods.begin(), effects.methods.end()),
+                              effects.methods.end());
+        for (const auto& reached : states) {
+            effects.instructions.push_back(reached.first / 2);
+        }
+        std::ranges::sort(effects.instructions);
+        effects.instructions.erase(
+            std::unique(effects.instructions.begin(), effects.instructions.end()),
+            effects.instructions.end());
+        return effects;
+    }
+
+    /// A macro's identity wherever its code was uploaded: the instructions a call from `start`
+    /// can run (AnalyzeEffects), each by its place after `start` (FNV-1a).
+    static std::uint64_t CodeHash(std::span<const Word> code, Word start, const Effects& effects) {
+        std::uint64_t hash = 0xcbf29ce484222325ULL;
+        const auto add = [&hash](Word word) {
+            for (Word shift = 0; shift < 32; shift += 8) {
+                hash = (hash ^ ((word >> shift) & 0xff)) * 0x100000001b3ULL;
+            }
+        };
+        for (const Word pc : effects.instructions) {
+            add(pc - start);
+            add(code[pc * 3]);
+            add(code[pc * 3 + 1]);
+            add(code[pc * 3 + 2]);
+        }
+        return hash;
     }
 
     using DataRam = std::array<Word, 0xc00>;

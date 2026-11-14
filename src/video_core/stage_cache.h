@@ -122,7 +122,8 @@ public:
     void AddEmitted(const Translation& translation, std::shared_ptr<const Emitted> emitted);
 
     [[nodiscard]] static std::vector<u8> RuntimeKey(const Shader::RuntimeInfo& info,
-                                                    const Shader::Backend::Bindings& bindings);
+                                                    const Shader::Backend::Bindings& bindings,
+                                                    u32 sampled_array_limit = 0);
 
     /// Program metadata without its IR.
     [[nodiscard]] static Shader::IR::Program Summary(const Shader::IR::Program& program);

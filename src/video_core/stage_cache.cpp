@@ -295,9 +295,11 @@ void StageCache::Account(size_t added) {
 }
 
 std::vector<u8> StageCache::RuntimeKey(const Shader::RuntimeInfo& info,
-                                       const Shader::Backend::Bindings& bindings) {
+                                       const Shader::Backend::Bindings& bindings,
+                                       u32 sampled_array_limit) {
     // Every field of RuntimeInfo: one left out would let different SPIR-V share a key.
     Writer writer;
+    writer.Put(sampled_array_limit);
     writer.Put(bindings);
     writer.Put(info.generic_input_types);
     for (size_t index = 0; index < info.previous_stage_stores.mask.size(); index += 64) {
@@ -308,6 +310,8 @@ std::vector<u8> StageCache::RuntimeKey(const Shader::RuntimeInfo& info,
         writer.Put(word);
     }
     writer.Put(static_cast<u32>(info.per_primitive_generics.to_ulong()));
+    writer.Put(static_cast<u32>(info.noperspective_outputs.to_ulong()));
+    writer.Put(info.scaled_noperspective_inputs);
     writer.Put(static_cast<u32>(info.previous_stage_legacy_stores_mapping.size()));
     for (const auto& [from, to] : info.previous_stage_legacy_stores_mapping) {
         writer.Put(from);

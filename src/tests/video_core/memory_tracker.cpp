@@ -740,3 +740,40 @@ TEST_CASE("DeviceMemoryManager: UpdatePagesCachedBatch basic") {
     manager.UpdatePagesCachedBatch(ranges, 1);
     SUCCEED("UpdatePagesCachedBatch executed without error");
 }
+
+TEST_CASE("MemoryTracker: Deferred page caching untracks in order and tracks at once",
+          "[video_core]") {
+    RasterizerInterface rasterizer;
+    std::optional<MemoryTracker> memory_track(rasterizer);
+    memory_track->UnmarkRegionAsCpuModified(c, WORD);
+    REQUIRE(rasterizer.Count(c + PAGE) == 1);
+    const size_t calls = rasterizer.UpdateCalls();
+
+    VideoCommon::DeferredPageCaching deferred;
+    VideoCommon::t_deferred_page_caching = &deferred;
+    memory_track->MarkRegionAsCpuModified(c + PAGE, PAGE);
+    memory_track->UnmarkRegionAsCpuModified(c + PAGE, PAGE);
+    memory_track->MarkRegionAsCpuModified(c + PAGE * 3, PAGE);
+    VideoCommon::t_deferred_page_caching = nullptr;
+
+    // The words changed at once; the tracker hears of the untracking only when the thread applies
+    // it. Tracking the page again (which deferring callers never do; it asserts) applies at once,
+    // so the page stays protected throughout.
+    REQUIRE(rasterizer.UpdateCalls() == calls + 1);
+    REQUIRE(memory_track->ModifiedCpuRegion(c, WORD) == Range{c + PAGE * 3, c + PAGE * 4});
+    REQUIRE(rasterizer.Count(c + PAGE) == 2);
+    REQUIRE(rasterizer.Count(c + PAGE * 3) == 1);
+
+    deferred.ApplyAll();
+    REQUIRE(deferred.Empty());
+    REQUIRE(rasterizer.UpdateCalls() == calls + 3);
+    REQUIRE(rasterizer.Count(c + PAGE) == 1);
+    REQUIRE(rasterizer.Count(c + PAGE * 3) == 0);
+    const auto& list = rasterizer.UpdateCallsList();
+    REQUIRE(list[list.size() - 3] == std::tuple{c + PAGE, PAGE, 1});
+    REQUIRE(list[list.size() - 2] == std::tuple{c + PAGE, PAGE, -1});
+    REQUIRE(list[list.size() - 1] == std::tuple{c + PAGE * 3, PAGE, -1});
+
+    deferred.ApplyAll();
+    REQUIRE(rasterizer.UpdateCalls() == calls + 3);
+}

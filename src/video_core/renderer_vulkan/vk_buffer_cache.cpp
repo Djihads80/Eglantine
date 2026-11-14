@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "video_core/buffer_cache/buffer_cache_base.h"
+#include "video_core/nx2_list_grid.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -404,6 +405,8 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, MemoryAllocator& m
         uint8_pass = std::make_unique<Uint8Pass>(device, scheduler, descriptor_pool, staging_pool,
                                                  compute_pass_descriptor_queue);
     }
+    list_pass_descriptor_pool = &descriptor_pool;
+    list_pass_descriptor_queue = &compute_pass_descriptor_queue;
     quad_array_index_buffer = std::make_shared<QuadArrayIndexBuffer>(device_, memory_allocator_,
                                                                      scheduler_, staging_pool_);
     quad_strip_index_buffer = std::make_shared<QuadStripIndexBuffer>(device_, memory_allocator_,
@@ -566,6 +569,132 @@ void BufferCacheRuntime::CopyBuffer(VkBuffer dst_buffer, VkBuffer src_buffer,
                                    vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER, 0, WRITE_BARRIER);
         }
     });
+}
+
+void BufferCacheRuntime::EnsureListKeepBuffer() {
+    // The front reuses a slot only after resolving its list's markers (Nx2ListGrid::ClaimSlot).
+    static_assert(LIST_KEEP_SLOTS == Tegra::Nx2ListGrid::KeptSlots);
+    if (list_keep_buffer) {
+        return;
+    }
+    const VkBufferCreateInfo create_info{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .size = VkDeviceSize{LIST_KEEP_SLOTS} * LIST_KEEP_SLOT_BYTES,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices = nullptr,
+    };
+    list_keep_buffer = memory_allocator.CreateBuffer(create_info, MemoryUsage::Download);
+    if (device.HasDebuggingToolAttached()) {
+        list_keep_buffer.SetObjectNameEXT("Kept list words");
+    }
+    std::ranges::fill(list_keep_buffer.Mapped(), u8{0});
+    list_keep_buffer.Flush();
+    list_grid_arguments_pass = std::make_unique<ListGridArgumentsPass>(
+        device, scheduler, *list_pass_descriptor_pool, *list_pass_descriptor_queue);
+}
+
+void BufferCacheRuntime::KeepListWords(u64 keep_id, VkBuffer source, VkDeviceSize offset, u64 hash,
+                                       std::span<const u32> real) {
+    EnsureListKeepBuffer();
+    ListKeep& keep = list_keeps[keep_id % LIST_KEEP_SLOTS];
+    keep = {keep_id, scheduler.CurrentTick(), real.size() == 3, hash, {}};
+    if (keep.verified) {
+        std::ranges::copy(real, keep.real.begin());
+    }
+    const VkDeviceSize slot = ListKeepOffset(keep_id);
+    scheduler.RequestOutsideRenderPassOperationContext();
+    scheduler.Record([source, offset, destination = *list_keep_buffer, slot](vk::CommandBuffer cmdbuf) {
+        static constexpr VkMemoryBarrier READ_BARRIER{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+        };
+        static constexpr VkMemoryBarrier WRITE_BARRIER{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_HOST_READ_BIT,
+        };
+        cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT, 0, READ_BARRIER);
+        cmdbuf.CopyBuffer(source, destination,
+                          VkBufferCopy{.srcOffset = offset, .dstOffset = slot, .size = 3 * sizeof(u32)});
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0,
+                               WRITE_BARRIER);
+    });
+    // x, y and z as the dispatch takes them: 31-bit x, 16-bit y and z (as #805).
+    list_grid_arguments_pass->Convert(*list_keep_buffer, VkDeviceSize{LIST_KEEP_SLOTS} * LIST_KEEP_SLOT_BYTES,
+                                      static_cast<u32>(slot / sizeof(u32)),
+                                      static_cast<u32>((slot + LIST_KEEP_GRID) / sizeof(u32)));
+}
+
+std::optional<u64> BufferCacheRuntime::FindKeptList(u32 keep_bits) const {
+    if (!list_keep_buffer) {
+        return std::nullopt;
+    }
+    const ListKeep& keep = list_keeps[keep_bits % LIST_KEEP_SLOTS];
+    if (keep.keep_id == 0 || (keep.keep_id & 0xFFFF) != keep_bits) {
+        return std::nullopt;
+    }
+    return keep.keep_id;
+}
+
+bool BufferCacheRuntime::ReadKeptListWords(u64 keep_id, std::span<u32> words, bool arguments) {
+    const ListKeep& keep = list_keeps[keep_id % LIST_KEEP_SLOTS];
+    if (keep_id == 0 || keep.keep_id != keep_id || words.size() > 3) {
+        return false;
+    }
+    scheduler.Wait(keep.tick);
+    list_keep_buffer.Invalidate();
+    std::memcpy(words.data(),
+                list_keep_buffer.Mapped().data() + ListKeepOffset(keep_id) +
+                    (arguments ? LIST_KEEP_GRID : 0),
+                words.size_bytes());
+    return true;
+}
+
+const BufferCacheRuntime::ListKeep* BufferCacheRuntime::KeptVerify(u64 keep_id) const {
+    const ListKeep& keep = list_keeps[keep_id % LIST_KEEP_SLOTS];
+    return keep.keep_id == keep_id && keep.verified ? &keep : nullptr;
+}
+
+void BufferCacheRuntime::CopyKeptWord(u64 keep_id, u32 index, VkBuffer destination,
+                                      VkDeviceSize offset) {
+    scheduler.RequestOutsideRenderPassOperationContext();
+    scheduler.Record([source = *list_keep_buffer,
+                      copy = VkBufferCopy{.srcOffset = ListKeepOffset(keep_id) + index * 4,
+                                          .dstOffset = offset,
+                                          .size = sizeof(u32)},
+                      destination](vk::CommandBuffer cmdbuf) {
+        static constexpr VkMemoryBarrier READ_BARRIER{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+        };
+        static constexpr VkMemoryBarrier WRITE_BARRIER{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+        };
+        cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT, 0, READ_BARRIER);
+        cmdbuf.CopyBuffer(source, destination, copy);
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                               vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER, 0, WRITE_BARRIER);
+    });
+}
+
+std::pair<VkBuffer, VkDeviceSize> BufferCacheRuntime::KeptGrid(u64 keep_id) const {
+    return {*list_keep_buffer, ListKeepOffset(keep_id) + LIST_KEEP_GRID};
 }
 
 void BufferCacheRuntime::PreCopyBarrier() {

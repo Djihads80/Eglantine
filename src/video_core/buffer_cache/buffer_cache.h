@@ -433,6 +433,7 @@ void BufferCache<P>::DownloadRangesMemory(std::span<const std::pair<DAddr, u64>>
 
 template <class P>
 void BufferCache<P>::ClearDownload(DAddr device_addr, u64 size) {
+    Nx2ForgetKeptWords(device_addr, size);
     memory_tracker.BumpGpuEpoch();
     for (auto& ranges : pending_download_ranges) {
         ranges.Subtract(device_addr, size);
@@ -482,6 +483,9 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
         const DAddr diff = base_address - *cpu_src_address;
         const DAddr new_base_address = *cpu_dest_address + diff;
         tmp_intervals.push_back({new_base_address, size});
+        if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+            Tegra::Nx2MarkGpuWritten(new_base_address, size);
+        }
         QueueGpuWrite(new_base_address, size);
     };
     gpu_modified_ranges.ForEachInRange(*cpu_src_address, amount, mirror);
@@ -491,7 +495,6 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     for (const auto& pair : tmp_intervals) {
         gpu_modified_ranges.Add(pair.first, pair.second);
         if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
-            Tegra::Nx2MarkGpuWritten(pair.first, pair.second);
             Nx2NoteListWrite(buffer_b, pair.first, pair.second);
         }
     }
@@ -2473,6 +2476,7 @@ void BufferCache<P>::UpdateComputeTextureBuffers() {
 template <class P>
 void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u32 size,
                                        bool needs_sync) {
+    Nx2ForgetKeptWords(device_addr, size);
     if constexpr (!IS_OPENGL) {
         if (needs_sync) {
             Buffer& buffer = slot_buffers[buffer_id];
@@ -2489,9 +2493,13 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
     MarkVertexBuffersStale(device_addr, size);
     last_synced_count = 0;
     gpu_modified_ranges.Add(device_addr, size);
-    QueueGpuWrite(device_addr, size);
-    if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+    const bool ampere = Tegra::g_nx2_ampere.load(std::memory_order_relaxed);
+    if (ampere) {
+        // Publish ownership before arming CPU read traps, whose fast path checks this mark.
         Tegra::Nx2MarkGpuWritten(device_addr, size);
+    }
+    QueueGpuWrite(device_addr, size);
+    if (ampere) {
         Nx2NoteListWrite(buffer_id, device_addr, size);
     }
 }
@@ -2690,6 +2698,7 @@ void BufferCache<P>::Nx2NoteListSynced(DAddr page) {
 
 template <class P>
 void BufferCache<P>::Nx2NoteListHostWrite(DAddr device_addr, u64 size, std::span<const u8> data) {
+    Nx2ForgetKeptWords(device_addr, size);
     if constexpr (!IS_OPENGL) {
         if (size == 0 || !Tegra::g_nx2_has_command_list_pages.load(std::memory_order_relaxed)) {
             return;

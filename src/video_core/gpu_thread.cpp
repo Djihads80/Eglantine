@@ -231,6 +231,10 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 // Only command lists are parsed here; everything else runs on the back thread
                 // in order, and so does the signal that the command ran.
                 auto* const rasterizer_ptr = renderer.ReadRasterizer();
+                if (!std::holds_alternative<SubmitListCommand>(next.data)) {
+                    // Maps and flushes may change what the snapshot copier reads.
+                    Tegra::DmaPusher::WaitForSnapshotCopies();
+                }
                 if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
                     Profile::Scope scope{Profile::Zone::Push};
                     if (VideoCommon::Nx2Hazard::Enabled()) {
@@ -281,6 +285,9 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     VideoCommon::GpuSplit::Effect::None);
                 split.Publish();
                 continue;
+            }
+            if (!std::holds_alternative<SubmitListCommand>(next.data)) {
+                Tegra::DmaPusher::WaitForSnapshotCopies();
             }
             if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
                 Profile::Scope scope{Profile::Zone::Push};
@@ -373,6 +380,8 @@ void ThreadManager::NotifyShutdown() {
         thread.request_stop();
         thread.join();
     }
+    // Queued snapshot copies read the channels' memory managers, which services free next.
+    Tegra::DmaPusher::WaitForSnapshotCopies();
     VideoCommon::GpuSplit::Get().Stop();
 }
 

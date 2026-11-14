@@ -134,9 +134,11 @@ u64 ShaderCache::MeshStateHash() const {
 
 bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
     auto& dirty{maxwell3d->dirty.flags};
-    if (!dirty[VideoCommon::Dirty::Shaders]) {
+    const u64 stage_serial = invalidation_serial.load(std::memory_order_acquire);
+    if (!dirty[VideoCommon::Dirty::Shaders] && stage_serial == seen_stage_invalidation_serial) {
         return last_shaders_valid;
     }
+    seen_stage_invalidation_serial = stage_serial;
     dirty[VideoCommon::Dirty::Shaders] = false;
 
     const GPUVAddr base_addr{maxwell3d->regs.program_region.Address()};

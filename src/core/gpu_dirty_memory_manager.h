@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <functional>
@@ -28,6 +29,17 @@ public:
     ~GPUDirtyMemoryManager() = default;
 
     void Collect(PAddr address, size_t size) {
+        // Each mask covers one tracking page. A cross-page write needs one mask per page.
+        while (size != 0) {
+            const size_t count = (std::min<size_t>)(size, page_size - (address & page_mask));
+            CollectInPage(address, count);
+            address += count;
+            size -= count;
+        }
+    }
+
+private:
+    void CollectInPage(PAddr address, size_t size) {
         TransformAddress t = BuildTransform(address, size);
         TransformAddress tmp, original;
         do {
@@ -51,6 +63,7 @@ public:
                                                 std::memory_order_relaxed));
     }
 
+public:
     /// Calls `callback` for each write collected and not yet gathered, without consuming them.
     void ForEachPending(const std::function<void(PAddr, size_t)>& callback) {
         std::vector<TransformAddress> pending;

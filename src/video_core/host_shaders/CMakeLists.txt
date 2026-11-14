@@ -65,6 +65,7 @@ set(SHADER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/present_lanczos.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/present_spline1.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/present_mmpx.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/nx2_list_grid_arguments.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/queries_prefix_scan_sum.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/queries_prefix_scan_sum_nosubgroups.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/resolve_conditional_render.comp

@@ -63,6 +63,28 @@ void CheckBound(const Runtime& runtime, const Memory& memory, u64 address, u32 s
 }
 } // namespace
 
+TEST_CASE("Frequently changing uniforms keep fresh bytes and resume reuse when stable",
+          "[video_core][uniform_stream_reuse]") {
+    Memory memory;
+    Runtime runtime;
+    VideoCommon::ResetUniformStreamReuse<Runtime>();
+    for (u32 i = 0; i < 100; ++i) {
+        memory.bytes.fill(static_cast<u8>(i));
+        REQUIRE(VideoCommon::BindSmallUniformReusing(runtime, memory, 0, 0, 0, 0, 64));
+        CheckBound(runtime, memory, 0, 64);
+    }
+    for (u32 i = 0; i < 80; ++i) {
+        REQUIRE(VideoCommon::BindSmallUniformReusing(runtime, memory, 0, 0, 0, 0, 64));
+        CheckBound(runtime, memory, 0, 64);
+    }
+    const size_t allocations = runtime.allocations.size();
+    REQUIRE(VideoCommon::BindSmallUniformReusing(runtime, memory, 0, 0, 0, 0, 64));
+    CHECK(runtime.allocations.size() == allocations);
+    runtime.NextTick();
+    REQUIRE(VideoCommon::BindSmallUniformReusing(runtime, memory, 0, 0, 0, 0, 64));
+    CheckBound(runtime, memory, 0, 64);
+}
+
 TEST_CASE("Uniform stream reuse preserves data through mutation and session resets",
           "[video_core]") {
     using VideoCommon::BindSmallComputeUniformReusing;

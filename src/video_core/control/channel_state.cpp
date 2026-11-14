@@ -83,6 +83,7 @@ void ChannelState::Init(Core::System& system, u64 program_id_) {
         payload->kepler_compute.SetNativeMacroMode(&macros->engine, macros->positions,
                                                    macros.get());
         payload->kepler_compute.SetNativeDataRam(&payload->maxwell_3d.GetNativeDataRam());
+        payload->kepler_compute.SetGridMarker(&payload->maxwell_3d.grid_marker);
     }
     initialized = true;
 }

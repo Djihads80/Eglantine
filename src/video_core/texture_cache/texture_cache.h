@@ -631,16 +631,16 @@ void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compu
         if (blacklist) {
             has_blacklisted = false;
         }
-        u32 last_index = ~0U;
-        ImageViewId last_id{};
+        const ImageViewInOut* previous{};
         for (ImageViewInOut& view : views) {
-            if (view.index == last_index && !has_deleted_images) {
-                view.id = last_id;
-            } else {
-                view.id = VisitImageView(view.index, compute);
-                last_index = view.index;
-                last_id = view.id;
-            }
+            // An element repeating the one before (a handle table holding one shadow map in
+            // many elements, say) is the same view: visiting it again only prepares it again.
+            // Not once this pass has deleted image views (scaling an image down below does):
+            // that view may have gone with them.
+            view.id = previous != nullptr && previous->index == view.index && !has_deleted_images
+                          ? previous->id
+                          : VisitImageView(view.index, compute);
+            previous = &view;
             if (blacklist) {
                 if (view.blacklist && view.id != NULL_IMAGE_VIEW_ID) {
                     const ImageViewBase& image_view = slot_image_views[view.id];
@@ -3126,9 +3126,12 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         if (IsPixelFormatASTC(new_info.format) && runtime.UseOpaqueAstcFormat()) {
             const size_t scan_bytes = CalculateGuestSizeInBytes(new_info);
             if (scan_bytes <= MaxScanBytes) {
-                astc_scan_buffer.resize(scan_bytes);
-                gpu_memory->ReadBlockUnsafe(gpu_addr, astc_scan_buffer.data(), scan_bytes);
-                new_info.astc_opaque = AstcDataLooksOpaque(astc_scan_buffer);
+                // Scanned where it is when it is in one piece; only copied (into the scratch
+                // buffer) when the range is split.
+                Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead>
+                    scan_data(*gpu_memory, gpu_addr, scan_bytes, &astc_scan_buffer);
+                new_info.astc_opaque =
+                    AstcDataLooksOpaque(std::span<const u8>{scan_data.data(), scan_data.size()});
                 ++(new_info.astc_opaque ? astc_opaque_images : astc_alpha_images);
             }
         }
