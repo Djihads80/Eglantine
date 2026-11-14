@@ -112,7 +112,10 @@ TesterBuildSettings::TesterBuildSettings(QWidget* parent) : QWidget(parent) {
     });
     connect(&m_check_watcher, &QFutureWatcher<TesterLauncher::RemoteResult>::finished, this, [this] {
         const auto result = m_check_watcher.result();
-        m_check->setEnabled(true);
+        UpdateValidation();
+        if (m_checked_source != EnteredSource()) {
+            return;
+        }
         const auto state = TesterBuild::LoadState(TesterLauncher::StateFile());
         if (!result.info) {
             m_check_text = result.status != 0 ? tr("check failed (HTTP error %1)").arg(result.status)
@@ -220,6 +223,7 @@ void TesterBuildSettings::CheckNow() {
         return;
     }
     m_check->setEnabled(false);
+    m_checked_source = source;
     m_check_text = tr("checking...");
     UpdateStatus();
     m_check_watcher.setFuture(
@@ -353,11 +357,13 @@ void TesterBuildSettings::Apply() {
 }
 
 void TesterBuildSettings::BuildNow() {
+    const auto requested = EnteredSource();
     if (!ConfirmChanges()) {
         return;
     }
     const auto entered = EnteredSource();
-    if (!entered) {
+    // A declined warning puts the saved source back; that is not what was asked to build.
+    if (!entered || entered != requested) {
         return;
     }
     const auto state = TesterBuild::LoadState(TesterLauncher::StateFile());

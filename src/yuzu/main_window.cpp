@@ -206,6 +206,7 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #ifdef __unix__
 
 #include <csignal>
+#include <utility>
 #include <QSocketNotifier>
 #include <sys/socket.h>
 #include "qt_common/gui_settings.h"
@@ -482,9 +483,7 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     if (TesterLauncher::IsTesterBuild()) {
         tester_monitor = std::make_unique<TesterBuildMonitor>(
             [this] { return emulation_running; }, this);
-        if (UISettings::values.check_for_updates) {
-            tester_monitor->Start();
-        }
+        tester_monitor->Start();
     } else if (const auto build_channel = UpdateChecker::BuildChannel()) {
         // The first tagged release or daily build to run picks the channel, and it stays until
         // changed.
@@ -2270,14 +2269,24 @@ void MainWindow::SetupSigInterrupts() {
     struct sigaction sa;
     sa.sa_handler = &MainWindow::HandleSigInterrupt;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESETHAND;
+    // SIGINT exits at once in the handler, and SIGTERM must stay handled so a repeated close
+    // request (a declined confirmation) never falls back to the default kill.
+    sa.sa_flags = 0;
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
 
     sig_interrupt_notifier = new QSocketNotifier(sig_interrupt_fds[1], QSocketNotifier::Read, this);
     connect(sig_interrupt_notifier, &QSocketNotifier::activated, this,
             &MainWindow::OnSigInterruptNotifierActivated);
-    connect(this, &MainWindow::SigInterrupt, this, &MainWindow::close);
+    connect(this, &MainWindow::SigInterrupt, this, [this] {
+        // A confirmation dialog runs a nested event loop; do not stack another on top of it.
+        static bool closing = false;
+        if (std::exchange(closing, true)) {
+            return;
+        }
+        close();
+        closing = false;
+    });
 }
 
 void MainWindow::HandleSigInterrupt(int sig) {

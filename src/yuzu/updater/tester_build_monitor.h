@@ -4,6 +4,7 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <QFuture>
 #include <QFutureWatcher>
@@ -40,5 +41,6 @@ private:
     QFutureWatcher<TesterLauncher::RemoteResult> m_watcher;
     bool m_running{};
     bool m_manual{};
+    std::optional<TesterBuild::Source> m_source;
     std::string m_offered_sha;
 };

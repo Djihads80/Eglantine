@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <memory>
@@ -26,6 +27,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #else
+#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <sys/syscall.h>
@@ -157,14 +159,40 @@ bool StartAndWatch(const QString& program, const QStringList& args, int timeout_
     argv.push_back(nullptr);
     envp.push_back(nullptr);
 
+    // The write end closes on a successful exec, so EOF on the read end means the exec worked and
+    // anything read is the errno of the failed one.
+    int exec_pipe[2];
+    if (pipe(exec_pipe) != 0) {
+        return false;
+    }
+    // Not pipe2: macOS does not have it.
+    fcntl(exec_pipe[0], F_SETFD, FD_CLOEXEC);
+    fcntl(exec_pipe[1], F_SETFD, FD_CLOEXEC);
     const pid_t pid = fork();
     if (pid < 0) {
+        close(exec_pipe[0]);
+        close(exec_pipe[1]);
         return false;
     }
     if (pid == 0) {
         setsid();
         execve(argv[0], argv.data(), envp.data());
+        const int error = errno;
+        [[maybe_unused]] const auto written = write(exec_pipe[1], &error, sizeof(error));
         _exit(127);
+    }
+    close(exec_pipe[1]);
+    int exec_error = 0;
+    ssize_t got;
+    do {
+        got = read(exec_pipe[0], &exec_error, sizeof(exec_error));
+    } while (got < 0 && errno == EINTR);
+    close(exec_pipe[0]);
+    if (got != 0) {
+        int status = 0;
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        }
+        return false;
     }
     for (int waited = 0; waited < timeout_ms; waited += 50) {
         int status = 0;

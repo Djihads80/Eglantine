@@ -135,10 +135,12 @@ jobs:
 
       - name: Build
         shell: bash
+        env:
+          UPDATE_CHECKER: ${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || (inputs.follow_branch != '' && 'ON') || 'OFF' }}
         run: |
           targets="yuzu yuzu-cmd"
-          # The updater helper only exists in release and daily builds, where the update checker is on.
-          if [ "${{ inputs.release || startsWith(inputs.tag, 'daily-') }}" = "true" ]; then targets="$targets eglantine-updater"; fi
+          # The updater helper only exists where the update checker is on.
+          if [ "$UPDATE_CHECKER" = "ON" ]; then targets="$targets eglantine-updater"; fi
           cmake --build build/release --target $targets --parallel
           sccache --show-stats
 
@@ -261,10 +263,12 @@ jobs:
 
       - name: Build
         shell: msys2 {0}
+        env:
+          UPDATE_CHECKER: ${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || (inputs.follow_branch != '' && 'ON') || 'OFF' }}
         run: |
           targets="yuzu yuzu-cmd"
-          # The updater helper only exists in release and daily builds, where the update checker is on.
-          if [ "${{ inputs.release || startsWith(inputs.tag, 'daily-') }}" = "true" ]; then targets="$targets eglantine-updater"; fi
+          # The updater helper only exists where the update checker is on.
+          if [ "$UPDATE_CHECKER" = "ON" ]; then targets="$targets eglantine-updater"; fi
           cmake --build build/release --target $targets --parallel
           ccache --show-stats
 

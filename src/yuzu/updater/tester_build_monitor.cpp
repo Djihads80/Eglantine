@@ -46,6 +46,7 @@ void TesterBuildMonitor::Check(bool manual) {
     }
     m_running = true;
     m_manual = manual;
+    m_source = state.source;
     m_future = QtConcurrent::run(
         [source = *state.source] { return TesterLauncher::FetchRemote(source); });
     m_watcher.setFuture(m_future);
@@ -70,7 +71,10 @@ void TesterBuildMonitor::OnResult() {
     }
     // The builder may have saved a newer build since the check started.
     const auto state = TesterBuild::LoadState(TesterLauncher::StateFile());
-    if (!state.source) {
+    if (state.source != m_source) {
+        // The followed source changed in settings while the check ran: the result describes the
+        // old one, so ask again for the new one.
+        Check(manual);
         return;
     }
     const auto name = QString::fromStdString(state.source->DisplayName());

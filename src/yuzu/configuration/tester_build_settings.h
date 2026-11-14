@@ -62,6 +62,7 @@ private:
     bool m_branches_requested{};
     // Result of "Check now", for the source it was made for.
     QString m_check_text;
+    std::optional<TesterBuild::Source> m_checked_source;
     bool m_up_to_date{};
     bool m_warning_accepted{};
 };
