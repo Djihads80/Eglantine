@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 # usage: release-notes.sh <output.md>
 # Env: KIND TAG SHA REPO BRANCH PREV_TAG MACOS_RUNNER ASSET_DIR (default release-assets).
 # The download tables include only assets that exist, so one-platform manual builds are supported.

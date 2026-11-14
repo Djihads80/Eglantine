@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Disassemble a range of an NSO's .text using clang + llvm-objdump.
 # Usage: nso_dis.py <llvm bin dir> <nso> <text_offset_hex> <count> <work dir>
 # The NSO is only read; scratch files go to <work dir>.

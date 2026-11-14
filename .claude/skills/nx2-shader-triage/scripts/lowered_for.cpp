@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Print the Maxwell words that given Ampere instructions of a dumped program lower to.
 // Build outside the repo: c++ -std=c++20 -O1 -w -I <repo>/src lowered_for.cpp -lfmt -o lowered_for
 // Usage: lowered_for <dump.bin> <ampere byte offset hex>...   (tensor lowering on, so HMMA programs lower)

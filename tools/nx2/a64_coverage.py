@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Report which AArch64 encodings in NSO .text segments are not decoded by dynarmic.
 # Usage: a64_coverage.py <a64.inc> <nso> [<nso> ...]
 # The NSO files are only read.

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Finds short flashes in a burst of nx2-frame-*.tga: pixels far brighter than the median of
 the surrounding frames. Usage: flash_scan.py <burst dir> [out sheet]"""
 import glob, os, re, sys

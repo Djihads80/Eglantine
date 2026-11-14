@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Decide what the run is and emit: kind tag title version refspec sha skip prerelease nightly
 # publish prev_tag branch. Run from any directory in a full checkout with GH_TOKEN set.
 set -euo pipefail

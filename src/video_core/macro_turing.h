@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Instruction semantics adapted from Mesa mme_tu104_sim.c and mme_tu104.c:

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Runs the Ampere -> Maxwell lowering over raw native shader dumps and lists the rejected ones.
 //
 // build (header-only, run from the repository root):

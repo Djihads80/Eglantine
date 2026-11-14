@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 # usage: bump-version.sh major|minor|patch|rc|release
 # major/minor/patch: start a new X.Y.Z-rc1 after a stable release (moves [Unreleased]).
 # rc:                increment X.Y.Z-rcN.

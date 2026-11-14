@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 # usage: slugify.sh <branch name>
 # Returns a short, collision-resistant slug shared by branch release and cleanup jobs.
 set -euo pipefail

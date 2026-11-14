@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Lowers every EDEN_NX2_SHADER_DUMP program given as arguments; one OK/REJECT line each.
 // Build: c++ -std=c++20 -O1 -w -I <repo>/src lower_dump.cpp -lfmt -o lower_dump
 // OK lines carry an FNV hash of the lowered code: build once against the committed header

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Estimate VMA block slack (allocator blocks the driver counts but no allocation uses) from logs.
 
 usage: vma_slack.py [--series] <log.txt> [<log.txt> ...]

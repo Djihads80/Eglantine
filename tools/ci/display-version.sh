@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Compose the human-facing build identity ("display version").
 #
 #   <owner>/<repo>/<branch> - <commit time> (<sha7>)     development build

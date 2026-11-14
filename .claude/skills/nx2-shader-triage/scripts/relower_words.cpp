@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Reads "w0 w1 w2 w3" hex lines on stdin; lowers each instruction followed by EXIT.
 // Build: c++ -std=c++20 -O1 -w -I <repo>/src relower_words.cpp -lfmt -o relower
 #include <cstdio>

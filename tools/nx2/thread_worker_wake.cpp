@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Drives Common::ThreadWorker::WaitForRequests through the interleaving where its waiter has

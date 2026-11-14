@@ -1,4 +1,7 @@
 #!/bin/sh
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 # eden-cli under gdb, for `lab_ctl launch --binary <this>`: SIGINT to eden-cli stops it and dumps
 # every thread's stack to stdout (emulator.log). dynarmic uses SIGSEGV for guest memory: pass it.
 REPO=${REPO:-/home/kraibse/clones/Eglantine}

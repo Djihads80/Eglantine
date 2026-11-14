@@ -1,4 +1,7 @@
 #!/bin/zsh
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Boot Ocarina of Time hidden and load the newest save. Extra arguments go to `lab_ctl launch`
 # (e.g. --tensor, --env NAME=VALUE). Needs $D/qt-copy.ini with keyboard bindings merged in.
 REPO=${REPO:-/home/kraibse/clones/Eglantine}

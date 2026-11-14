@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // SPDX-FileCopyrightText: 2022 yuzu Emulator Project
 // SPDX-FileCopyrightText: 2022 Skyline Team and Contributors
 // SPDX-License-Identifier: GPL-3.0-or-later

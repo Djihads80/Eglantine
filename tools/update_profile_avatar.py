@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Regenerate the built-in user avatar JPEG from dist/eden_profile.jpg.

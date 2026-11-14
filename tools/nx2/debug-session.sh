@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Start Eglantine for an unattended debugging session: the MCP server and the NX2 debug server are
 # on, and tools/nx2/session_watch.py records evidence next to it, including after a crash.
 #

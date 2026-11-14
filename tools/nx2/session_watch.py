@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Unattended crash recorder for Eglantine's built-in MCP server (start the emulator with --mcp).
 
 Streams the timeline to disk with repeats collapsed, samples status, snapshots the emulator when

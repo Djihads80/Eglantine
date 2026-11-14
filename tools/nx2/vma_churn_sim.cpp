@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Synthetic VRAM churn through VMA's own block metadata: how much slack (block space no allocation
 // uses) different block sizes, strategies and dedicated-allocation thresholds leave.
 //

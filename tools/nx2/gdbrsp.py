@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Minimal GDB remote-serial-protocol client for Eden's gdbstub (AArch64 guests).
 # Usage: gdbrsp.py <port> <script>
 # Script lines:  break <hexaddr> | unbreak <hexaddr> | continue | regs | x0 | mem <hexaddr|xN> <len> | bt <hexaddr|sp> <count>

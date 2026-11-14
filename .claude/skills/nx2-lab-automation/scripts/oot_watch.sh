@@ -1,4 +1,7 @@
 #!/bin/zsh
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Run the emulator with the in-emulator white-flash watcher for a while. Usage: oot_watch.sh <tag> <seconds> [launch args]
 TAG=${1:-watch}; SECS=${2:-90}; shift 2
 cd ${REPO:-/home/kraibse/clones/Eglantine}

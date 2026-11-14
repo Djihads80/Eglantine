@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Offline shader translation bench over raw native dumps (EDEN_NX2_SHADER_DUMP output). Hidden:

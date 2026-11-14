@@ -1,4 +1,7 @@
 #!/bin/zsh
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Load the save, leave the camera alone, save every presented frame for a while. Usage: oot_burst.sh <tag> <frames> [launch args]
 TAG=$1; N=$2; shift 2
 cd ${REPO:-/home/kraibse/clones/Eglantine}

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Disassemble raw Ampere (SM86) SASS with nvdisasm by patching the code into a cubin.
 
 usage: nvd_cubin.py <raw dump> [skip_bytes]

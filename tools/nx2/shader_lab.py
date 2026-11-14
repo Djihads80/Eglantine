@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: Copyright 2026 Eglantine Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Live shader lab for Switch 2 titles: browse every vertex, pixel and compute program the running
 emulator sees, hide them one by one (or in bulk, to bisect), watch which constant buffer words
