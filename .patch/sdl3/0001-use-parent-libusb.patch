@@ -1,0 +1,61 @@
+--- a/cmake/sdlchecks.cmake
++++ b/cmake/sdlchecks.cmake
+@@ -1281,30 +1281,35 @@
+     set(HAVE_HIDAPI ON)
+     if(SDL_HIDAPI_LIBUSB)
+       set(HAVE_LIBUSB FALSE)
+-      find_package(LibUSB)
+-      if(LibUSB_FOUND)
+-        cmake_push_check_state()
+-        list(APPEND CMAKE_REQUIRED_LIBRARIES LibUSB::LibUSB)
+-        check_c_source_compiles_static("
+-          #include <stddef.h>
+-          #include <libusb.h>
+-          int main(int argc, char **argv) {
+-            libusb_interrupt_event_handler(NULL);
+-            return 0;
+-          }" HAVE_LIBUSB_H)
+-        cmake_pop_check_state()
+-        if(HAVE_LIBUSB_H)
+-          set(HAVE_LIBUSB TRUE)
+-          if(SDL_HIDAPI_LIBUSB_SHARED)
+-            target_get_dynamic_library(dynamic_libusb LibUSB::LibUSB)
+-            if(dynamic_libusb)
+-              set(HAVE_HIDAPI_LIBUSB_SHARED ON)
+-              set(SDL_LIBUSB_DYNAMIC "\"${dynamic_libusb}\"")
+-              sdl_link_dependency(hidapi INCLUDES $<TARGET_PROPERTY:LibUSB::LibUSB,INTERFACE_INCLUDE_DIRECTORIES>)
++      if(TARGET libusb::usb)
++        set(HAVE_LIBUSB TRUE)
++        sdl_link_dependency(hidapi LIBS libusb::usb)
++      else()
++        find_package(LibUSB)
++        if(LibUSB_FOUND)
++          cmake_push_check_state()
++          list(APPEND CMAKE_REQUIRED_LIBRARIES LibUSB::LibUSB)
++          check_c_source_compiles_static("
++            #include <stddef.h>
++            #include <libusb.h>
++            int main(int argc, char **argv) {
++              libusb_interrupt_event_handler(NULL);
++              return 0;
++            }" HAVE_LIBUSB_H)
++          cmake_pop_check_state()
++          if(HAVE_LIBUSB_H)
++            set(HAVE_LIBUSB TRUE)
++            if(SDL_HIDAPI_LIBUSB_SHARED)
++              target_get_dynamic_library(dynamic_libusb LibUSB::LibUSB)
++              if(dynamic_libusb)
++                set(HAVE_HIDAPI_LIBUSB_SHARED ON)
++                set(SDL_LIBUSB_DYNAMIC "\"${dynamic_libusb}\"")
++                sdl_link_dependency(hidapi INCLUDES $<TARGET_PROPERTY:LibUSB::LibUSB,INTERFACE_INCLUDE_DIRECTORIES>)
++              endif()
+             endif()
+-          endif()
+-          if(NOT HAVE_HIDAPI_LIBUSB_SHARED)
+-            sdl_link_dependency(hidapi LIBS LibUSB::LibUSB PKG_CONFIG_SPECS "${LibUSB_PKG_CONFIG_SPEC}" CMAKE_MODULE LibUSB)
++            if(NOT HAVE_HIDAPI_LIBUSB_SHARED)
++              sdl_link_dependency(hidapi LIBS LibUSB::LibUSB PKG_CONFIG_SPECS "${LibUSB_PKG_CONFIG_SPEC}" CMAKE_MODULE LibUSB)
++            endif()
+           endif()
+         endif()
+       endif()

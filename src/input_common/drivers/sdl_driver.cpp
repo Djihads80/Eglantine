@@ -679,6 +679,8 @@ SDLDriver::SDLDriver(std::string input_engine_) : InputEngine(std::move(input_en
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1");
     SDL_SetHint(SDL_HINT_GAMECONTROLLER_SENSOR_FUSION, "1");
     SDL_SetHint(SDL_HINT_AUTO_UPDATE_SENSORS, "1");
+    SDL_SetHint(SDL_HINT_HIDAPI_LIBUSB, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_SWITCH2, "1");
 
     // Enable HIDAPI rumble. This prevents SDL from disabling motion on PS4 and PS5 controllers
     SDL_SetHint(SDL_HINT_JOYSTICK_ENHANCED_REPORTS, "1");
