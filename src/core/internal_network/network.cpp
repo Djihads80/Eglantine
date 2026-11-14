@@ -318,6 +318,9 @@ Errno TranslateNativeError(int e, CallType call_type = CallType::Other) {
         return Errno::INPROGRESS;
     case EISCONN:
         return Errno::ISCONN;
+    case EPERM:
+    case EACCES:
+        return Errno::OTHER;
     default:
         UNIMPLEMENTED_MSG("Unimplemented errno={} ({})", e, strerror(e));
         return Errno::OTHER;
@@ -344,30 +347,44 @@ Errno GetAndLogLastError(CallType call_type = CallType::Other) {
 
 GetAddrInfoError TranslateGetAddrInfoErrorFromNative(int gai_err) {
     switch (gai_err) {
-    case 0: return GetAddrInfoError::SUCCESS;
-    case EAI_AGAIN: return GetAddrInfoError::AGAIN;
-    case EAI_BADFLAGS: return GetAddrInfoError::BADFLAGS;
-    case EAI_FAIL: return GetAddrInfoError::FAIL;
-    case EAI_FAMILY: return GetAddrInfoError::FAMILY;
-    case EAI_MEMORY: return GetAddrInfoError::MEMORY;
-    case EAI_NONAME: return GetAddrInfoError::NONAME;
-    case EAI_SERVICE: return GetAddrInfoError::SERVICE;
-    case EAI_SOCKTYPE: return GetAddrInfoError::SOCKTYPE;
+    case 0:
+        return GetAddrInfoError::SUCCESS;
+    case EAI_AGAIN:
+        return GetAddrInfoError::AGAIN;
+    case EAI_BADFLAGS:
+        return GetAddrInfoError::BADFLAGS;
+    case EAI_FAIL:
+        return GetAddrInfoError::FAIL;
+    case EAI_FAMILY:
+        return GetAddrInfoError::FAMILY;
+    case EAI_MEMORY:
+        return GetAddrInfoError::MEMORY;
+    case EAI_NONAME:
+        return GetAddrInfoError::NONAME;
+    case EAI_SERVICE:
+        return GetAddrInfoError::SERVICE;
+    case EAI_SOCKTYPE:
+        return GetAddrInfoError::SOCKTYPE;
     // These codes may not be defined on all systems:
 #ifdef EAI_ADDRFAMILY
-    case EAI_ADDRFAMILY: return GetAddrInfoError::ADDRFAMILY;
+    case EAI_ADDRFAMILY:
+        return GetAddrInfoError::ADDRFAMILY;
 #endif
 #ifdef EAI_SYSTEM
-    case EAI_SYSTEM: return GetAddrInfoError::SYSTEM;
+    case EAI_SYSTEM:
+        return GetAddrInfoError::SYSTEM;
 #endif
 #ifdef EAI_BADHINTS
-    case EAI_BADHINTS: return GetAddrInfoError::BADHINTS;
+    case EAI_BADHINTS:
+        return GetAddrInfoError::BADHINTS;
 #endif
 #ifdef EAI_PROTOCOL
-    case EAI_PROTOCOL: return GetAddrInfoError::PROTOCOL;
+    case EAI_PROTOCOL:
+        return GetAddrInfoError::PROTOCOL;
 #endif
 #ifdef EAI_OVERFLOW
-    case EAI_OVERFLOW: return GetAddrInfoError::OVERFLOW_;
+    case EAI_OVERFLOW:
+        return GetAddrInfoError::OVERFLOW_;
 #endif
     default:
 #ifdef EAI_NODATA
@@ -408,10 +425,14 @@ Type TranslateTypeFromNative(int type) {
     switch (type) {
     case 0:
         return Type::Unspecified;
-    case SOCK_STREAM: return Type::STREAM;
-    case SOCK_DGRAM: return Type::DGRAM;
-    case SOCK_RAW: return Type::RAW;
-    case SOCK_SEQPACKET: return Type::SEQPACKET;
+    case SOCK_STREAM:
+        return Type::STREAM;
+    case SOCK_DGRAM:
+        return Type::DGRAM;
+    case SOCK_RAW:
+        return Type::RAW;
+    case SOCK_SEQPACKET:
+        return Type::SEQPACKET;
     default:
         UNIMPLEMENTED_MSG("Unimplemented type={}", type);
         return Type::STREAM;
@@ -422,10 +443,14 @@ int TranslateTypeToNative(Type type) {
     switch (type) {
     case Type::Unspecified:
         return 0;
-    case Type::STREAM: return SOCK_STREAM;
-    case Type::DGRAM: return SOCK_DGRAM;
-    case Type::RAW: return SOCK_RAW;
-    case Type::SEQPACKET: return SOCK_SEQPACKET;
+    case Type::STREAM:
+        return SOCK_STREAM;
+    case Type::DGRAM:
+        return SOCK_DGRAM;
+    case Type::RAW:
+        return SOCK_RAW;
+    case Type::SEQPACKET:
+        return SOCK_SEQPACKET;
     default:
         UNIMPLEMENTED_MSG("Unimplemented type={}", type);
         return 0;
@@ -619,7 +644,9 @@ int TranslateTypeToNative(Type type) {
 #endif
 [[nodiscard]] Protocol TranslateProtocolFromNative(u32 protocol) {
     switch (protocol) {
-#define NETWORK_PROTOCOL_TRANSLATE_ELEM(x) case IPPROTO_##x: return Protocol::x;
+#define NETWORK_PROTOCOL_TRANSLATE_ELEM(x)                                                         \
+    case IPPROTO_##x:                                                                              \
+        return Protocol::x;
     NETWORK_PROTOCOL_TRANSLATE_LIST
 #undef NETWORK_PROTOCOL_TRANSLATE_ELEM
     default:
@@ -629,7 +656,9 @@ int TranslateTypeToNative(Type type) {
 }
 [[nodiscard]] u32 TranslateProtocolToNative(Protocol protocol) {
     switch (protocol) {
-#define NETWORK_PROTOCOL_TRANSLATE_ELEM(x) case Protocol::x: return IPPROTO_##x;
+#define NETWORK_PROTOCOL_TRANSLATE_ELEM(x)                                                         \
+    case Protocol::x:                                                                              \
+        return IPPROTO_##x;
     NETWORK_PROTOCOL_TRANSLATE_LIST
 #undef NETWORK_PROTOCOL_TRANSLATE_ELEM
     default:
@@ -668,7 +697,8 @@ short TranslatePollEvents(PollEvents events) {
     translate(PollEvents::WrBand, POLLWRBAND);
 
 #ifdef _WIN32
-    // WSAPoll rejects POLLPRI and reports out-of-band data as POLLRDBAND instead; Poll maps it back.
+    // WSAPoll rejects POLLPRI and reports out-of-band data as POLLRDBAND instead; Poll maps it
+    // back.
     if ((result & POLLPRI) != 0) {
         result = static_cast<short>((result & ~POLLPRI) | POLLRDBAND);
     }
@@ -778,7 +808,8 @@ std::variant<std::vector<AddrInfo>, GetAddrInfoError> GetAddressInfo(
     addrinfo hints{};
     hints.ai_family = AF_INET; // Switch only supports IPv4.
     addrinfo* addrinfo;
-    s32 gai_err = getaddrinfo(host.c_str(), service.has_value() ? service->c_str() : nullptr, &hints, &addrinfo);
+    s32 gai_err = getaddrinfo(host.c_str(), service.has_value() ? service->c_str() : nullptr,
+                              &hints, &addrinfo);
     if (gai_err != 0) {
         return TranslateGetAddrInfoErrorFromNative(gai_err);
     }
@@ -893,7 +924,15 @@ Errno Socket::SetSockOpt(SOCKET fd_so, int level, int option, T value) {
 }
 
 Errno Socket::Initialize(Domain domain, Type type, Protocol protocol) {
-    fd = socket(TranslateDomainToNative(domain), TranslateTypeToNative(type), TranslateProtocolToNative(protocol));
+    fd = socket(TranslateDomainToNative(domain), TranslateTypeToNative(type),
+                TranslateProtocolToNative(protocol));
+#ifndef _WIN32
+    if (fd == INVALID_SOCKET && errno == EPERM && domain == Domain::INET && type == Type::RAW &&
+        protocol == Protocol::ICMP) {
+        // Linux ping sockets provide ICMP echo without requiring CAP_NET_RAW.
+        fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
+    }
+#endif
     if (fd != INVALID_SOCKET) {
         return Errno::SUCCESS;
     }
@@ -1095,8 +1134,8 @@ std::pair<s32, Errno> Socket::RecvFrom(int flags, std::span<u8> message, SockAdd
         sockaddr* const p_addr_in = addr ? reinterpret_cast<sockaddr*>(&addr_in) : nullptr;
 
         const auto result =
-            recvfrom(fd, reinterpret_cast<char*>(message.data()),
-                     static_cast<int>(message.size()), host_flags, p_addr_in, p_addrlen);
+            recvfrom(fd, reinterpret_cast<char*>(message.data()), static_cast<int>(message.size()),
+                     host_flags, p_addr_in, p_addrlen);
         if (result != SOCKET_ERROR) {
             if (addr) {
                 *addr = TranslateToSockAddrIn(addr_in, addrlen);
@@ -1234,6 +1273,14 @@ Errno Socket::SetLinger(bool enable, u32 linger) {
 
 Errno Socket::SetReuseAddr(bool enable) {
     return SetSockOpt<u32>(fd, SOL_SOCKET, SO_REUSEADDR, enable ? 1 : 0);
+}
+
+Errno Socket::SetReusePort(bool enable) {
+#ifdef SO_REUSEPORT
+    return SetSockOpt<u32>(fd, SOL_SOCKET, SO_REUSEPORT, enable ? 1 : 0);
+#else
+    return Errno::OPNOTSUPP;
+#endif
 }
 
 Errno Socket::SetKeepAlive(bool enable) {

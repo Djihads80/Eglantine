@@ -58,7 +58,7 @@ public:
 
     std::pair<s32, Errno> Send(std::span<const u8> message, int flags) override;
 
-    void SendPacket(ProxyPacket& packet);
+    bool SendPacket(ProxyPacket& packet);
 
     std::pair<s32, Errno> SendTo(u32 flags, std::span<const u8> message,
                                  const SockAddrIn* addr) override;
@@ -66,6 +66,8 @@ public:
     Errno SetLinger(bool enable, u32 linger) override;
 
     Errno SetReuseAddr(bool enable) override;
+
+    Errno SetReusePort(bool enable) override;
 
     Errno SetBroadcast(bool enable) override;
 
@@ -105,12 +107,14 @@ private:
 
     bool broadcast = false;
     bool reuse_addr = false;
+    bool reuse_port = false;
     bool no_delay = false;
     bool closed = false;
     u32 send_timeout = 0;
     u32 receive_timeout = 0;
     bool is_bound = false;
     SockAddrIn local_endpoint{};
+    std::optional<SockAddrIn> peer_endpoint;
     bool blocking = true;
     std::queue<ProxyPacket> received_packets;
     std::size_t front_read_offset = 0; ///< Bytes of the front TCP packet that were already read

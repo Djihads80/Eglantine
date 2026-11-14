@@ -16,19 +16,17 @@ void BindSocket(Network::ProxySocket& socket, Network::Protocol protocol) {
     const auto type =
         protocol == Network::Protocol::TCP ? Network::Type::STREAM : Network::Type::DGRAM;
     REQUIRE(socket.Initialize(Network::Domain::INET, type, protocol) == Network::Errno::SUCCESS);
-    REQUIRE(socket.Bind({.family = Network::Domain::INET,
-                         .ip = {192, 168, 1, 1},
-                         .portno = 35000}) == Network::Errno::SUCCESS);
+    REQUIRE(
+        socket.Bind({.family = Network::Domain::INET, .ip = {192, 168, 1, 1}, .portno = 35000}) ==
+        Network::Errno::SUCCESS);
 }
 
 Network::ProxyPacket MakePacket(Network::Protocol protocol) {
     Network::ProxyPacket packet{};
-    packet.local_endpoint = {.family = Network::Domain::INET,
-                             .ip = {192, 168, 1, 2},
-                             .portno = 35000};
-    packet.remote_endpoint = {.family = Network::Domain::INET,
-                              .ip = {192, 168, 1, 1},
-                              .portno = 35000};
+    packet.local_endpoint = {
+        .family = Network::Domain::INET, .ip = {192, 168, 1, 2}, .portno = 35000};
+    packet.remote_endpoint = {
+        .family = Network::Domain::INET, .ip = {192, 168, 1, 1}, .portno = 35000};
     packet.protocol = protocol;
     return packet;
 }
@@ -160,7 +158,8 @@ TEST_CASE("Blocking room sockets wait for packets and time out with EAGAIN", "[c
     REQUIRE(received == payload);
 }
 
-TEST_CASE("Closing a room socket wakes a blocked recv and drops queued packets", "[core][sockets]") {
+TEST_CASE("Closing a room socket wakes a blocked recv and drops queued packets",
+          "[core][sockets]") {
     Network::ProxySocket socket;
     BindSocket(socket, Network::Protocol::UDP);
     REQUIRE(socket.SetRcvTimeo(5000) == Network::Errno::SUCCESS);
@@ -188,9 +187,9 @@ TEST_CASE("Room stream sockets with the default protocol keep stream behavior", 
     Network::ProxySocket socket;
     REQUIRE(socket.Initialize(Network::Domain::INET, Network::Type::STREAM,
                               Network::Protocol::Unspecified) == Network::Errno::SUCCESS);
-    REQUIRE(socket.Bind({.family = Network::Domain::INET,
-                         .ip = {192, 168, 1, 1},
-                         .portno = 35000}) == Network::Errno::SUCCESS);
+    REQUIRE(
+        socket.Bind({.family = Network::Domain::INET, .ip = {192, 168, 1, 1}, .portno = 35000}) ==
+        Network::Errno::SUCCESS);
     REQUIRE(socket.SetRcvTimeo(1000) == Network::Errno::SUCCESS);
 
     std::array<u8, 2> received{};
@@ -247,12 +246,84 @@ TEST_CASE("Room sockets accept only packets for their port and protocol", "[core
 
     Network::ProxyPacket broadcast = MakePacket(Network::Protocol::UDP);
     broadcast.broadcast = true;
-    REQUIRE_FALSE(socket.AcceptsProxyPacket(broadcast));
-    REQUIRE(socket.SetBroadcast(true) == Network::Errno::SUCCESS);
     REQUIRE(socket.AcceptsProxyPacket(broadcast));
+
+    Network::ProxyPacket other_address = MakePacket(Network::Protocol::UDP);
+    other_address.remote_endpoint.ip = {192, 168, 1, 3};
+    REQUIRE_FALSE(socket.AcceptsProxyPacket(other_address));
 
     REQUIRE(socket.Close() == Network::Errno::SUCCESS);
     REQUIRE_FALSE(socket.AcceptsProxyPacket(MakePacket(Network::Protocol::UDP)));
+}
+
+TEST_CASE("Room UDP sockets allocate ephemeral ports and report their bound endpoint",
+          "[core][sockets]") {
+    Network::ProxySocket socket;
+    REQUIRE(socket.Initialize(Network::Domain::INET, Network::Type::DGRAM,
+                              Network::Protocol::Unspecified) == Network::Errno::SUCCESS);
+    REQUIRE(socket.Bind({.family = Network::Domain::INET, .ip = {}, .portno = 0}) ==
+            Network::Errno::SUCCESS);
+
+    const auto [endpoint, error] = socket.GetSockName();
+    REQUIRE(error == Network::Errno::SUCCESS);
+    REQUIRE(endpoint.family == Network::Domain::INET);
+    REQUIRE(endpoint.ip == Network::IPv4Address{});
+    REQUIRE(endpoint.portno >= 49152);
+
+    Network::ProxyPacket packet{};
+    packet.local_endpoint = {
+        .family = Network::Domain::INET, .ip = {192, 168, 1, 2}, .portno = 12345};
+    packet.remote_endpoint = endpoint;
+    packet.protocol = Network::Protocol::UDP;
+    REQUIRE(socket.AcceptsProxyPacket(packet));
+    REQUIRE(socket.Bind(endpoint) == Network::Errno::INVAL);
+}
+
+TEST_CASE("Emulated ICMP sockets return echo replies without raw socket privileges",
+          "[core][sockets]") {
+    Network::ProxySocket socket;
+    REQUIRE(socket.Initialize(Network::Domain::INET, Network::Type::RAW, Network::Protocol::ICMP) ==
+            Network::Errno::SUCCESS);
+    REQUIRE(socket.SetNonBlock(true) == Network::Errno::SUCCESS);
+
+    const std::array<u8, 8> request{8, 0, 0xf7, 0xff, 0, 1, 0, 1};
+    const Network::SockAddrIn destination{
+        .family = Network::Domain::INET,
+        .ip = {1, 1, 1, 1},
+        .portno = 0,
+    };
+    REQUIRE(socket.SendTo(0, request, &destination) ==
+            std::pair<s32, Network::Errno>{8, Network::Errno::SUCCESS});
+
+    const auto ready = socket.EmulatedPoll(Network::PollEvents::In);
+    REQUIRE(ready.has_value());
+    REQUIRE(True(*ready & Network::PollEvents::In));
+
+    std::array<u8, 8> reply{};
+    Network::SockAddrIn source{};
+    REQUIRE(socket.RecvFrom(0, reply, &source) ==
+            std::pair<s32, Network::Errno>{8, Network::Errno::SUCCESS});
+    REQUIRE(reply[0] == 0);
+    REQUIRE(reply[1] == 0);
+    REQUIRE(source.ip == destination.ip);
+}
+
+TEST_CASE("Connected room UDP sockets send through their peer endpoint", "[core][sockets]") {
+    Network::ProxySocket socket;
+    REQUIRE(socket.Initialize(Network::Domain::INET, Network::Type::DGRAM,
+                              Network::Protocol::UDP) == Network::Errno::SUCCESS);
+
+    const Network::SockAddrIn peer{
+        .family = Network::Domain::INET,
+        .ip = {192, 168, 1, 2},
+        .portno = 12345,
+    };
+    REQUIRE(socket.Connect(peer) == Network::Errno::SUCCESS);
+    const auto [connected_peer, error] = socket.GetPeerName();
+    REQUIRE(error == Network::Errno::SUCCESS);
+    REQUIRE(connected_peer.family == peer.family);
+    REQUIRE(connected_peer.ip == peer.ip);
+    REQUIRE(connected_peer.portno == peer.portno);
 }
 
 TEST_CASE("Native sockets accept no room packets", "[core][sockets]") {

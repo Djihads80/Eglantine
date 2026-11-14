@@ -50,6 +50,7 @@ enum class Errno {
     MSGSIZE,
     INPROGRESS,
     ISCONN,
+    OPNOTSUPP,
     OTHER,
 };
 

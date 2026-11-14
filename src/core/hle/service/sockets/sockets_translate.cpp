@@ -35,6 +35,14 @@ Errno Translate(Network::Errno value) {
         return Errno::NOTCONN;
     case Network::Errno::TIMEDOUT:
         return Errno::TIMEDOUT;
+    case Network::Errno::MSGSIZE:
+        return Errno::MSGSIZE;
+    case Network::Errno::NETDOWN:
+        return Errno::NETDOWN;
+    case Network::Errno::NETUNREACH:
+        return Errno::NETUNREACH;
+    case Network::Errno::HOSTUNREACH:
+        return Errno::HOSTUNREACH;
     case Network::Errno::CONNABORTED:
         return Errno::CONNABORTED;
     case Network::Errno::CONNRESET:
@@ -43,6 +51,10 @@ Errno Translate(Network::Errno value) {
         return Errno::INPROGRESS;
     case Network::Errno::ISCONN:
         return Errno::ISCONN;
+    case Network::Errno::OPNOTSUPP:
+        return Errno::OPNOTSUPP;
+    case Network::Errno::OTHER:
+        return Errno::ACCES;
     default:
         UNIMPLEMENTED_MSG("Unimplemented errno={}", value);
         return Errno::SUCCESS;
@@ -175,11 +187,16 @@ Network::Type Translate(Type type) {
 
 Type Translate(Network::Type type) {
     switch (type) {
-    case Network::Type::Unspecified: return Type::Unspecified;
-    case Network::Type::STREAM: return Type::STREAM;
-    case Network::Type::DGRAM: return Type::DGRAM;
-    case Network::Type::RAW: return Type::RAW;
-    case Network::Type::SEQPACKET: return Type::SEQPACKET;
+    case Network::Type::Unspecified:
+        return Type::Unspecified;
+    case Network::Type::STREAM:
+        return Type::STREAM;
+    case Network::Type::DGRAM:
+        return Type::DGRAM;
+    case Network::Type::RAW:
+        return Type::RAW;
+    case Network::Type::SEQPACKET:
+        return Type::SEQPACKET;
     default:
         UNIMPLEMENTED_MSG("Unimplemented type={}", type);
         return Type{};
@@ -301,7 +318,9 @@ Type Translate(Network::Type type) {
     NETWORK_PROTOCOL_TRANSLATE_ELEM(PFSYNC)
 [[nodiscard]] Network::Protocol Translate(Protocol protocol) {
     switch (protocol) {
-#define NETWORK_PROTOCOL_TRANSLATE_ELEM(name) case Protocol::name: return Network::Protocol::name;
+#define NETWORK_PROTOCOL_TRANSLATE_ELEM(name)                                                      \
+    case Protocol::name:                                                                           \
+        return Network::Protocol::name;
     NETWORK_PROTOCOL_TRANSLATE_LIST
 #undef NETWORK_PROTOCOL_TRANSLATE_ELEM
     default:
@@ -311,7 +330,9 @@ Type Translate(Network::Type type) {
 }
 [[nodiscard]] Protocol Translate(Network::Protocol protocol) {
     switch (protocol) {
-#define NETWORK_PROTOCOL_TRANSLATE_ELEM(name) case Network::Protocol::name: return Protocol::name;
+#define NETWORK_PROTOCOL_TRANSLATE_ELEM(name)                                                      \
+    case Network::Protocol::name:                                                                  \
+        return Protocol::name;
     NETWORK_PROTOCOL_TRANSLATE_LIST
 #undef NETWORK_PROTOCOL_TRANSLATE_ELEM
     default:
