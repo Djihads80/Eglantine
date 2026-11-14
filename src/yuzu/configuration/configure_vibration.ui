@@ -510,6 +510,16 @@
         </property>
        </widget>
       </item>
+      <item>
+       <widget class="QCheckBox" name="checkBoxDualSenseHaptics">
+        <property name="toolTip">
+         <string>Play HD Rumble through the DualSense haptic actuators. Requires a USB connection.</string>
+        </property>
+        <property name="text">
+         <string>Enable DualSense HD Haptics</string>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>
