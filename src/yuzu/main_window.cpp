@@ -94,6 +94,7 @@
 #include <QEventLoop>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QInputDialog>
@@ -471,6 +472,7 @@ MainWindow::MainWindow(bool has_broken_vulkan)
 
     QtCommon::SetupHID();
     controller_dialog->refreshConfiguration();
+    WatchControlsReloadRequests();
 
     UpdateWindowTitle();
 
@@ -2487,6 +2489,7 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         Loader::GetLoader(*QtCommon::system, v_file, params.program_id, params.program_index);
 
     std::optional<QtConfig> per_game_config;
+    game_input_profile_players.clear();
     if (loader != nullptr && loader->ReadProgramId(title_id) == Loader::ResultStatus::Success &&
         type == StartGameType::Normal) {
         // Load per game settings
@@ -2498,6 +2501,16 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         per_game_config.emplace(config_file_name, Config::ConfigType::PerGameConfig);
         QtCommon::system->HIDCore().ReloadInputDevices();
         QtCommon::system->ApplySettings();
+
+        const bool players_global = Settings::values.players.UsingGlobal();
+        Settings::values.players.SetGlobal(false);
+        const auto& players = Settings::values.players.GetValue();
+        for (std::size_t p = 0; p < players.size(); ++p) {
+            if (!players[p].profile_name.empty()) {
+                game_input_profile_players.push_back(p);
+            }
+        }
+        Settings::values.players.SetGlobal(players_global);
     }
 
     const auto* preset = Settings::FindGamePreset(title_id);
@@ -2821,6 +2834,7 @@ void MainWindow::OnEmulationStopped() {
     }
 
     emulation_running = false;
+    game_input_profile_players.clear();
 
     discord_rpc->Update();
     Common::FeralGamemode::Stop();
@@ -3808,6 +3822,75 @@ void MainWindow::OnExecuteProgram(std::size_t program_index) {
 
 void MainWindow::OnExit() {
     ShutdownGame();
+}
+
+// Other programs, such as launchers that edit the controls, can have them applied without a
+// restart. They write the [Controls] keys of the players to change, in the same format as
+// qt-config.ini, to a temporary file in the config folder, then rename it to "reload-controls" so
+// that it is never read half written. Keys left out of the request keep their value. The emulator
+// applies the request, saves it in its configuration and removes the file, which tells the program
+// that it was handled. A request written before the emulator starts is applied when it starts.
+static std::filesystem::path ControlsReloadRequestPath() {
+    return Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir) / "reload-controls";
+}
+
+static std::filesystem::path ControlsReloadApplyingPath() {
+    return Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir) / "reload-controls.applying";
+}
+
+void MainWindow::WatchControlsReloadRequests() {
+    // Left by a run that stopped while applying a request.
+    Common::FS::RemoveFile(ControlsReloadApplyingPath());
+    controls_reload_watcher = new QFileSystemWatcher(this);
+    controls_reload_watcher->addPath(QString::fromStdString(
+        Common::FS::PathToUTF8String(ControlsReloadRequestPath().parent_path())));
+    connect(controls_reload_watcher, &QFileSystemWatcher::directoryChanged, this,
+            &MainWindow::OnControlsReloadRequested);
+    OnControlsReloadRequested();
+}
+
+void MainWindow::RetryControlsReloadLater() {
+    if (controls_reload_queued) {
+        return;
+    }
+    controls_reload_queued = true;
+    QTimer::singleShot(500, this, [this] {
+        controls_reload_queued = false;
+        OnControlsReloadRequested();
+    });
+}
+
+void MainWindow::OnControlsReloadRequested() {
+    if (!Common::FS::Exists(ControlsReloadRequestPath())) {
+        return;
+    }
+    // While a settings window is open, it owns the controls: try again once it is closed.
+    if (QApplication::activeModalWidget() != nullptr) {
+        RetryControlsReloadLater();
+        return;
+    }
+    // Take the request first, so the program that wrote it cannot change or remove it while it
+    // is read. On Windows this fails while that program still has the file open.
+    Common::FS::RemoveFile(ControlsReloadApplyingPath());
+    if (!Common::FS::RenameFile(ControlsReloadRequestPath(), ControlsReloadApplyingPath())) {
+        RetryControlsReloadLater();
+        return;
+    }
+    LOG_INFO(Frontend, "Applying the controls sent by another program");
+    const auto players = config->ApplyPlayerValuesFromFile(
+        Common::FS::PathToUTF8String(ControlsReloadApplyingPath()), game_input_profile_players);
+    Common::FS::RemoveFile(ControlsReloadApplyingPath());
+
+    // As when the configuration is loaded, a handheld player 1 puts the console in handheld mode.
+    const bool player_1_handheld = Settings::values.players.GetValue()[0].controller_type ==
+                                   Settings::ControllerType::Handheld;
+    if (std::find(players.begin(), players.end(), std::size_t{0}) != players.end() &&
+        player_1_handheld &&
+        Settings::IsDockedMode()) {
+        OnToggleDockedMode();
+    }
+    QtCommon::system->HIDCore().ReloadInputMappings(players);
+    controller_dialog->refreshConfiguration();
 }
 
 void MainWindow::OnSaveConfig() {

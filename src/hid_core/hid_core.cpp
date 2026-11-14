@@ -210,6 +210,14 @@ void HIDCore::ReloadInputDevices() {
     devices->ReloadFromSettings();
 }
 
+void HIDCore::ReloadInputMappings(const std::vector<std::size_t>& player_indices) {
+    for (const std::size_t index : player_indices) {
+        if (auto* controller = GetEmulatedControllerByIndex(index)) {
+            controller->ReloadMappingsFromSettings();
+        }
+    }
+}
+
 void HIDCore::UnloadInputDevices() {
     player_1->UnloadInput();
     player_2->UnloadInput();

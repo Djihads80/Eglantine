@@ -7,6 +7,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 #include "common/common_funcs.h"
 #include "hid_core/hid_types.h"
@@ -69,6 +70,9 @@ public:
 
     /// Reloads all input devices from settings
     void ReloadInputDevices();
+
+    /// Applies the mappings from settings to these players, keeping connected controllers connected
+    void ReloadInputMappings(const std::vector<std::size_t>& player_indices);
 
     /// Removes all callbacks from input common
     void UnloadInputDevices();

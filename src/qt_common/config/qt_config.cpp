@@ -4,6 +4,11 @@
 // SPDX-FileCopyrightText: 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <string_view>
+#include <utility>
+
+#include "common/fs/file.h"
 #include "common/game_presets.h"
 #include "common/logging.h"
 #include "input_common/main.h"
@@ -619,6 +624,97 @@ void QtConfig::ReadQtControlPlayerValues(std::size_t player_index) {
     ReadQtPlayerValues(player_index);
 
     EndGroup();
+}
+
+std::vector<std::size_t> QtConfig::ApplyPlayerValuesFromFile(
+    const std::string& path, const std::vector<std::size_t>& players_to_keep) {
+    // The file uses the same [Controls] keys as this configuration. Only the players that have
+    // keys in it change, and only the keys it has: the others keep their current value.
+    CSimpleIniA request;
+    request.SetUnicode(true);
+    request.SetSpaces(false);
+    if (request.LoadData(Common::FS::ReadStringFromFile(path, Common::FS::FileType::TextFile)) <
+        0) {
+        LOG_ERROR(Config, "Could not read the controls request {}", path);
+        return {};
+    }
+
+    const std::string section = Settings::TranslateCategory(Settings::Category::Controls);
+    CSimpleIniA::TNamesDepend keys;
+    request.GetAllKeys(section.c_str(), keys);
+    std::vector<std::size_t> players_in_file;
+    for (std::size_t p = 0; p < Settings::values.players.GetValue().size(); ++p) {
+        const std::string prefix = "player_" + std::to_string(p) + "_";
+        const bool found = std::any_of(keys.begin(), keys.end(), [&prefix](const auto& key) {
+            return std::string_view(key.pItem).starts_with(prefix);
+        });
+        if (found) {
+            players_in_file.push_back(p);
+        }
+    }
+    if (players_in_file.empty()) {
+        return {};
+    }
+
+    const bool players_global = Settings::values.players.UsingGlobal();
+    Settings::values.players.SetGlobal(true);
+
+    // Read from the current values of these players with the request's keys on top. A value
+    // without its "\default" flag would be read as the default, so the request's values get one.
+    auto own_config = std::exchange(config, std::make_unique<CSimpleIniA>());
+    config->SetUnicode(true);
+    config->SetSpaces(false);
+    BeginGroup(section);
+    for (const std::size_t p : players_in_file) {
+        SavePlayerValues(p);
+        SaveQtPlayerValues(p);
+    }
+    EndGroup();
+    for (const auto& key : keys) {
+        const std::string name = key.pItem;
+        if (!name.starts_with("player_")) {
+            continue;
+        }
+        config->SetValue(section.c_str(), name.c_str(),
+                         request.GetValue(section.c_str(), name.c_str()));
+        const std::string default_flag = name + "\\default";
+        if (!name.ends_with("\\default") &&
+            request.GetValue(section.c_str(), default_flag.c_str()) == nullptr) {
+            config->SetValue(section.c_str(), default_flag.c_str(), "false");
+        }
+    }
+    for (const std::size_t p : players_in_file) {
+        ReadQtControlPlayerValues(p);
+    }
+    config = std::move(own_config);
+
+    // Keep the new controls in this configuration file right away, as the controls window does.
+    BeginGroup(section);
+    for (const std::size_t p : players_in_file) {
+        SavePlayerValues(p);
+        SaveQtPlayerValues(p);
+    }
+    EndGroup();
+    WriteToIni();
+
+    // During a game, the game's copy of the players is the one in use, even when the setting is
+    // switched back to its global value. Players with the game's own input profile keep it, the
+    // others take the new controls.
+    std::vector<std::size_t> players_to_apply;
+    Settings::values.players.SetGlobal(false);
+    auto& game_players = Settings::values.players.GetValue();
+    const auto& global_players = Settings::values.players.GetValue(true);
+    for (const std::size_t p : players_in_file) {
+        if (std::find(players_to_keep.begin(), players_to_keep.end(), p) !=
+            players_to_keep.end()) {
+            continue;
+        }
+        game_players[p] = global_players[p];
+        game_players[p].profile_name = "";
+        players_to_apply.push_back(p);
+    }
+    Settings::values.players.SetGlobal(players_global);
+    return players_to_apply;
 }
 
 void QtConfig::SaveQtControlPlayerValues(std::size_t player_index) {

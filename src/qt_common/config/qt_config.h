@@ -1,10 +1,12 @@
-// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // SPDX-FileCopyrightText: 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
+
+#include <vector>
 
 #include <QMetaType>
 
@@ -20,6 +22,16 @@ public:
     void SaveAllValues() override;
 
     void ReadQtControlPlayerValues(std::size_t player_index);
+
+    /**
+     * Applies the players' controls found in another file that uses the same keys, and saves them
+     * in this configuration. Players without keys in that file are left as they are, and keys the
+     * file leaves out keep their value. Players in players_to_keep are only saved: they use the
+     * running game's own input profile.
+     * Returns the indices of the players whose controls changed.
+     */
+    std::vector<std::size_t> ApplyPlayerValuesFromFile(
+        const std::string& path, const std::vector<std::size_t>& players_to_keep);
     void SaveQtControlPlayerValues(std::size_t player_index);
 
 protected:
