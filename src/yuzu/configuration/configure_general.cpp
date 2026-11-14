@@ -11,6 +11,7 @@
 #include <QFileDialog>
 #include <QListWidget>
 #include <QMessageBox>
+#include "common/scm_rev.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "qt_common/config/uisettings.h"
@@ -18,6 +19,9 @@
 #include "yuzu/configuration/configuration_shared.h"
 #include "yuzu/configuration/configure_general.h"
 #include "yuzu/configuration/shared_widget.h"
+#ifdef ENABLE_UPDATE_CHECKER
+#include "frontend_common/update_checker.h"
+#endif
 
 ConfigureGeneral::ConfigureGeneral(const Core::System& system_,
                                    std::shared_ptr<std::vector<ConfigurationShared::Tab*>> group_,
@@ -56,6 +60,7 @@ void ConfigureGeneral::Setup(const ConfigurationShared::Builder& builder) {
     QLayout& general_layout = *ui->general_widget->layout();
     std::map<u32, QWidget*> general_hold{};
     std::map<u32, QWidget*> linux_hold{};
+    std::vector<QWidget*> update_hold{};
 
     std::vector<Settings::BasicSetting*> settings;
 
@@ -67,6 +72,19 @@ void ConfigureGeneral::Setup(const ConfigurationShared::Builder& builder) {
 
     push(UISettings::values.linkage.by_category[Settings::Category::UiGeneral]);
     for (const auto setting : settings) {
+        const bool is_update_channel = setting->Id() == UISettings::values.update_channel.Id();
+        const bool is_update_setting =
+            is_update_channel || setting->Id() == UISettings::values.check_for_updates.Id();
+#ifdef ENABLE_UPDATE_CHECKER
+        if (is_update_channel && !UpdateChecker::BuildChannel()) {
+            continue;
+        }
+#else
+        if (is_update_setting) {
+            continue;
+        }
+#endif
+
         auto* widget = builder.BuildWidget(setting, apply_funcs);
 
         if (widget == nullptr) {
@@ -74,6 +92,19 @@ void ConfigureGeneral::Setup(const ConfigurationShared::Builder& builder) {
         }
         if (!widget->Valid()) {
             widget->deleteLater();
+            continue;
+        }
+
+#ifdef ENABLE_UPDATE_CHECKER
+        if (is_update_channel) {
+            widget->setToolTip(widget->toolTip() + QStringLiteral("\n\n") +
+                               tr("Installed version: %1")
+                                   .arg(QString::fromUtf8(Common::g_build_version)));
+        }
+#endif
+
+        if (is_update_setting) {
+            update_hold.push_back(widget);
             continue;
         }
 
@@ -89,6 +120,11 @@ void ConfigureGeneral::Setup(const ConfigurationShared::Builder& builder) {
     for (const auto& [id, widget] : general_hold) {
         general_layout.addWidget(widget);
     }
+
+    for (auto* widget : update_hold) {
+        ui->updates_widget->layout()->addWidget(widget);
+    }
+    ui->UpdatesGroupBox->setVisible(!update_hold.empty());
 }
 
 // Called to set the callback when resetting settings to defaults
@@ -112,8 +148,12 @@ void ConfigureGeneral::ResetDefaults() {
 
 void ConfigureGeneral::ApplyConfiguration() {
     bool powered_on = system.IsPoweredOn();
+    const auto previous_channel = UISettings::values.update_channel.GetValue();
     for (const auto& func : apply_funcs) {
         func(powered_on);
+    }
+    if (UISettings::values.update_channel.GetValue() != previous_channel) {
+        UISettings::values.skipped_update.SetValue({});
     }
 
     std::vector<std::string> new_dirs;

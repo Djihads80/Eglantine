@@ -112,7 +112,9 @@ jobs:
           -DYUZU_USE_BUNDLED_QT=OFF
           -DYUZU_USE_BUNDLED_SDL3=ON
           -DENABLE_QT_TRANSLATION=ON
-          -DENABLE_UPDATE_CHECKER=OFF
+          -DENABLE_UPDATE_CHECKER=${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || 'OFF' }}
+          -DEGLANTINE_UPDATE_REPO=${{ github.repository }}
+          -DEGLANTINE_RELEASE_PLATFORM=windows-x86_64
           -DUSE_DISCORD_PRESENCE=ON
           -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }}
           -DCMAKE_C_COMPILER_LAUNCHER=sccache
@@ -125,7 +127,10 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          cmake --build build/release --target yuzu yuzu-cmd --parallel
+          targets="yuzu yuzu-cmd"
+          # The updater helper only exists in release and daily builds, where the update checker is on.
+          if [ "${{ inputs.release || startsWith(inputs.tag, 'daily-') }}" = "true" ]; then targets="$targets eglantine-updater"; fi
+          cmake --build build/release --target $targets --parallel
           sccache --show-stats
 
       - name: Package Windows binary
@@ -229,7 +234,9 @@ jobs:
             -DVulkanHeaders_FORCE_BUNDLED=ON \
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
             -DENABLE_QT_TRANSLATION=ON \
-            -DENABLE_UPDATE_CHECKER=OFF \
+            -DENABLE_UPDATE_CHECKER=${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || 'OFF' }} \
+            -DEGLANTINE_UPDATE_REPO=${{ github.repository }} \
+            -DEGLANTINE_RELEASE_PLATFORM=windows-x86_64-pgo \
             -DUSE_DISCORD_PRESENCE=ON \
             -DUSE_CCACHE=ON \
             -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }} \
@@ -242,7 +249,10 @@ jobs:
       - name: Build
         shell: msys2 {0}
         run: |
-          cmake --build build/release --target yuzu yuzu-cmd --parallel
+          targets="yuzu yuzu-cmd"
+          # The updater helper only exists in release and daily builds, where the update checker is on.
+          if [ "${{ inputs.release || startsWith(inputs.tag, 'daily-') }}" = "true" ]; then targets="$targets eglantine-updater"; fi
+          cmake --build build/release --target $targets --parallel
           ccache --show-stats
 
       # A dynamic MinGW build is not portable on its own: windeployqt6 brings the Qt libraries and

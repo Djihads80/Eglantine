@@ -37,9 +37,7 @@
 #include "common/logging.h"
 #include "common/string_util.h"
 #include "qt_common/config/uisettings.h"
-#ifdef YUZU_BUNDLED_OPENSSL
-#include <openssl/cert.h>
-#endif
+#include "common/net/ca_store.h"
 
 namespace {
 
@@ -208,9 +206,7 @@ HttpResult HttpGet(const std::string& full_url, std::chrono::steady_clock::time_
         client.set_write_timeout(remaining);
         client.set_max_timeout(remaining);
         client.set_follow_location(true);
-#ifdef YUZU_BUNDLED_OPENSSL
-        client.load_ca_cert_store(kCert, sizeof(kCert));
-#endif
+        Common::Net::ConfigureCaStore(client);
         httplib::Headers headers{{"User-Agent", "Eglantine"}};
         if (!bearer_token.empty()) {
             headers.emplace("Authorization", "Bearer " + bearer_token);

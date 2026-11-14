@@ -171,11 +171,14 @@ jobs:
             -DYUZU_USE_BUNDLED_QT=OFF
             "-DCMAKE_PREFIX_PATH=$QT_ROOT_DIR"
             -DYUZU_USE_BUNDLED_SDL3=ON
+            -DYUZU_USE_BUNDLED_OPENSSL=ON
             -DYUZU_USE_BUNDLED_FFMPEG=ON
             -DVulkanHeaders_FORCE_BUNDLED=ON
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON
             -DENABLE_QT_TRANSLATION=ON
-            -DENABLE_UPDATE_CHECKER=OFF
+            -DENABLE_UPDATE_CHECKER=${{ (inputs.release || startsWith(inputs.tag, 'daily-')) && 'ON' || 'OFF' }}
+            -DEGLANTINE_UPDATE_REPO=${{ github.repository }}
+            -DEGLANTINE_RELEASE_PLATFORM=${{ env.PLATFORM }}
             -DUSE_DISCORD_PRESENCE=ON
             -DUSE_CCACHE=ON
             -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }}

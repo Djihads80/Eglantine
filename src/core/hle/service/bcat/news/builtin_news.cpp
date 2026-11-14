@@ -6,6 +6,7 @@
 #include "core/hle/service/bcat/news/builtin_news.h"
 #include "core/hle/service/bcat/news/msgpack.h"
 #include "core/hle/service/bcat/news/news_storage.h"
+#include "frontend_common/update_checker.h"
 
 #include "common/fs/file.h"
 #include "common/fs/path_util.h"
@@ -17,20 +18,13 @@
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
-#include "common/httplib.h"
-
 #include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <future>
 #include <mutex>
 #include <optional>
 #include <thread>
-
-#ifdef YUZU_BUNDLED_OPENSSL
-#include <openssl/cert.h>
-#endif
 
 namespace Service::News {
 namespace {
@@ -79,43 +73,10 @@ std::vector<u8> TryLoadFromDisk(const std::filesystem::path& path) {
     return data;
 }
 
-// TODO(crueter): Migrate to use Common::Net
-std::vector<u8> DownloadImage(const std::string& url_path, const std::filesystem::path& cache_path) {
-    LOG_DEBUG(Service_BCAT, "Downloading image: https://eden-emu.dev{}", url_path);
-    try {
-        httplib::Client cli("https://eden-emu.dev");
-        cli.set_follow_location(true);
-        cli.set_connection_timeout(std::chrono::seconds(2));
-        cli.set_read_timeout(std::chrono::seconds(2));
-
-#ifdef YUZU_BUNDLED_OPENSSL
-        cli.load_ca_cert_store(kCert, sizeof(kCert));
-#endif
-
-        if (auto res = cli.Get(url_path); res && res->status == 200 && !res->body.empty()) {
-            std::vector<u8> data(res->body.begin(), res->body.end());
-
-            std::error_code ec;
-            std::filesystem::create_directories(cache_path.parent_path(), ec);
-            if (std::ofstream out(cache_path, std::ios::binary); out) {
-                out.write(res->body.data(), static_cast<std::streamsize>(res->body.size()));
-            }
-            return data;
-        }
-    } catch (...) {
-        LOG_WARNING(Service_BCAT, "Failed to download: {}", url_path);
-    }
-    return {};
-}
-
+// Images are only read from the cache that earlier builds downloaded from eden-emu.dev; that site
+// has none for this project's releases.
 std::vector<u8> LoadDefaultLogo(bool large) {
-    const auto path = GetDefaultLogoPath(large);
-    const std::string url = large ? "/news/eden_logo_large.jpg" : "/news/eden_logo_small.jpg";
-
-    auto data = TryLoadFromDisk(path);
-    if (!data.empty()) return data;
-
-    return DownloadImage(url, path);
+    return TryLoadFromDisk(GetDefaultLogoPath(large));
 }
 
 void LoadDefaultLogos() {
@@ -137,14 +98,7 @@ std::vector<u8> GetNewsImage(std::string_view news_id, bool large) {
         }
     }
 
-    const auto cache_path = GetNewsImagePath(news_id, large);
-    auto data = TryLoadFromDisk(cache_path);
-
-    if (data.empty()) {
-        const std::string url = fmt::format("/news/{}_{}.jpg", id_str, large ? "large" : "small");
-        data = DownloadImage(url, cache_path);
-    }
-
+    auto data = TryLoadFromDisk(GetNewsImagePath(news_id, large));
     if (data.empty()) {
         data = large ? default_logo_large : default_logo_small;
     }
@@ -156,39 +110,6 @@ std::vector<u8> GetNewsImage(std::string_view news_id, bool large) {
     }
 
     return data;
-}
-
-void PreloadNewsImages(const std::vector<u32>& news_ids) {
-    std::vector<std::future<void>> futures;
-    futures.reserve(news_ids.size() * 2);
-
-    for (const u32 id : news_ids) {
-        const std::string id_str = fmt::format("{}", id);
-
-        {
-            std::lock_guard lock{images_mutex};
-            if (news_images_small.contains(id_str) && news_images_large.contains(id_str)) {
-                continue;
-            }
-        }
-
-        const auto path_small = GetNewsImagePath(id_str, false);
-        const auto path_large = GetNewsImagePath(id_str, true);
-        if (std::filesystem::exists(path_small) && std::filesystem::exists(path_large)) {
-            continue;
-        }
-
-        futures.push_back(std::async(std::launch::async, [id_str]() {
-            GetNewsImage(id_str, false);
-        }));
-        futures.push_back(std::async(std::launch::async, [id_str]() {
-            GetNewsImage(id_str, true);
-        }));
-    }
-
-    for (auto& f : futures) {
-        f.wait();
-    }
 }
 
 std::optional<std::string> ReadCachedJson() {
@@ -286,22 +207,19 @@ std::string FormatBody(std::string body, const std::string_view &title) {
             body.pop_back();
         }
 
-        body += "\n\n... View more on Forgejo";
+        body += "\n\n... View more on GitHub";
     }
 
     return body;
 }
 
 void ImportReleases(const std::vector<Common::Net::Release> &releases) {
-    std::vector<u32> news_ids;
     for (const auto& rel : releases) {
-        const u32 news_id = u32(rel.id & 0x7FFFFFFF);
-        news_ids.push_back(news_id);
-    }
+        // Only tagged releases are news; daily and branch builds are not.
+        if (!UpdateChecker::ParseTag(rel.tag)) {
+            continue;
+        }
 
-    PreloadNewsImages(news_ids);
-
-    for (const auto& rel : releases) {
         const std::string title = rel.title;
         const std::string body = rel.body;
         const std::string html_url = rel.html_url;
@@ -423,7 +341,7 @@ std::vector<u8> BuildMsgpack(std::string_view title, std::string_view body,
     w.WriteString("");
 
     w.WriteKey("allow_domains");
-    w.WriteString("^https?://git.eden-emu.dev(/|$)");
+    w.WriteString("^https?://github\\.com(/|$)");
 
     // More link
     w.WriteKey("more");
@@ -433,7 +351,7 @@ std::vector<u8> BuildMsgpack(std::string_view title, std::string_view body,
     w.WriteKey("url");
     w.WriteString(html_url);
     w.WriteKey("text");
-    w.WriteString("Open Forgejo");
+    w.WriteString("Open GitHub");
 
     // Body
     w.WriteKey("body");
@@ -463,7 +381,7 @@ void EnsureBuiltinNewsLoaded() {
 
         if (const auto cached = ReadCachedJson()) {
             const std::string_view body = cached.value();
-            const auto releases = Common::Net::Release::ListFromJson(body, Common::g_build_auto_update_stable_api, Common::g_build_auto_update_stable_repo);
+            const auto releases = Common::Net::Release::ListFromJson(body, Common::g_build_auto_update_api, Common::g_build_auto_update_repo);
             ImportReleases(releases);
 
             LOG_INFO(Service_BCAT, "news: {} entries loaded from cache", NewsStorage::Instance().ListAll().size());
@@ -473,10 +391,10 @@ void EnsureBuiltinNewsLoaded() {
             if (const auto fresh = Common::Net::GetReleasesBody()) {
                 const std::string_view body = fresh.value();
                 WriteCachedJson(body);
-                const auto releases = Common::Net::Release::ListFromJson(body, Common::g_build_auto_update_stable_api, Common::g_build_auto_update_stable_repo);
+                const auto releases = Common::Net::Release::ListFromJson(body, Common::g_build_auto_update_api, Common::g_build_auto_update_repo);
                 ImportReleases(releases);
 
-                LOG_INFO(Service_BCAT, "news: {} entries updated from Forgejo", NewsStorage::Instance().ListAll().size());
+                LOG_INFO(Service_BCAT, "news: {} entries updated from GitHub", NewsStorage::Instance().ListAll().size());
             }
         }).detach();
     });

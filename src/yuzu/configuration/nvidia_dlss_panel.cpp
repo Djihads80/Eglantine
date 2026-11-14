@@ -38,9 +38,7 @@
 #include "video_core/vulkan_common/streamline.h"
 #include "yuzu/configuration/nvidia_dlss_panel.h"
 
-#ifdef YUZU_BUNDLED_OPENSSL
-#include <openssl/cert.h>
-#endif
+#include "common/net/ca_store.h"
 
 namespace {
 
@@ -262,9 +260,7 @@ private:
         client->set_connection_timeout(30);
         client->set_read_timeout(30);
         client->set_write_timeout(30);
-#ifdef YUZU_BUNDLED_OPENSSL
-        client->load_ca_cert_store(kCert, sizeof(kCert));
-#endif
+        Common::Net::ConfigureCaStore(*client);
         return client;
     }
 

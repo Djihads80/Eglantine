@@ -145,6 +145,7 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 
 #ifdef ENABLE_UPDATE_CHECKER
 #include "frontend_common/update_checker.h"
+#include "frontend_common/update_installer.h"
 #endif
 
 // Common //
@@ -384,6 +385,20 @@ inline static bool isDarkMode() {
 }
 #endif // _WIN32
 
+#ifdef ENABLE_UPDATE_CHECKER
+static Settings::UpdateChannel ToSettingsChannel(UpdateChecker::Channel channel) {
+    switch (channel) {
+    case UpdateChecker::Channel::ReleaseCandidate:
+        return Settings::UpdateChannel::ReleaseCandidate;
+    case UpdateChecker::Channel::Daily:
+        return Settings::UpdateChannel::Daily;
+    case UpdateChecker::Channel::Stable:
+        break;
+    }
+    return Settings::UpdateChannel::Stable;
+}
+#endif
+
 MainWindow::MainWindow(bool has_broken_vulkan)
     : ui{std::make_unique<Ui::MainWindow>()},
       input_subsystem{std::make_shared<InputCommon::InputSubsystem>()}, user_data_migrator{this} {
@@ -462,12 +477,18 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     show();
 
 #ifdef ENABLE_UPDATE_CHECKER
-    if (UISettings::values.check_for_updates) {
-        update_future = QtConcurrent::run(
-            []() -> std::optional<Common::Net::Release> { return UpdateChecker::GetUpdate(); });
-        update_watcher.connect(&update_watcher, &QFutureWatcher<QString>::finished, this,
-                               &MainWindow::OnEmulatorUpdateAvailable);
-        update_watcher.setFuture(update_future);
+    connect(&update_watcher, &QFutureWatcher<UpdateChecker::CheckResult>::finished, this,
+            &MainWindow::OnEmulatorUpdateAvailable);
+    if (const auto build_channel = UpdateChecker::BuildChannel()) {
+        // The first tagged release or daily build to run picks the channel, and it stays until
+        // changed.
+        if (UISettings::values.update_channel.GetValue() == Settings::UpdateChannel::Unset) {
+            UISettings::values.update_channel.SetValue(ToSettingsChannel(*build_channel));
+            config->SaveAllValues();
+        }
+        if (UISettings::values.check_for_updates) {
+            CheckForUpdates(false);
+        }
     }
 #endif
 
@@ -2078,6 +2099,72 @@ void MainWindow::ConnectMenuEvents() {
     connect_menu(ui->action_Firmware_From_Folder, &MainWindow::OnInstallFirmware);
     connect_menu(ui->action_Firmware_From_ZIP, &MainWindow::OnInstallFirmwareFromZIP);
     connect_menu(ui->action_Install_Keys, &MainWindow::OnInstallDecryptionKeys);
+#ifdef ENABLE_UPDATE_CHECKER
+    connect_menu(ui->action_Check_For_Updates, &MainWindow::OnCheckForUpdates);
+#else
+    ui->action_Check_For_Updates->setVisible(false);
+#endif
+#if defined(ENABLE_UPDATE_CHECKER) && (defined(__linux__) || defined(_WIN32))
+    // In main.ui, so a language change retranslates it; hidden until there is a version to restore.
+    auto* restore_action = ui->action_Restore_Previous_Version;
+#ifdef __linux__
+    const auto previous_version = [] {
+        const std::filesystem::path target{qEnvironmentVariable("APPIMAGE").toStdString()};
+        std::error_code ec;
+        return !target.empty() && std::filesystem::is_regular_file(
+                                      UpdateInstaller::PreviousPath(target), ec)
+                   ? target
+                   : std::filesystem::path{};
+    };
+#else
+    const auto previous_version = [] {
+        const std::filesystem::path backup =
+            std::filesystem::path{QCoreApplication::applicationDirPath().toStdWString()} /
+            UpdateInstaller::BackupName;
+        std::error_code ec;
+        const bool has_files =
+            std::filesystem::is_directory(backup, ec) &&
+            std::filesystem::directory_iterator{backup, ec} != std::filesystem::directory_iterator{};
+        return has_files ? backup : std::filesystem::path{};
+    };
+#endif
+    connect(ui->menu_Help, &QMenu::aboutToShow, restore_action,
+            [restore_action, previous_version] {
+                restore_action->setVisible(!previous_version().empty());
+            });
+    connect(restore_action, &QAction::triggered, this, [this, previous_version] {
+        const auto previous = previous_version();
+        if (previous.empty()) {
+            return;
+        }
+        const auto answer = QtCommon::Frontend::Question(
+            tr("Restore Previous Version"),
+            tr("Go back to the version this one replaced? Your settings and data are not "
+               "changed."),
+            QtCommon::Frontend::Yes | QtCommon::Frontend::No);
+        if (answer != QtCommon::Frontend::Yes) {
+            return;
+        }
+#ifdef __linux__
+        const UpdateInstaller::Lock lock{UpdateInstaller::LockPath(previous)};
+        std::error_code ec;
+        if (!lock.Held()) {
+            ec = std::make_error_code(std::errc::device_or_resource_busy);
+        }
+        if (!lock.Held() || !UpdateInstaller::Rollback(previous, ec)) {
+            LOG_ERROR(Frontend, "Could not restore the previous version: {}", ec.message());
+            QtCommon::Frontend::Critical(tr("Failed to restore"),
+                                         tr("Could not restore the previous version: %1")
+                                             .arg(QString::fromStdString(ec.message())));
+            return;
+        }
+        LOG_INFO(Frontend, "Restored the previous version of {}", previous.string());
+        UpdateDialog::Restart(this, QString::fromStdString(previous.string()));
+#else
+        UpdateDialog::LaunchInstaller(this, QString::fromStdWString(previous.wstring()));
+#endif
+    });
+#endif
     connect_menu(ui->action_About, &MainWindow::OnAbout);
     connect_menu(ui->action_Eden_Dependencies, &MainWindow::OnEdenDependencies);
     connect_menu(ui->action_Data_Manager, &MainWindow::OnDataDialog);
@@ -5066,13 +5153,103 @@ void MainWindow::OnCaptureScreenshot() {
 }
 
 #ifdef ENABLE_UPDATE_CHECKER
-void MainWindow::OnEmulatorUpdateAvailable() {
-    std::optional<Common::Net::Release> version = update_future.result();
-    if (!version)
+void MainWindow::CheckForUpdates(bool manual) {
+    if (update_check_running) {
+        // Report the check that is already in flight instead of starting another one
+        update_check_manual |= manual;
         return;
+    }
 
-    UpdateDialog dialog(version.value(), this);
-    dialog.exec();
+    switch (UISettings::values.update_channel.GetValue()) {
+    case Settings::UpdateChannel::ReleaseCandidate:
+        update_check_channel = UpdateChecker::Channel::ReleaseCandidate;
+        break;
+    case Settings::UpdateChannel::Daily:
+        update_check_channel = UpdateChecker::Channel::Daily;
+        break;
+    default:
+        update_check_channel = UpdateChecker::Channel::Stable;
+        break;
+    }
+    update_check_running = true;
+    update_check_manual = manual;
+    update_future = QtConcurrent::run(
+        [channel = update_check_channel]() { return UpdateChecker::Check(channel); });
+    update_watcher.setFuture(update_future);
+}
+
+void MainWindow::OnCheckForUpdates() {
+    if (!UpdateChecker::BuildChannel()) {
+        QMessageBox::information(
+            this, tr("Check for Updates"),
+            tr("This build is not a tagged release or a daily build, so it does not check "
+               "for updates."));
+        return;
+    }
+    CheckForUpdates(true);
+}
+
+void MainWindow::OnEmulatorUpdateAvailable() {
+    const bool manual = std::exchange(update_check_manual, false);
+    update_check_running = false;
+
+    const auto result = update_future.result();
+    const auto channel = update_check_channel;
+    const auto title = tr("Check for Updates");
+
+    if (result.failure != UpdateChecker::Failure::None) {
+        LOG_WARNING(Frontend, "Update check failed: {} (HTTP status {})",
+                    static_cast<int>(result.failure), result.status);
+        if (!manual) {
+            return;
+        }
+        switch (result.failure) {
+        case UpdateChecker::Failure::RateLimited:
+            QMessageBox::warning(this, title,
+                                 tr("GitHub is limiting requests from your network right now. "
+                                    "Please try again later."));
+            break;
+        case UpdateChecker::Failure::Http:
+            QMessageBox::warning(this, title,
+                                 tr("GitHub answered with HTTP error %1. Please try again later.")
+                                     .arg(result.status));
+            break;
+        case UpdateChecker::Failure::NotReleaseBuild:
+            QMessageBox::information(
+                this, title,
+                tr("This build is not a tagged release or a daily build, so it does not check "
+                   "for updates."));
+            break;
+        default:
+            QMessageBox::warning(
+                this, title,
+                tr("Could not reach GitHub. Check your internet connection and try again."));
+            break;
+        }
+        return;
+    }
+
+    if (!result.update) {
+        if (manual) {
+            QMessageBox::information(
+                this, title,
+                tr("You are running the newest version on the %1 channel (%2).")
+                    .arg(UpdateDialog::ChannelName(channel),
+                         QString::fromUtf8(Common::g_build_version)));
+        }
+        return;
+    }
+
+    const auto& release = *result.update;
+    if (!manual && UISettings::values.skipped_update.GetValue() == release.tag) {
+        return;
+    }
+
+    UpdateDialog dialog(release, channel, this);
+    if (dialog.exec() == UpdateDialog::SkipVersion) {
+        UISettings::values.skipped_update.SetValue(release.tag);
+        config->SaveAllValues();
+    }
 }
 #endif
 

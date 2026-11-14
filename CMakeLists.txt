@@ -282,6 +282,9 @@ option(YUZU_LEGACY "Apply patches that improve compatibility with older GPUs (e.
 
 option(NIGHTLY_BUILD "Use Nightly qualifiers in the update checker and build metadata" OFF)
 
+set(EGLANTINE_UPDATE_REPO "Eglantine-Community/Eglantine" CACHE STRING "GitHub owner/name repository the update checker reads releases from")
+set(EGLANTINE_RELEASE_PLATFORM "" CACHE STRING "Release asset platform of this build, e.g. windows-x86_64, linux-aarch64-pgo, macos-arm64")
+
 cmake_dependent_option(YUZU_ROOM "Enable dedicated room functionality" ON "NOT ANDROID" OFF)
 cmake_dependent_option(YUZU_ROOM_STANDALONE "Enable standalone room executable" ON "YUZU_ROOM" OFF)
 
