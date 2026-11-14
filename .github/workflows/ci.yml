@@ -154,7 +154,7 @@ jobs:
       release: ${{ needs.prepare.outputs.kind == 'stable' || needs.prepare.outputs.kind == 'rc' }}
       nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
       pgo: ${{ inputs.pgo || (needs.prepare.outputs.kind == 'branch' && 'none' || 'both') }}
-      save_cache: ${{ inputs.save_cache }}
+      save_cache: ${{ inputs.save_cache || (needs.prepare.outputs.kind == 'daily') }}
 
   windows:
     name: Windows
@@ -173,7 +173,7 @@ jobs:
       release: ${{ needs.prepare.outputs.kind == 'stable' || needs.prepare.outputs.kind == 'rc' }}
       nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
       pgo: ${{ inputs.pgo || (needs.prepare.outputs.kind == 'branch' && 'none' || 'both') }}
-      save_cache: ${{ inputs.save_cache }}
+      save_cache: ${{ inputs.save_cache || (needs.prepare.outputs.kind == 'daily') }}
 
   macos:
     name: macOS
@@ -191,7 +191,7 @@ jobs:
       release: ${{ needs.prepare.outputs.kind == 'stable' || needs.prepare.outputs.kind == 'rc' }}
       nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
       runner: ${{ vars.MACOS_RUNNER || 'macos-26' }}
-      save_cache: ${{ inputs.save_cache }}
+      save_cache: ${{ inputs.save_cache || (needs.prepare.outputs.kind == 'daily') }}
 
   # Nix will not gate a release and notifies
   # about a failure when non-Nix Nix-supported targets succeed
@@ -225,7 +225,7 @@ jobs:
       release: ${{ needs.prepare.outputs.kind == 'stable' || needs.prepare.outputs.kind == 'rc' }}
       nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
       pgo: ${{ inputs.pgo || (needs.prepare.outputs.kind == 'branch' && 'none' || 'both') }}
-      save_cache: ${{ inputs.save_cache }}
+      save_cache: ${{ inputs.save_cache || (needs.prepare.outputs.kind == 'daily') }}
     secrets:
       CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
