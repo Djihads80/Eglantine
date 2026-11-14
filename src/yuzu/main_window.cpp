@@ -4127,6 +4127,9 @@ void MainWindow::OpenConfigureDialog(bool select_profiles) {
     const bool old_discord_presence = UISettings::values.enable_discord_presence.GetValue();
     const auto old_language_index = Settings::values.language_index.GetValue();
     const bool old_gamemode = UISettings::values.enable_gamemode.GetValue();
+#ifdef ENABLE_UPDATE_CHECKER
+    const auto old_update_channel = UISettings::values.update_channel.GetValue();
+#endif
 #ifdef __unix__
     const bool old_force_x11 = UISettings::values.gui_force_x11.GetValue();
 #endif
@@ -4227,6 +4230,16 @@ void MainWindow::OpenConfigureDialog(bool select_profiles) {
     UISettings::values.configuration_applied = false;
 
     config->SaveAllValues();
+
+#ifdef ENABLE_UPDATE_CHECKER
+    // Checked right away, as a switch between daily builds and tagged releases is only offered when
+    // asked for.
+    const auto update_channel = UISettings::values.update_channel.GetValue();
+    if (update_channel != old_update_channel && update_channel != Settings::UpdateChannel::Unset &&
+        UpdateChecker::BuildChannel()) {
+        CheckForUpdates(true);
+    }
+#endif
 
     if ((UISettings::values.hide_mouse || Settings::values.mouse_panning) && emulation_running) {
         render_window->installEventFilter(render_window);
@@ -5153,6 +5166,14 @@ void MainWindow::OnCaptureScreenshot() {
 }
 
 #ifdef ENABLE_UPDATE_CHECKER
+// A daily build is rebuilt under the same tag, so skipping one names its commit too.
+static std::string SkippedUpdateKey(const Common::Net::Release& release) {
+    if (release.commit.empty() || !UpdateChecker::ParseDailyTag(release.tag)) {
+        return release.tag;
+    }
+    return release.tag + "@" + release.commit;
+}
+
 void MainWindow::CheckForUpdates(bool manual) {
     if (update_check_running) {
         // Report the check that is already in flight instead of starting another one
@@ -5241,13 +5262,20 @@ void MainWindow::OnEmulatorUpdateAvailable() {
     }
 
     const auto& release = *result.update;
-    if (!manual && UISettings::values.skipped_update.GetValue() == release.tag) {
-        return;
+    if (!manual) {
+        if (UISettings::values.skipped_update.GetValue() == SkippedUpdateKey(release)) {
+            return;
+        }
+        // Daily builds and tagged releases cannot be ordered, so a switch is as likely a downgrade
+        // and is not offered at every startup.
+        if (UpdateChecker::IsChannelSwitch(UpdateChecker::BuildTag(), release.tag)) {
+            return;
+        }
     }
 
     UpdateDialog dialog(release, channel, this);
     if (dialog.exec() == UpdateDialog::SkipVersion) {
-        UISettings::values.skipped_update.SetValue(release.tag);
+        UISettings::values.skipped_update.SetValue(SkippedUpdateKey(release));
         config->SaveAllValues();
     }
 }

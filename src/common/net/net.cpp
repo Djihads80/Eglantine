@@ -133,6 +133,12 @@ std::vector<Asset> Release::GetPlatformAssets(std::string_view platform,
     return {};
 }
 
+static bool IsCommitSha(std::string_view text) {
+    return text.size() == 40 && std::ranges::all_of(text, [](char ch) {
+               return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+           });
+}
+
 static inline u64 ParseIsoTimestamp(const std::string& iso) {
     if (iso.empty())
         return 0;
@@ -174,6 +180,11 @@ std::optional<Release> Release::FromJson(const nlohmann::json& json, const std::
 
     rel.published = ParseIsoTimestamp(json.value("published_at", std::string{}));
     rel.prerelease = json.value("prerelease", false);
+
+    const auto target = json.value("target_commitish", std::string{});
+    if (IsCommitSha(target)) {
+        rel.commit = target;
+    }
 
     auto body = json.contains("body") && json["body"].is_string()
                     ? json["body"].get<std::string>()
@@ -321,7 +332,7 @@ struct ReleasesJson {
 
 // GitHub lists releases newest first by creation, and rolling builds are recreated on every build,
 // so tagged releases can sit several pages down. Every page is read: a list cut short could hide
-// the newest tag and read as no update.
+// the newest tag.
 ReleasesJson FetchReleasesJson() {
     constexpr int per_page = 100;
     constexpr int max_pages = 10;
@@ -360,20 +371,61 @@ ReleasesJson FetchReleasesJson() {
 
 } // namespace
 
-ReleaseList GetReleases() {
-    const auto json = FetchReleasesJson();
-    if (!json.ok) {
-        return {.status = json.status};
-    }
+TagList GetTags(std::string_view prefix) {
     const auto url = fmt::format("https://{}", Common::g_build_auto_update_api);
+    const auto response = Fetch(url, fmt::format("/repos/{}/git/matching-refs/tags/{}",
+                                                 Common::g_build_auto_update_repo, prefix));
+    if (!response.body) {
+        return {.status = response.status};
+    }
+    const auto json = nlohmann::json::parse(*response.body, nullptr, false);
+    if (!json.is_array()) {
+        LOG_WARNING(Common, "Tags response is not a JSON array");
+        return {.status = response.status};
+    }
+
+    constexpr std::string_view ref_prefix = "refs/tags/";
+    TagList result{.ok = true, .status = response.status};
+    for (const auto& ref : json) {
+        if (!ref.is_object() || !ref.contains("ref") || !ref["ref"].is_string()) {
+            continue;
+        }
+        const auto name = ref["ref"].get<std::string>();
+        if (!name.starts_with(ref_prefix)) {
+            continue;
+        }
+        Tag tag{.name = name.substr(ref_prefix.size())};
+        const auto object = ref.value("object", nlohmann::json::object());
+        if (object.is_object() && object.value("type", std::string{}) == "commit") {
+            const auto sha = object.value("sha", std::string{});
+            if (IsCommitSha(sha)) {
+                tag.commit = sha;
+            }
+        }
+        result.tags.push_back(std::move(tag));
+    }
+    return result;
+}
+
+ReleaseResult GetRelease(std::string_view tag) {
+    const auto url = fmt::format("https://{}", Common::g_build_auto_update_api);
+    const auto response = Fetch(
+        url, fmt::format("/repos/{}/releases/tags/{}", Common::g_build_auto_update_repo, tag));
+    if (!response.body) {
+        return {.status = response.status};
+    }
+    const auto json = nlohmann::json::parse(*response.body, nullptr, false);
+    if (!json.is_object()) {
+        LOG_WARNING(Common, "Release response is not a JSON object");
+        return {.status = response.status};
+    }
     try {
-        return {.releases =
-                    Release::ListFromJson(json.releases, url, Common::g_build_auto_update_repo),
+        return {.release = Release::FromJson(json, url, Common::g_build_auto_update_repo),
                 .ok = true,
-                .status = json.status};
+                .status = response.status};
     } catch (std::exception& e) {
-        LOG_WARNING(Common, "Failed to parse releases: {}", e.what());
-        return {.status = json.status};
+        LOG_WARNING(Common, "Failed to parse release {}: {}", tag, e.what());
+        return {.status = response.status};
     }
 }
 

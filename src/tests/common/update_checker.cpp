@@ -17,9 +17,10 @@ using namespace UpdateChecker;
 constexpr std::string_view kPlatform = "windows-x86_64";
 
 // A release shaped like the GitHub API; each file name becomes an asset of the release.
-Common::Net::Release MakeRelease(const std::string& tag,
-                                 const std::vector<std::string>& files = {
-                                     "eglantine-windows-x86_64.zip"}) {
+Common::Net::Release MakeRelease(
+    const std::string& tag,
+    const std::vector<std::string>& files = {"eglantine-windows-x86_64.zip"},
+    const std::string& commit = "nx2") {
     const std::string repo = Common::g_build_auto_update_repo;
     auto assets = nlohmann::json::array();
     for (const auto& file : files) {
@@ -34,6 +35,7 @@ Common::Net::Release MakeRelease(const std::string& tag,
         {"tag_name", tag},
         {"name", tag},
         {"prerelease", tag.find("-rc") != std::string::npos},
+        {"target_commitish", commit},
         {"assets", assets},
     };
     auto release = Common::Net::Release::FromJson(json, "https://github.com", repo);
@@ -50,8 +52,9 @@ std::vector<Common::Net::Release> MakeReleases(const std::vector<std::string>& t
 }
 
 std::string Select(const std::vector<Common::Net::Release>& releases, std::string_view current,
-                   Channel channel, std::string_view platform = kPlatform) {
-    const auto update = SelectUpdate(releases, current, channel, platform);
+                   Channel channel, std::string_view platform = kPlatform,
+                   std::string_view commit = {}) {
+    const auto update = SelectUpdate(releases, current, commit, channel, platform);
     return update ? update->tag : std::string{};
 }
 
@@ -208,6 +211,47 @@ TEST_CASE("UpdateChecker: switching between daily and tagged builds", "[updater]
         CHECK(Select(MakeReleases({"v0.1.0"}), "v0.1.0", Channel::Daily) == "");
         CHECK(Select(MakeReleases({"daily-20261109"}), "daily-20261105", Channel::Stable) == "");
     }
+}
+
+TEST_CASE("UpdateChecker: a daily build rebuilt the same day", "[updater]") {
+    const std::string old_commit(40, 'a');
+    const std::string new_commit(40, 'b');
+    const auto rebuilt =
+        std::vector{MakeRelease("daily-20261112", {"eglantine-windows-x86_64.zip"}, new_commit)};
+
+    CHECK(Select(rebuilt, "daily-20261112", Channel::Daily, kPlatform, old_commit) ==
+          "daily-20261112");
+    CHECK(Select(rebuilt, "daily-20261112", Channel::Daily, kPlatform, new_commit) == "");
+    // Without a known commit on both sides, the same day is not a rebuild.
+    CHECK(Select(rebuilt, "daily-20261112", Channel::Daily, kPlatform, "") == "");
+    CHECK(Select(MakeReleases({"daily-20261112"}), "daily-20261112", Channel::Daily, kPlatform,
+                 old_commit) == "");
+    // A later day still wins over the rebuild.
+    const auto both = std::vector{rebuilt[0], MakeRelease("daily-20261113")};
+    CHECK(Select(both, "daily-20261112", Channel::Daily, kPlatform, old_commit) ==
+          "daily-20261113");
+}
+
+TEST_CASE("UpdateChecker: ranking", "[updater]") {
+    const std::vector<Common::Net::Tag> tags = {
+        {"v0.1.0", ""},         {"v0.2.0-rc1", ""},     {"v0.1.1", ""},        {"vendor", ""},
+        {"daily-20261110", ""}, {"daily-20261112", ""}, {"daily-20261111", ""}};
+    using Ranked = std::vector<std::string>;
+    CHECK(RankUpdates(tags, "v0.0.9", "", Channel::Stable) == Ranked{"v0.1.1", "v0.1.0"});
+    CHECK(RankUpdates(tags, "v0.1.0", "", Channel::ReleaseCandidate) ==
+          Ranked{"v0.2.0-rc1", "v0.1.1"});
+    CHECK(RankUpdates(tags, "daily-20261110", "", Channel::Daily) ==
+          Ranked{"daily-20261112", "daily-20261111"});
+    CHECK(RankUpdates(tags, "v0.1.1", "", Channel::Daily) ==
+          Ranked{"daily-20261112", "daily-20261111", "daily-20261110"});
+    CHECK(RankUpdates(tags, "branch-foo", "", Channel::Stable).empty());
+}
+
+TEST_CASE("UpdateChecker: channel switches", "[updater]") {
+    CHECK(IsChannelSwitch("daily-20261112", "v0.1.0"));
+    CHECK(IsChannelSwitch("v0.1.0-rc1", "daily-20261112"));
+    CHECK_FALSE(IsChannelSwitch("v0.1.0", "v0.2.0-rc1"));
+    CHECK_FALSE(IsChannelSwitch("daily-20261111", "daily-20261112"));
 }
 
 TEST_CASE("UpdateChecker: platform filtering", "[updater]") {
