@@ -1080,7 +1080,7 @@ typename P::Framebuffer* TextureCache<P>::GetFramebuffer() {
 }
 
 template <class P>
-bool TextureCache<P>::ColorTargetHasPriorFrameOutput() noexcept {
+bool TextureCache<P>::ColorTargetWrittenBefore(bool require_uncleared) noexcept {
     if (!maxwell3d) {
         return false;
     }
@@ -1113,8 +1113,19 @@ bool TextureCache<P>::ColorTargetHasPriorFrameOutput() noexcept {
     const ImageBase& image = slot_images[image_id];
     const u64 current_frame = frame_tick + 1;
     return image.first_written_frame != 0 && image.first_written_frame < current_frame &&
-           image.cleared_frame != current_frame;
+           (!require_uncleared || image.cleared_frame != current_frame);
 }
+
+template <class P>
+bool TextureCache<P>::ColorTargetHasPriorFrameOutput() noexcept {
+    return ColorTargetWrittenBefore(true);
+}
+
+template <class P>
+bool TextureCache<P>::ColorTargetWrittenBeforeThisFrame() noexcept {
+    return ColorTargetWrittenBefore(false);
+}
+
 
 template <class P>
 ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
