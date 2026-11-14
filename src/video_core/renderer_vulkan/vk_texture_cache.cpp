@@ -181,7 +181,7 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
         return false;
     }
     constexpr u32 MinSize = 32U << 20;
-    const u32 size = VideoCommon::CalculateGuestSizeInBytes(info);
+    const u64 size = VideoCommon::CalculateGuestSizeInBytes(info);
     return size >= MinSize && info.type != ImageType::e1D && info.type != ImageType::Buffer &&
            info.type != ImageType::Linear && Tegra::Nx2SparseUnwritten(gpu_addr, size);
 }
@@ -201,7 +201,7 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
         IsHugeAstcArray(device, info) ||
         (!IsPixelFormatASTC(info.format) &&
          (!IsPixelFormatBCn(info.format) || device.IsOptimalBcnSupported()));
-    const u32 size = VideoCommon::CalculateGuestSizeInBytes(info);
+    const u64 size = VideoCommon::CalculateGuestSizeInBytes(info);
     return layer_uploads && size >= (32U << 20) && Tegra::Nx2InSparseRegion(gpu_addr, size);
 }
 
@@ -232,20 +232,26 @@ enum class SparseTilesMode {
     return aliased ? SparseTilesMode::Aliased : SparseTilesMode::None;
 }
 
-// A large single 2D image in a Switch 2 sparse region (title 1's world-sized R8/RG16/R16 masks,
-// 170-341 MB, of which the game maps a few MiB) gets memory by sparse block where the guest memory
-// under it can hold data: unbacked at first, then Image::BindTiles. Formats of one texel per
-// block that the host samples as they are.
+// Large NX2 masks and BC6H lightmap arrays get memory by sparse block where guest memory
+// is mapped. A whole BC6H layer can cost 85 MiB even if only a few guest tiles are present.
 [[nodiscard]] bool UsesSparseTiles(const Device& device, const ImageInfo& info, GPUVAddr gpu_addr) {
-    if (SparseTilesModeOf(device) == SparseTilesMode::None || info.type != ImageType::e2D || info.resources.layers != 1 || info.num_samples != 1 ||
+    const auto mode = SparseTilesModeOf(device);
+    if (mode == SparseTilesMode::None || info.type != ImageType::e2D || info.num_samples != 1 ||
         info.size.depth != 1 || info.block.width != 0 ||
-        VideoCore::Surface::DefaultBlockWidth(info.format) != 1 ||
-        VideoCore::Surface::DefaultBlockHeight(info.format) != 1 ||
-        VideoCore::Surface::GetFormatType(info.format) != VideoCore::Surface::SurfaceType::ColorTexture) {
+        VideoCore::Surface::GetFormatType(info.format) !=
+            VideoCore::Surface::SurfaceType::ColorTexture) {
         return false;
     }
-    const u32 size = VideoCommon::CalculateGuestSizeInBytes(info);
-    return size >= (32U << 20) && Tegra::Nx2InSparseRegion(gpu_addr, size);
+    const bool plain_image = info.resources.layers == 1 &&
+                             VideoCore::Surface::DefaultBlockWidth(info.format) == 1 &&
+                             VideoCore::Surface::DefaultBlockHeight(info.format) == 1;
+    const bool hdr_array = info.native_tiling && info.resources.layers > 1 &&
+                           (info.format == PixelFormat::BC6H_UFLOAT ||
+                            info.format == PixelFormat::BC6H_SFLOAT) &&
+                           mode == SparseTilesMode::Unbound && device.IsOptimalBcnSupported();
+    const u64 size = VideoCommon::CalculateGuestSizeInBytes(info);
+    return (plain_image || hdr_array) && size >= (32U << 20) &&
+           Tegra::Nx2InSparseRegion(gpu_addr, size);
 }
 
 // Vulkan's standard sparse block shape for single-sampled 2D images (64 KiB blocks), in texel
@@ -2751,10 +2757,10 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
         const ImageInfo host_info = TrimmedHostInfo(runtime_.device, info, host_level_offset);
         const u64 texels = u64{host_info.size.width} * host_info.size.height *
                            host_info.size.depth * static_cast<u64>(host_info.resources.layers);
-        if (UsesSparseLayers(runtime_.device, info, gpu_addr_) && InitSparseLayers()) {
-            flags |= VideoCommon::ImageFlagBits::SparseLayers;
-        } else if (UsesSparseTiles(runtime_.device, info, gpu_addr_) && InitSparseTiles()) {
+        if (UsesSparseTiles(runtime_.device, info, gpu_addr_) && InitSparseTiles()) {
             flags |= VideoCommon::ImageFlagBits::SparseTiles;
+        } else if (UsesSparseLayers(runtime_.device, info, gpu_addr_) && InitSparseLayers()) {
+            flags |= VideoCommon::ImageFlagBits::SparseLayers;
         } else if (texels <= (u64{1} << 28)) {
             // Not too big to back (see MemoryAllocator::CreateImage): unbacked because nothing
             // was written there yet, so the first write gets it replaced.
@@ -3325,11 +3331,19 @@ bool Image::InitSparseTiles() {
     }
     SparseLayerMemory& s = sparse_layers;
     s.requirements = device.GetLogical().GetImageMemoryRequirements(handle);
-    const VkExtent3D granularity = it->formatProperties.imageGranularity;
+    VkExtent3D granularity = it->formatProperties.imageGranularity;
     const u32 bytes = VideoCore::Surface::BytesPerBlock(info.format);
+    const u32 block_width = VideoCore::Surface::DefaultBlockWidth(info.format);
+    const u32 block_height = VideoCore::Surface::DefaultBlockHeight(info.format);
+    if (u64{granularity.width} * granularity.height * bytes == s.requirements.alignment) {
+        granularity.width *= block_width;
+        granularity.height *= block_height;
+    }
     // Rectangles are uploaded by whole GOB columns (64 bytes across).
-    if (granularity.width == 0 || granularity.height == 0 || (granularity.width * bytes) % 64 != 0 ||
-        u64{granularity.width} * granularity.height * bytes != s.requirements.alignment) {
+    const u32 row_bytes = granularity.width / block_width * bytes;
+    if (granularity.width == 0 || granularity.height == 0 || row_bytes % 64 != 0 ||
+        granularity.width % block_width != 0 || granularity.height % block_height != 0 ||
+        u64{row_bytes} * (granularity.height / block_height) != s.requirements.alignment) {
         return false;
     }
     s.allocator = &runtime->memory_allocator;
@@ -3340,12 +3354,18 @@ bool Image::InitSparseTiles() {
     s.tile_width = granularity.width;
     s.tile_height = granularity.height;
     s.tail_level = (std::min)(it->imageMipTailFirstLod, s.levels);
+    const size_t layers = static_cast<size_t>(info.resources.layers);
+    if (s.tail_level < s.levels && layers > 1 &&
+        !(s.sparse.formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT)) {
+        s.layer_tails.resize(layers);
+    }
     s.level_tiles.resize(s.tail_level);
     for (u32 level = 0; level < s.tail_level; ++level) {
         const u32 width = (std::max)(s.width >> level, 1U);
         const u32 height = (std::max)(s.height >> level, 1U);
         s.level_tiles[level].assign(
-            size_t{Common::DivCeil(width, s.tile_width)} * Common::DivCeil(height, s.tile_height),
+            size_t{Common::DivCeil(width, s.tile_width)} * Common::DivCeil(height, s.tile_height) *
+                layers,
             VK_NULL_HANDLE);
     }
     if (SparseTilesModeOf(device) == SparseTilesMode::Aliased && !BindZeroBlock()) {
@@ -3355,8 +3375,11 @@ bool Image::InitSparseTiles() {
         s.bound_bytes = 0;
         return false;
     }
-    LOG_INFO(Render_Vulkan, "Sparse tiled image {:#x}: {}x{} {} levels, block {}x{}, mip tail from {}{}",
-             gpu_addr, s.width, s.height, s.levels, s.tile_width, s.tile_height, s.tail_level,
+    LOG_INFO(Render_Vulkan,
+             "Sparse tiled image {:#x}: {}x{} {} levels {} layers, format {}, block {}x{}, "
+             "mip tail from {}{}",
+             gpu_addr, s.width, s.height, s.levels, layers, static_cast<u32>(info.format),
+             s.tile_width, s.tile_height, s.tail_level,
              s.zero_block != VK_NULL_HANDLE ? ", empty blocks share a zeroed one" : "");
     return true;
 }
@@ -3553,7 +3576,8 @@ bool Image::BindTiles(std::span<const VideoCommon::LevelRect> rects) {
     std::vector<VkSparseImageMemoryBind> image_binds;
     std::vector<VkSparseMemoryBind> opaque_binds;
     std::vector<VmaAllocation*> fresh; // Blocks given memory by this call
-    bool fresh_tail = false;
+    std::vector<VmaAllocation*> fresh_tails;
+    const VkDeviceSize tail_bytes = Common::AlignUp(s.sparse.imageMipTailSize, tile);
     // A failed bind leaves the blocks as they were, so the next call tries them again.
     const auto roll_back = [&] {
         for (VmaAllocation* const allocation : fresh) {
@@ -3561,27 +3585,63 @@ bool Image::BindTiles(std::span<const VideoCommon::LevelRect> rects) {
             *allocation = VK_NULL_HANDLE;
             s.bound_bytes -= tile;
         }
-        if (fresh_tail) {
-            s.allocator->FreeSparseMemory(s.tail_memory);
-            s.tail_memory = VK_NULL_HANDLE;
-            s.bound_bytes -= Common::AlignUp(s.sparse.imageMipTailSize, tile);
+        for (VmaAllocation* const allocation : fresh_tails) {
+            s.allocator->FreeSparseMemory(*allocation);
+            *allocation = VK_NULL_HANDLE;
+            s.bound_bytes -= tail_bytes;
         }
     };
-    bool needs_tail = false;
+    const auto bind_tail = [&](u32 layer) {
+        VmaAllocation& allocation = s.layer_tails.empty() ? s.tail_memory : s.layer_tails[layer];
+        if (allocation != VK_NULL_HANDLE) {
+            return true;
+        }
+        const VkMemoryRequirements requirements{
+            .size = tail_bytes,
+            .alignment = tile,
+            .memoryTypeBits = s.requirements.memoryTypeBits,
+        };
+        VkDeviceMemory memory{};
+        VkDeviceSize offset{};
+        allocation = s.allocator->AllocateSparseMemory(requirements, memory, offset);
+        if (allocation == VK_NULL_HANDLE) {
+            LOG_WARNING(Render_Vulkan, "Sparse tiled image {:#x}: out of device memory for the mip "
+                                       "tail",
+                        gpu_addr);
+            return false;
+        }
+        fresh_tails.push_back(&allocation);
+        s.bound_bytes += tail_bytes;
+        opaque_binds.push_back(VkSparseMemoryBind{
+            .resourceOffset =
+                s.sparse.imageMipTailOffset +
+                (s.layer_tails.empty() ? 0 : layer * s.sparse.imageMipTailStride),
+            .size = s.sparse.imageMipTailSize,
+            .memory = memory,
+            .memoryOffset = offset,
+            .flags = 0,
+        });
+        return true;
+    };
     for (const VideoCommon::LevelRect& rect : rects) {
         const u32 level = static_cast<u32>(rect.level);
+        const u32 layer = static_cast<u32>(rect.layer);
         if (level >= s.tail_level) {
-            needs_tail = true;
+            if (!bind_tail(layer)) {
+                roll_back();
+                return false;
+            }
             continue;
         }
         const u32 width = (std::max)(s.width >> level, 1U);
         const u32 height = (std::max)(s.height >> level, 1U);
         const u32 tiles_x = Common::DivCeil(width, s.tile_width);
+        const size_t layer_offset = size_t{layer} * Common::DivCeil(height, s.tile_height) * tiles_x;
         for (u32 ty = rect.y / s.tile_height; ty <= (rect.y + rect.height - 1) / s.tile_height;
              ++ty) {
             for (u32 tx = rect.x / s.tile_width; tx <= (rect.x + rect.width - 1) / s.tile_width;
                  ++tx) {
-                VmaAllocation& allocation = s.level_tiles[level][size_t{ty} * tiles_x + tx];
+                VmaAllocation& allocation = s.level_tiles[level][layer_offset + size_t{ty} * tiles_x + tx];
                 if (allocation != VK_NULL_HANDLE) {
                     continue;
                 }
@@ -3602,7 +3662,7 @@ bool Image::BindTiles(std::span<const VideoCommon::LevelRect> rects) {
                     .subresource{
                         .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                         .mipLevel = level,
-                        .arrayLayer = 0,
+                        .arrayLayer = layer,
                     },
                     .offset{static_cast<s32>(x), static_cast<s32>(y), 0},
                     .extent{(std::min)(s.tile_width, width - x), (std::min)(s.tile_height, height - y),
@@ -3613,32 +3673,6 @@ bool Image::BindTiles(std::span<const VideoCommon::LevelRect> rects) {
                 });
             }
         }
-    }
-    if (needs_tail && s.tail_level < s.levels && s.tail_memory == VK_NULL_HANDLE) {
-        const VkMemoryRequirements requirements{
-            .size = Common::AlignUp(s.sparse.imageMipTailSize, tile),
-            .alignment = tile,
-            .memoryTypeBits = s.requirements.memoryTypeBits,
-        };
-        VkDeviceMemory memory{};
-        VkDeviceSize offset{};
-        s.tail_memory = s.allocator->AllocateSparseMemory(requirements, memory, offset);
-        if (s.tail_memory == VK_NULL_HANDLE) {
-            LOG_WARNING(Render_Vulkan, "Sparse tiled image {:#x}: out of device memory for the mip "
-                                       "tail",
-                        gpu_addr);
-            roll_back();
-            return false;
-        }
-        fresh_tail = true;
-        s.bound_bytes += requirements.size;
-        opaque_binds.push_back(VkSparseMemoryBind{
-            .resourceOffset = s.sparse.imageMipTailOffset,
-            .size = s.sparse.imageMipTailSize,
-            .memory = memory,
-            .memoryOffset = offset,
-            .flags = 0,
-        });
     }
     if (image_binds.empty() && opaque_binds.empty()) {
         return true;
@@ -4154,7 +4188,7 @@ ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::ImageViewI
 ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::ImageInfo& info,
                      const VideoCommon::ImageViewInfo& view_info, GPUVAddr gpu_addr_)
     : VideoCommon::ImageViewBase{info, view_info, gpu_addr_},
-      buffer_size{VideoCommon::CalculateGuestSizeInBytes(info)} {}
+      buffer_size{static_cast<u32>(VideoCommon::CalculateGuestSizeInBytes(info))} {}
 
 ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::NullImageViewParams& params)
     : VideoCommon::ImageViewBase{params}, device{&runtime.device} {

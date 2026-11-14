@@ -578,7 +578,7 @@ void SwizzleBlockLinearImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr
 
 } // Anonymous namespace
 
-u32 CalculateGuestSizeInBytes(const ImageInfo& info) noexcept {
+u64 CalculateGuestSizeInBytes(const ImageInfo& info) noexcept {
     if (info.type == ImageType::Buffer) {
         return info.size.width * BytesPerBlock(info.format);
     }
@@ -587,7 +587,7 @@ u32 CalculateGuestSizeInBytes(const ImageInfo& info) noexcept {
     }
     if (info.resources.layers > 1) {
         ASSERT(info.layer_stride != 0);
-        return info.layer_stride * info.resources.layers;
+        return u64{info.layer_stride} * info.resources.layers;
     } else {
         return CalculateLayerSize(info);
     }
@@ -930,15 +930,14 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
 }
 
 namespace {
-// One level of a single-layer 2D block-linear image of 1x1-texel blocks, laid out as
-// UnswizzleImage reads it: rows of blocks, each block one GOB wide and 2^block_height GOBs tall.
+// A 2D mip in block-linear order. A column is one GOB wide and 2^block_height GOBs tall.
 struct BlockLinearLevel {
     u32 offset;         ///< Into the image
     u32 width;          ///< Texels
     u32 height;
     u32 block_height;   ///< Log2 of the GOBs a block is tall
-    u32 block_texels;   ///< Texels across a block
-    u32 block_rows;     ///< Texel rows in a block
+    u32 block_texels;   ///< Texels across a column
+    u32 block_rows;     ///< Texel rows in a column
     u32 block_bytes;
     u32 blocks_per_row;
 };
@@ -961,8 +960,8 @@ std::vector<BlockLinearLevel> BlockLinearLevels(const ImageInfo& info) {
             .width = level_size.width,
             .height = level_size.height,
             .block_height = block.height,
-            .block_texels = GOB_SIZE_X >> bpp_log2,
-            .block_rows = GOB_SIZE_Y << block.height,
+            .block_texels = (GOB_SIZE_X >> bpp_log2) * level_info.tile_size.width,
+            .block_rows = (GOB_SIZE_Y << block.height) * level_info.tile_size.height,
             .block_bytes = GOB_SIZE << block.height,
             .blocks_per_row = Common::DivCeilLog2(stride, GOB_SIZE_X_SHIFT),
         });
@@ -999,12 +998,39 @@ std::vector<LevelRect> SparseTileRects(const ImageInfo& info,
                                        std::span<const std::pair<u64, u64>> ranges, u32 tile_width,
                                        u32 tile_height, s32 tail_level) {
     std::vector<LevelRect> rects;
-    if (info.format == PixelFormat::Invalid) {
+    if (info.format == PixelFormat::Invalid || (info.resources.layers > 1 && info.layer_stride == 0) ||
+        tile_width == 0 || tile_height == 0) {
+        return rects;
+    }
+    if (info.resources.layers > 1) {
+        const u64 stride = info.layer_stride;
+        std::vector<std::vector<std::pair<u64, u64>>> layer_ranges(info.resources.layers);
+        for (const auto& [offset, size] : ranges) {
+            const u64 end = (std::min)(offset + size, stride * layer_ranges.size());
+            for (u64 start = offset; start < end;) {
+                const u64 layer = start / stride;
+                const u64 layer_end = (std::min)(end, (layer + 1) * stride);
+                layer_ranges[layer].emplace_back(start % stride, layer_end - start);
+                start = layer_end;
+            }
+        }
+        ImageInfo layer_info = info;
+        layer_info.resources.layers = 1;
+        for (s32 layer = 0; layer < info.resources.layers; ++layer) {
+            if (layer_ranges[layer].empty()) {
+                continue;
+            }
+            auto layer_rects =
+                SparseTileRects(layer_info, layer_ranges[layer], tile_width, tile_height, tail_level);
+            for (LevelRect& rect : layer_rects) {
+                rect.layer = layer;
+                rects.push_back(rect);
+            }
+        }
         return rects;
     }
     const std::vector<BlockLinearLevel> levels = BlockLinearLevels(info);
-    const u64 image_end = CalculateLevelBytes(
-        CalculateLevelSizes(MakeLevelInfo(info), info.resources.levels), info.resources.levels);
+    const u64 image_end = CalculateLayerSize(info);
     for (s32 index = 0; index < static_cast<s32>(levels.size()); ++index) {
         const BlockLinearLevel& level = levels[index];
         const u64 level_end =
@@ -1075,13 +1101,15 @@ std::vector<LevelRect> SparseTileRects(const ImageInfo& info,
 size_t UnswizzledRectsBytes(const ImageInfo& info, std::span<const LevelRect> rects) {
     const std::vector<BlockLinearLevel> levels = BlockLinearLevels(info);
     const u32 bpp_log2 = BytesPerBlockLog2(info.format);
+    const Extent2D block_size = DefaultBlockSize(info.format);
     size_t bytes = 0;
     for (const LevelRect& rect : rects) {
         const BlockLinearLevel& level = levels[rect.level];
         const RectBlocks blocks = BlocksOf(level, rect);
+        const size_t row_bytes =
+            size_t{blocks.num_blocks * level.block_texels / block_size.width} << bpp_log2;
         for (u32 row = blocks.first_row; row <= blocks.last_row; ++row) {
-            bytes += (size_t{blocks.num_blocks * level.block_texels} << bpp_log2) *
-                     BlockRowTexelRows(level, row);
+            bytes += row_bytes * Common::DivCeil(BlockRowTexelRows(level, row), block_size.height);
         }
     }
     return bytes;
@@ -1093,43 +1121,40 @@ std::vector<BufferImageCopy> UnswizzleImageRects(Tegra::MemoryManager& gpu_memor
                                                  std::span<u8> output) {
     const std::vector<BlockLinearLevel> levels = BlockLinearLevels(info);
     const u32 bpp_log2 = BytesPerBlockLog2(info.format);
+    const Extent2D block_size = DefaultBlockSize(info.format);
     std::vector<BufferImageCopy> copies;
+    copies.reserve(rects.size());
     std::vector<u8> swizzled;
     size_t output_offset = 0;
     for (const LevelRect& rect : rects) {
         const BlockLinearLevel& level = levels[rect.level];
         const RectBlocks blocks = BlocksOf(level, rect);
-        const u32 width = blocks.num_blocks * level.block_texels;
-        const size_t row_bytes = size_t{blocks.num_blocks} * level.block_bytes;
+        const u32 width = blocks.num_blocks * level.block_texels / block_size.width;
+        const size_t linear_row_bytes = size_t{width} << bpp_log2;
+        const size_t swizzled_row_bytes = size_t{blocks.num_blocks} * level.block_bytes;
+        swizzled.resize(swizzled_row_bytes);
+        // Unswizzled GOB rows are contiguous in staging. One copy covers the rectangle even
+        // when its first or last row only uses part of the GOB.
+        const size_t first_row_skip = (rect.y % level.block_rows) / block_size.height;
+        const u32 block_rows = Common::DivCeil(rect.height, block_size.height);
+        copies.push_back(BufferImageCopy{
+            .buffer_offset = output_offset + first_row_skip * linear_row_bytes,
+            .buffer_size = linear_row_bytes * block_rows,
+            .buffer_row_length = width * block_size.width,
+            .buffer_image_height = block_rows * block_size.height,
+            .image_subresource = {rect.level, rect.layer, 1},
+            .image_offset = {static_cast<s32>(rect.x), static_cast<s32>(rect.y), 0},
+            .image_extent = {rect.width, rect.height, 1},
+        });
         for (u32 row = blocks.first_row; row <= blocks.last_row; ++row) {
-            // A row of whole blocks is laid out like an image of that width on its own.
-            const u32 texel_rows = BlockRowTexelRows(level, row);
-            const size_t bytes = (size_t{width} << bpp_log2) * texel_rows;
-            const GPUVAddr row_addr = gpu_addr + level.offset +
-                                      u64{row} * level.blocks_per_row * level.block_bytes +
-                                      u64{blocks.first_block} * level.block_bytes;
-            swizzled.assign(row_bytes, 0);
-            gpu_memory.ReadBlockUnsafe(row_addr, swizzled.data(), row_bytes);
+            const u32 rows = Common::DivCeil(BlockRowTexelRows(level, row), block_size.height);
+            const size_t bytes = linear_row_bytes * rows;
+            const GPUVAddr row_addr =
+                gpu_addr + static_cast<u64>(rect.layer) * info.layer_stride + level.offset +
+                (u64{row} * level.blocks_per_row + blocks.first_block) * level.block_bytes;
+            gpu_memory.ReadBlockUnsafe(row_addr, swizzled.data(), swizzled_row_bytes);
             UnswizzleTexture(output.subspan(output_offset, bytes), swizzled, 1U << bpp_log2, width,
-                             texel_rows, 1, level.block_height, 0, 0,
-                             gpu_memory.UsesNativeTiling());
-            const u32 row_y = row * level.block_rows;
-            const u32 y0 = (std::max)(rect.y, row_y);
-            const u32 y1 = (std::min)(rect.y + rect.height, row_y + texel_rows);
-            copies.push_back(BufferImageCopy{
-                .buffer_offset = output_offset + ((size_t{y0 - row_y} * width) << bpp_log2),
-                .buffer_size = bytes,
-                .buffer_row_length = width,
-                .buffer_image_height = texel_rows,
-                .image_subresource =
-                    {
-                        .base_level = rect.level,
-                        .base_layer = 0,
-                        .num_layers = 1,
-                    },
-                .image_offset = {static_cast<s32>(rect.x), static_cast<s32>(y0), 0},
-                .image_extent = {rect.width, y1 - y0, 1},
-            });
+                             rows, 1, level.block_height, 0, 0, gpu_memory.UsesNativeTiling());
             output_offset += bytes;
         }
     }
@@ -1677,7 +1702,7 @@ void DeduceBlitImages(ImageInfo& dst_info, ImageInfo& src_info, const ImageBase*
     }
 }
 
-u32 MapSizeBytes(const ImageBase& image) {
+u64 MapSizeBytes(const ImageBase& image) {
     if (True(image.flags & ImageFlagBits::AcceleratedUpload) && image.host_level_offset != 0) {
         // Each layer's mip chain from host_level_offset on (see UploadImageContents).
         const auto uploads = FullUploadSwizzles(image.info);
