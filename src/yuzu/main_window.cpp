@@ -5235,7 +5235,7 @@ void MainWindow::OnEmulatorUpdateAvailable() {
                 this, title,
                 tr("You are running the newest version on the %1 channel (%2).")
                     .arg(UpdateDialog::ChannelName(channel),
-                         QString::fromUtf8(Common::g_build_version)));
+                         QString::fromStdString(Common::BuildDisplayName())));
         }
         return;
     }
