@@ -2344,7 +2344,11 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline,
             const char* value = std::getenv("EDEN_NX2_NATIVE_ASYNC");
             return value == nullptr || value[0] != '0';
         }();
-        if (!native_async || !maxwell3d->regs.zeta_enable ||
+        const auto& regs = maxwell3d->regs;
+        // Depth test on (a bound depth buffer alone doesn't test) and a color target written:
+        // draws with every color write masked are depth-only and keep waiting.
+        if (!native_async || !regs.zeta_enable || !regs.depth_test_enable ||
+            ActiveColorTargetCount(regs) == 0 ||
             !texture_cache.ColorTargetWrittenBeforeThisFrame()) {
             return pipeline;
         }
