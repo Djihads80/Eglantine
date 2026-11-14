@@ -217,11 +217,15 @@ jobs:
       - name: Check
         run: nix flake check -L
 
+      # The whole block, not a grep of it: ccache omits the counter lines when it
+      # compiled nothing, so a filtered step printed only "Cache size (GiB)" and
+      # read as an empty cache rather than as "this stage substituted everything".
+      # Same shape as the plain legs' stats step.
       - name: ccache after the check step
         if: always()
         run: |
           nix shell nixpkgs#ccache -c ccache --dir /nix/var/cache/ccache --show-stats 2>&1 \
-            | grep -E 'Cacheable|Hits|Misses|Cache size' || echo 'no statistics'
+            || echo 'no statistics'
 
       - name: Build
         run: nix build -L .#packages.${{ matrix.system }}.eglantine${{ matrix.pgo && '-pgo' || '' }}
