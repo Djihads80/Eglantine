@@ -78,12 +78,18 @@ void ConfigureFilesystem::SetConfiguration() {
 }
 
 void ConfigureFilesystem::ApplyConfiguration() {
+    // Saves kept in the NAND follow it when the NAND directory moves.
+    const bool save_follows_nand =
+        ui->save_directory_edit->text().toStdString() ==
+        Common::FS::GetEdenPathString(Common::FS::EdenPath::NANDDir);
+    const QString save_path =
+        save_follows_nand ? ui->nand_directory_edit->text() : ui->save_directory_edit->text();
+
     Common::FS::SetEdenPath(Common::FS::EdenPath::NANDDir,
                             ui->nand_directory_edit->text().toStdString());
     Common::FS::SetEdenPath(Common::FS::EdenPath::SDMCDir,
                             ui->sdmc_directory_edit->text().toStdString());
-    Common::FS::SetEdenPath(Common::FS::EdenPath::SaveDir,
-                            ui->save_directory_edit->text().toStdString());
+    Common::FS::SetEdenPath(Common::FS::EdenPath::SaveDir, save_path.toStdString());
     Common::FS::SetEdenPath(Common::FS::EdenPath::DumpDir,
                             ui->dump_path_edit->text().toStdString());
     Common::FS::SetEdenPath(Common::FS::EdenPath::LoadDir,

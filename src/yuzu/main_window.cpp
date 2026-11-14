@@ -415,24 +415,6 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     filter.ParseFilterString(Settings::values.log_filter.GetValue());
     Common::Log::SetGlobalFilter(filter);
 
-    if (user_data_migrator.migrated) {
-        // Sort-of hack whereby we only move the old dir if it's a subfolder of the user dir
-
-        using namespace Common::FS;
-
-        static constexpr const std::array<const EdenPath, 4> paths = {
-            EdenPath::NANDDir, EdenPath::SDMCDir, EdenPath::DumpDir, EdenPath::LoadDir};
-
-        for (const EdenPath& path : paths) {
-            std::string str_path = Common::FS::GetEdenPathString(path);
-            if (str_path.starts_with(user_data_migrator.selected_emu.get_user_dir())) {
-                boost::replace_all(
-                    str_path, user_data_migrator.selected_emu.lower_name().toStdString(), "eden");
-                Common::FS::SetEdenPath(path, str_path);
-            }
-        }
-    }
-
 #ifdef __unix__
     SetupSigInterrupts();
 #endif
@@ -442,6 +424,7 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     UISettings::RestoreWindowState(config);
 
     LoadTranslation();
+    UserDataMigrator::ReconcileLegacyPaths(this, *config);
     FrontendCommon::GenerateSettings();
 
     setAcceptDrops(true);
