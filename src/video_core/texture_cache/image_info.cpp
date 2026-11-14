@@ -111,7 +111,6 @@ ImageInfo::ImageInfo(const TICEntry& config) noexcept {
         resources.layers = config.BaseLayer() + 6;
         break;
     case TextureType::TextureCubeArray:
-        UNIMPLEMENTED_IF(config.load_store_hint != 0);
         type = ImageType::e2D;
         size.width = config.Width();
         size.height = config.Height();
