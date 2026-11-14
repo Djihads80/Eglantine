@@ -425,14 +425,21 @@ static void* ChooseVirtualBase(size_t virtual_size) {
     constexpr uintptr_t Map39BitSize = (1ULL << 39);
     constexpr uintptr_t Map36BitSize = (1ULL << 36);
 
-    // This is not a cryptographic application, we just want something random.
-    std::mt19937_64 rng;
-
     // We want to ensure we are allocating at an address aligned to the L2 block size.
     // For Qualcomm devices, we must also allocate memory above 36 bits.
     const size_t lower = Map36BitSize / HugePageSize;
-    const size_t upper = (Map39BitSize - virtual_size) / HugePageSize;
-    const size_t range = upper - lower;
+    const size_t upper =
+        virtual_size < Map39BitSize ? (Map39BitSize - virtual_size) / HugePageSize : 0;
+    const size_t range = upper > lower ? upper - lower : 0;
+
+    // The reservation does not fit between 36 and 39 bits, let the kernel pick a base.
+    if (range == 0) {
+        return mmap(nullptr, virtual_size, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_NOCORE, -1, 0);
+    }
+
+    // This is not a cryptographic application, we just want something random.
+    std::mt19937_64 rng;
 
     // Try up to 64 times to allocate memory at random addresses in the range.
     for (int i = 0; i < 64; i++) {
@@ -535,8 +542,12 @@ public:
 #endif
 
     bool Init() {
+        // Guest mappings are 4K-granular, so fastmem cannot work on hosts with larger pages.
         long page_size = sysconf(_SC_PAGESIZE);
-        ASSERT_MSG(page_size == 0x1000, "page size {:#x} is incompatible with 4K paging", page_size);
+        if (page_size != 0x1000) {
+            LOG_WARNING(HW_Memory, "page size {:#x} is incompatible with 4K paging", page_size);
+            return false;
+        }
         // Backing memory initialization
 #if defined(__sun__) || defined(__HAIKU__) || defined(__NetBSD__) || defined(__DragonFly__)
         fd = shm_open_anon(O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
@@ -568,15 +579,14 @@ public:
             }
         }
         if (use_anon) {
-            LOG_WARNING(Common_Memory, "Using private mappings instead of shared ones");
-            backing_base = static_cast<u8*>(mmap(nullptr, backing_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE | MAP_NOCORE, -1, 0));
+            // Map() needs the shared backing fd to alias guest memory, so no fastmem without it.
             if (fd > 0) {
-                fd = -1;
                 close(fd);
             }
-        } else {
-            backing_base = static_cast<u8*>(mmap(nullptr, backing_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_NOCORE, fd, 0));
+            fd = -1;
+            return false;
         }
+        backing_base = static_cast<u8*>(mmap(nullptr, backing_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_NOCORE, fd, 0));
         if (backing_base == MAP_FAILED) {
             LOG_CRITICAL(HW_Memory, "mmap failed: {}", strerror(errno));
             return false;
