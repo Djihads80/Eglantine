@@ -13,9 +13,7 @@
 AboutDialog::AboutDialog(QWidget* parent)
     : QDialog(parent), ui{std::make_unique<Ui::AboutDialog>()} {
     static const std::string build_id = std::string{Common::g_build_id};
-    static const std::string yuzu_build =
-        fmt::format("{} | {} | {}", std::string{Common::g_build_name},
-                    std::string{Common::g_build_version}, std::string{Common::g_compiler_id});
+    static const std::string yuzu_build = Common::BuildDisplayName();
 
     const auto override_build =
         fmt::format(fmt::runtime(std::string(Common::g_title_bar_format_idle)), build_id);
@@ -27,9 +25,13 @@ AboutDialog::AboutDialog(QWidget* parent)
     if (!yuzu_logo.isNull()) {
         ui->labelLogo->setPixmap(yuzu_logo.pixmap(200));
     }
-    ui->labelBuildInfo->setText(
-        ui->labelBuildInfo->text().arg(QString::fromStdString(yuzu_build_version),
-                                       QString::fromUtf8(Common::g_build_date).left(10)));
+    // Everything the identity does not already carry: the label this run was
+    // given, the compiler, and when it was built. Ordered by what gets asked for.
+    static const std::string details = fmt::format(
+        "{} | {} | {}", std::string{Common::g_build_version}, std::string{Common::g_compiler_id},
+        std::string{Common::g_build_date});
+    ui->labelBuildInfo->setText(ui->labelBuildInfo->text().arg(
+        QString::fromStdString(yuzu_build_version), QString::fromStdString(details)));
 }
 
 AboutDialog::~AboutDialog() = default;
