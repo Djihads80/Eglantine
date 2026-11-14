@@ -2724,7 +2724,6 @@ void BufferCache<P>::Nx2NoteListHostWrite(DAddr device_addr, u64 size, std::span
             if (synced) {
                 entry.synced_writes = entry.writes;
             }
-            bool copy_updated = false;
             if (!data.empty() && copy_valid && runtime.IsFree(entry.copy_tick)) {
                 const u64 range_start = (std::max<u64>)(device_addr, page_addr);
                 const u64 range_end = (std::min<u64>)(device_addr + size, page_addr + page_size);
@@ -2738,22 +2737,15 @@ void BufferCache<P>::Nx2NoteListHostWrite(DAddr device_addr, u64 size, std::span
                         std::memcpy(entry.copy->mapped_span.data() + offset_in_page,
                                     data.data() + offset_in_src, copy_len);
                         entry.copy_writes = entry.writes;
-                        copy_updated = true;
                     }
                 }
             }
-            if (!synced && !copy_updated) {
-                const u64 page_idx = page_addr >> CACHING_PAGEBITS;
-                if (page_idx < page_table.size()) {
-                    const BufferId live_id = page_table[page_idx];
-                    if (live_id) {
-                        if (nx2_list_copy_requests.empty() ||
-                            nx2_list_copy_requests.back().second != page_addr) {
-                            nx2_list_copy_requests.emplace_back(live_id, page_addr);
-                        }
-                    }
-                }
-            }
+            // A write the copy didn't take (a CPU write trap carries no data) leaves the copy
+            // stale: Nx2ReadListCopy then answers Unknown and the list is read the safe way. Don't
+            // queue a new copy here: Nx2CopyListPages copies the host buffer, which doesn't hold
+            // these CPU-written words until the next synchronization, so the copy would be marked
+            // current with the GPU's older data (Mario Kart World parsed float data as commands:
+            // "method 0x1 count 8063", then garbage render targets and an abort).
         }
     }
 }
