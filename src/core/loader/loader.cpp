@@ -171,15 +171,23 @@ bool IsBootableGameContainer(FileSys::VirtualFile file, FileType type, u64 progr
         if (nup.GetStatus() != ResultStatus::Success) {
             return false;
         }
+        const auto has_usable_exefs = [&nup](std::size_t index) {
+            const auto exefs = nup.GetExeFSDir(index);
+            return exefs != nullptr && exefs->GetFile("main") != nullptr &&
+                   exefs->GetFile("main.npdm") != nullptr;
+        };
         // A base package boots normally; a standalone update (no base) carries
         // a complete patched tree and boots on its own (SPEC section 4.1.2).
         if (const auto base = nup.FindBasePackage();
             base.has_value() && nup.GetExeFSDir(*base) != nullptr) {
-            return true;
+            const auto update = nup.FindBestUpdatePackage();
+            return has_usable_exefs(update && nup.GetExeFSDir(*update) != nullptr
+                                        ? *update
+                                        : *base);
         }
         if (const auto update = nup.FindBestUpdatePackage();
             update.has_value() && nup.GetExeFSDir(*update) != nullptr) {
-            return true;
+            return has_usable_exefs(*update);
         }
         return false;
     }
