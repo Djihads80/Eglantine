@@ -393,6 +393,10 @@ U32 IREmitter::InvocationInfo() {
     return Inst<U32>(Opcode::InvocationInfo);
 }
 
+U32 IREmitter::SampleMask() {
+    return Inst<U32>(Opcode::SampleMask);
+}
+
 U32 IREmitter::SampleId() {
     return Inst<U32>(Opcode::SampleId);
 }
@@ -1547,6 +1551,10 @@ U32U64 IREmitter::GlobalAtomicXor(const U64& pointer_offset, const U32U64& value
     }
 }
 
+U32 IREmitter::GlobalAtomicCompareExchange(const U64& pointer_offset, const U32& compare, const U32& value) {
+    return Inst<U32>(Opcode::GlobalAtomicCompareExchange32, pointer_offset, CompositeConstruct(compare, value));
+}
+
 U32U64 IREmitter::GlobalAtomicExchange(const U64& pointer_offset, const U32U64& value) {
     switch (value.Type()) {
     case Type::U32:
@@ -1556,11 +1564,6 @@ U32U64 IREmitter::GlobalAtomicExchange(const U64& pointer_offset, const U32U64& 
     default:
         ThrowInvalidType(pointer_offset.Type());
     }
-}
-
-U32 IREmitter::GlobalAtomicCompareExchange(const U64& pointer_offset, const U32& comparator,
-                                           const U32& value) {
-    return Inst<U32>(Opcode::GlobalAtomicCompareExchange32, pointer_offset, comparator, value);
 }
 
 F32 IREmitter::GlobalAtomicF32Add(const U64& pointer_offset, const Value& value,
@@ -2020,6 +2023,13 @@ Value IREmitter::ImageAtomicUMax(const Value& handle, const Value& coords, const
                                  TextureInstInfo info) {
     const Opcode op{handle.IsImmediate() ? Opcode::BoundImageAtomicUMax32
                                          : Opcode::BindlessImageAtomicUMax32};
+    return Inst(op, Flags{info}, handle, coords, value);
+}
+
+Value IREmitter::ImageAtomicUMax64(const Value& handle, const Value& coords, const U64& value,
+                                  TextureInstInfo info) {
+    const Opcode op{handle.IsImmediate() ? Opcode::BoundImageAtomicUMax64
+                                        : Opcode::BindlessImageAtomicUMax64};
     return Inst(op, Flags{info}, handle, coords, value);
 }
 

@@ -172,17 +172,17 @@ void EmitStorageAtomicXor32(EmitContext& ctx, IR::Inst& inst, const IR::Value& b
                ctx.var_alloc.Consume(offset), value);
 }
 
+void EmitStorageAtomicCompareExchange32(EmitContext& ctx, IR::Inst& inst,
+                                        const IR::Value& binding, const IR::Value& offset,
+                                        std::string_view operands) {
+    ctx.AddU32("{}=atomicCompSwap({}_ssbo{}[{}>>2],{}.x,{}.y);", inst,
+               ctx.stage_name, binding.U32(), ctx.var_alloc.Consume(offset), operands, operands);
+}
+
 void EmitStorageAtomicExchange32(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                                  const IR::Value& offset, std::string_view value) {
     ctx.AddU32("{}=atomicExchange({}_ssbo{}[{}>>2],{});", inst, ctx.stage_name, binding.U32(),
                ctx.var_alloc.Consume(offset), value);
-}
-
-void EmitStorageAtomicCompareExchange32(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
-                                        const IR::Value& offset, std::string_view comparator,
-                                        std::string_view value) {
-    ctx.AddU32("{}=atomicCompSwap({}_ssbo{}[{}>>2],{},{});", inst, ctx.stage_name, binding.U32(),
-               ctx.var_alloc.Consume(offset), comparator, value);
 }
 
 void EmitStorageAtomicIAdd64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
@@ -447,11 +447,11 @@ void EmitGlobalAtomicXor32(EmitContext&) {
     throw NotImplementedException("GLSL Instruction");
 }
 
-void EmitGlobalAtomicExchange32(EmitContext&) {
-    throw NotImplementedException("GLSL Instruction");
+void EmitGlobalAtomicCompareExchange32(EmitContext&) {
+    throw NotImplementedException("Global atomic compare exchange");
 }
 
-void EmitGlobalAtomicCompareExchange32(EmitContext&) {
+void EmitGlobalAtomicExchange32(EmitContext&) {
     throw NotImplementedException("GLSL Instruction");
 }
 

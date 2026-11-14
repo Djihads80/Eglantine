@@ -108,6 +108,7 @@ public:
 
     [[nodiscard]] U32 InvocationId();
     [[nodiscard]] U32 InvocationInfo();
+    [[nodiscard]] U32 SampleMask();
     [[nodiscard]] U32 SampleId();
     [[nodiscard]] U1 IsHelperInvocation();
     [[nodiscard]] U32 SR_WScaleFactorXY();
@@ -289,9 +290,8 @@ public:
     [[nodiscard]] U32U64 GlobalAtomicAnd(const U64& pointer_offset, const U32U64& value);
     [[nodiscard]] U32U64 GlobalAtomicOr(const U64& pointer_offset, const U32U64& value);
     [[nodiscard]] U32U64 GlobalAtomicXor(const U64& pointer_offset, const U32U64& value);
+    [[nodiscard]] U32 GlobalAtomicCompareExchange(const U64& pointer_offset, const U32& compare, const U32& value);
     [[nodiscard]] U32U64 GlobalAtomicExchange(const U64& pointer_offset, const U32U64& value);
-    [[nodiscard]] U32 GlobalAtomicCompareExchange(const U64& pointer_offset, const U32& comparator,
-                                                  const U32& value);
 
     [[nodiscard]] F32 GlobalAtomicF32Add(const U64& pointer_offset, const Value& value,
                                          const FpControl control = {});
@@ -364,6 +364,8 @@ public:
                                         const Value& value, TextureInstInfo info);
     [[nodiscard]] Value ImageAtomicIMin(const Value& handle, const Value& coords,
                                         const Value& value, bool is_signed, TextureInstInfo info);
+    [[nodiscard]] Value ImageAtomicUMax64(const Value& handle, const Value& coords,
+                                          const U64& value, TextureInstInfo info);
     [[nodiscard]] Value ImageAtomicSMax(const Value& handle, const Value& coords,
                                         const Value& value, TextureInstInfo info);
     [[nodiscard]] Value ImageAtomicUMax(const Value& handle, const Value& coords,

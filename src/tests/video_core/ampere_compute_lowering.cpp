@@ -45,10 +45,10 @@ TEST_CASE("Ampere surface reductions preserve every U32 atomic operation",
                 INFO(lowered.error);
                 REQUIRE(lowered);
                 REQUIRE(lowered.required_texture_buffer == 0);
-                CHECK(lowered.instructions[0] == (0xea000000000004ffULL | (u64{guard} << 16) |
-                    (u64{op} << 29) | (u64{dimension} << 33) | (0x84ULL << 36)));
+                CHECK(lowered.instructions[0] == (0xeb48000000000400ULL | (u64{guard} << 16) |
+                    (u64{op} << 24) | (u64{dimension} << 33) | (0x84ULL << 36)));
                 auto invalid = instruction;
-                invalid.words[2] |= 2U << 9;
+                invalid.words[2] |= 3U << 9;
                 CHECK_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
             }
         }

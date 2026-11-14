@@ -251,18 +251,19 @@ Id EmitStorageAtomicXor32(EmitContext& ctx, const IR::Value& binding, const IR::
     return StorageAtomicU32(ctx, binding, offset, value, &Sirit::Module::OpAtomicXor);
 }
 
+Id EmitStorageAtomicCompareExchange32(EmitContext& ctx, const IR::Value& binding,
+                                      const IR::Value& offset, Id operands) {
+    const Id pointer{StoragePointer(ctx, ctx.storage_types.U32, &StorageDefinitions::U32,
+                                    binding, offset, sizeof(u32))};
+    const auto [scope, semantics]{AtomicArgs(ctx)};
+    const Id compare{ctx.OpCompositeExtract(ctx.U32[1], operands, 0)};
+    const Id value{ctx.OpCompositeExtract(ctx.U32[1], operands, 1)};
+    return ctx.OpAtomicCompareExchange(ctx.U32[1], pointer, scope, semantics, semantics, value, compare);
+}
+
 Id EmitStorageAtomicExchange32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                                Id value) {
     return StorageAtomicU32(ctx, binding, offset, value, &Sirit::Module::OpAtomicExchange);
-}
-
-Id EmitStorageAtomicCompareExchange32(EmitContext& ctx, const IR::Value& binding,
-                                      const IR::Value& offset, Id comparator, Id value) {
-    const Id pointer{StoragePointer(ctx, ctx.storage_types.U32, &StorageDefinitions::U32, binding,
-                                    offset, sizeof(u32))};
-    const auto [scope, semantics]{AtomicArgs(ctx)};
-    return ctx.OpAtomicCompareExchange(ctx.U32[1], pointer, scope, semantics, semantics, value,
-                                       comparator);
 }
 
 Id EmitStorageAtomicIAdd64(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
@@ -474,20 +475,12 @@ Id EmitGlobalAtomicXor32(EmitContext& ctx, Id address, Id value) {
     return GlobalAtomic(ctx, EmitContext::GlobalAtomic::Xor, ctx.U32[1], address, value);
 }
 
-Id EmitGlobalAtomicExchange32(EmitContext& ctx, Id address, Id value) {
-    return GlobalAtomic(ctx, EmitContext::GlobalAtomic::Exchange, ctx.U32[1], address, value);
+Id EmitGlobalAtomicCompareExchange32(EmitContext& ctx, Id address, Id operands) {
+    return GlobalAtomic(ctx, EmitContext::GlobalAtomic::CompareExchange, ctx.U32[1], address, operands);
 }
 
-Id EmitGlobalAtomicCompareExchange32(EmitContext& ctx, const IR::Value& address, Id comparator,
-                                     Id value) {
-    if (!ctx.profile.support_int64) {
-        throw NotImplementedException("Global atomic addressing requires 64-bit integers");
-    }
-    if (!Sirit::ValidId(ctx.atomic_cas_global_func_u32)) {
-        throw NotImplementedException("Global atomic compare-exchange with no routable storage buffer");
-    }
-    return ctx.OpFunctionCall(ctx.U32[1], ctx.atomic_cas_global_func_u32, ctx.Def(address),
-                              comparator, value);
+Id EmitGlobalAtomicExchange32(EmitContext& ctx, Id address, Id value) {
+    return GlobalAtomic(ctx, EmitContext::GlobalAtomic::Exchange, ctx.U32[1], address, value);
 }
 
 Id EmitGlobalAtomicIAdd64(EmitContext&) {

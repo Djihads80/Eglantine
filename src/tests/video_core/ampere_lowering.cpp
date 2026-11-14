@@ -371,12 +371,12 @@ TEST_CASE("Ampere Ocarina sign extends, uniform shifts and carries, LEA.HI and S
     REQUIRE(lea.instructions.size() >= 2);
     CHECK(lea.instructions[1] == 0x5c1100000007fa01ULL);
 
-    // SURED.OR: lowered to SUATOM (result in RZ) with op 6 at Maxwell bits 29-32.
+    // SURED.OR keeps op 6 at Maxwell bits 24-26.
     const auto reduce = lower({{0x0400159f, 0x60008400, 0x0310e000, 0x0001e200}});
     INFO(reduce.error);
     REQUIRE(static_cast<bool>(reduce));
-    CHECK(field(reduce.instructions.front(), 52, 12) == 0xea0);
-    CHECK(field(reduce.instructions.front(), 29, 4) == 6);
+    CHECK(field(reduce.instructions.front(), 52, 12) == 0xeb4);
+    CHECK(field(reduce.instructions.front(), 24, 3) == 6);
 
     // LDG.E.128 R216, [R216.64] in a program using uniform registers: R216-R219 are reserved,
     // so the load goes through a borrowed low quartet.

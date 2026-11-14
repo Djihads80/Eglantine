@@ -202,22 +202,15 @@ void TranslatorVisitor::ATOM(u64 insn) {
 }
 
 void TranslatorVisitor::ATOM_cas(u64 insn) {
-    // ATOM.CAS Rd, [Ra + imm], Rb: if the word equals Rb, store Rb+1; Rd gets the old word.
-    union {
-        u64 raw;
-        BitField<0, 8, IR::Reg> dest_reg;
-        BitField<20, 8, IR::Reg> compare_reg;
-        BitField<49, 3, u64> size;
-    } const atom{insn};
-    if (atom.size != 0) {
-        throw NotImplementedException("ATOM.CAS size {}", atom.size.Value());
-    }
-    const IR::U64 offset{AtomOffset(*this, insn)};
+    // Maxwell CAS packs the comparator and replacement in two consecutive GPRs.
+    const IR::Reg dest = static_cast<IR::Reg>(insn & 255);
+    const IR::Reg operand = static_cast<IR::Reg>((insn >> 20) & 255);
+    if (((insn >> 49) & 7) != 0 || operand == IR::Reg::RZ)
+        throw NotImplementedException("ATOM CAS size or operand span");
+    const IR::U32 compare{X(operand)};
     // The register after R254 is RZ; IR::Reg arithmetic refuses to step onto it.
-    const IR::Reg value_reg{atom.compare_reg == IR::Reg::R254 ? IR::Reg::RZ
-                                                               : atom.compare_reg + 1};
-    X(atom.dest_reg,
-      ir.GlobalAtomicCompareExchange(offset, X(atom.compare_reg), X(value_reg)));
+    const IR::U32 value{X(operand == IR::Reg::R254 ? IR::Reg::RZ : operand + 1)};
+    X(dest, ir.GlobalAtomicCompareExchange(AtomOffset(*this, insn), compare, value));
 }
 
 void TranslatorVisitor::RED(u64 insn) {

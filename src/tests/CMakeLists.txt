@@ -77,6 +77,10 @@ add_executable(tests
     video_core/virtual_range_cache.cpp
     video_core/query_copy.cpp
     video_core/ampere_lowering.cpp
+    video_core/ampere_audit.cpp
+    video_core/ampere_u64.cpp
+    video_core/ampere_downstream.cpp
+    video_core/ampere_remaining.cpp
     video_core/spirv_software_matrix.cpp
     video_core/ampere_geometry.cpp
     video_core/ampere_i2f.cpp
@@ -94,6 +98,9 @@ add_executable(tests
     video_core/ampere_f2i.cpp
     video_core/ampere_ldc.cpp
     video_core/ampere_vote.cpp
+    video_core/ampere_imad_hi.cpp
+    video_core/ampere_imma.cpp
+    video_core/ampere_uniform_carry.cpp
     video_core/shader_attributes.cpp
     video_core/indirect_reset.cpp
     video_core/ocarina_upscale.cpp

@@ -88,6 +88,7 @@ Id EmitWorkgroupId(EmitContext& ctx);
 Id EmitLocalInvocationId(EmitContext& ctx);
 Id EmitInvocationId(EmitContext& ctx);
 Id EmitInvocationInfo(EmitContext& ctx);
+Id EmitSampleMask(EmitContext& ctx);
 Id EmitSampleId(EmitContext& ctx);
 Id EmitIsHelperInvocation(EmitContext& ctx);
 Id EmitSR_WScaleFactorXY(EmitContext& ctx);
@@ -376,10 +377,9 @@ Id EmitStorageAtomicOr32(EmitContext& ctx, const IR::Value& binding, const IR::V
                          Id value);
 Id EmitStorageAtomicXor32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                           Id value);
+Id EmitStorageAtomicCompareExchange32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset, Id operands);
 Id EmitStorageAtomicExchange32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                                Id value);
-Id EmitStorageAtomicCompareExchange32(EmitContext& ctx, const IR::Value& binding,
-                                      const IR::Value& offset, Id comparator, Id value);
 Id EmitStorageAtomicIAdd64(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                            Id value);
 Id EmitStorageAtomicSMin64(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
@@ -440,9 +440,8 @@ Id EmitGlobalAtomicDec32(EmitContext& ctx, Id address, Id value);
 Id EmitGlobalAtomicAnd32(EmitContext& ctx, Id address, Id value);
 Id EmitGlobalAtomicOr32(EmitContext& ctx, Id address, Id value);
 Id EmitGlobalAtomicXor32(EmitContext& ctx, Id address, Id value);
+Id EmitGlobalAtomicCompareExchange32(EmitContext& ctx, Id address, Id operands);
 Id EmitGlobalAtomicExchange32(EmitContext& ctx, Id address, Id value);
-Id EmitGlobalAtomicCompareExchange32(EmitContext& ctx, const IR::Value& address, Id comparator,
-                                     Id value);
 Id EmitGlobalAtomicIAdd64(EmitContext& ctx);
 Id EmitGlobalAtomicSMin64(EmitContext& ctx);
 Id EmitGlobalAtomicUMin64(EmitContext& ctx);
@@ -581,6 +580,9 @@ Id EmitBindlessImageAtomicIAdd32(EmitContext&);
 Id EmitBindlessImageAtomicSMin32(EmitContext&);
 Id EmitBindlessImageAtomicUMin32(EmitContext&);
 Id EmitBindlessImageAtomicSMax32(EmitContext&);
+Id EmitBindlessImageAtomicUMax64(EmitContext&);
+Id EmitBoundImageAtomicUMax64(EmitContext&);
+Id EmitImageAtomicUMax64(EmitContext& ctx, IR::Inst* inst, const IR::Value& index, Id coords, Id value);
 Id EmitBindlessImageAtomicUMax32(EmitContext&);
 Id EmitBindlessImageAtomicInc32(EmitContext&);
 Id EmitBindlessImageAtomicDec32(EmitContext&);

@@ -150,11 +150,13 @@ void ImageAtomOp(TranslatorVisitor& v, IR::Reg dest_reg, IR::Reg operand_reg, IR
     if (clamp != Clamp::IGN) {
         throw NotImplementedException("Clamp {}", clamp);
     }
-    if (!IsSizeInt32(size)) {
+    const bool is_u64_max{size == Size::U64 && op == AtomicOp::MAX && type != Type::_1D_BUFFER};
+    if (!IsSizeInt32(size) && !is_u64_max) {
         throw NotImplementedException("Size {}", size);
     }
     const bool is_signed{size == Size::S32};
-    const ImageFormat format{Format(size)};
+    // R64_UINT does not fit TextureInstInfo; the texture pass derives it from the opcode.
+    const ImageFormat format{is_u64_max ? ImageFormat::Typeless : Format(size)};
     const TextureType tex_type{GetType(type)};
     const IR::Value coords{MakeCoords(v, coord_reg, type)};
 
@@ -163,7 +165,14 @@ void ImageAtomOp(TranslatorVisitor& v, IR::Reg dest_reg, IR::Reg operand_reg, IR
     info.type.Assign(tex_type);
     info.image_format.Assign(format);
 
-    // TODO: float/64-bit operand
+    if (is_u64_max) {
+        const IR::Value color{v.ir.ImageAtomicUMax64(handle, coords, v.L(operand_reg), info)};
+        if (write_result) {
+            v.L(dest_reg, IR::U64{color});
+        }
+        return;
+    }
+    // TODO: float operand
     const IR::Value op_b{v.X(operand_reg)};
     const IR::Value color{ApplyAtomicOp(v.ir, handle, coords, op_b, info, op, is_signed)};
 

@@ -417,6 +417,10 @@ void EmitInvocationInfo(EmitContext& ctx, IR::Inst& inst) {
     }
 }
 
+void EmitSampleMask(EmitContext& ctx, IR::Inst& inst) {
+    throw NotImplementedException("Input sample coverage mask");
+}
+
 void EmitSampleId(EmitContext& ctx, IR::Inst& inst) {
     ctx.Add("MOV.S {}.x,fragment.sampleid.x;", inst);
 }

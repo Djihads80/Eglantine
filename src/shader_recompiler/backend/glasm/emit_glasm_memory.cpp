@@ -372,6 +372,10 @@ void EmitStorageAtomicXor32(EmitContext& ctx, IR::Inst& inst, const IR::Value& b
     Atom(ctx, inst, binding, offset, value, "XOR", "U32");
 }
 
+void EmitStorageAtomicCompareExchange32(EmitContext&) {
+    throw NotImplementedException("Storage atomic compare exchange");
+}
+
 void EmitStorageAtomicExchange32(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                                  ScalarU32 offset, ScalarU32 value) {
     Atom(ctx, inst, binding, offset, value, "EXCH", "U32");
@@ -556,15 +560,11 @@ void EmitGlobalAtomicXor32(EmitContext&) {
     throw NotImplementedException("GLASM instruction");
 }
 
-void EmitGlobalAtomicExchange32(EmitContext&) {
-    throw NotImplementedException("GLASM instruction");
-}
-
 void EmitGlobalAtomicCompareExchange32(EmitContext&) {
-    throw NotImplementedException("GLASM instruction");
+    throw NotImplementedException("Global atomic compare exchange");
 }
 
-void EmitStorageAtomicCompareExchange32(EmitContext&) {
+void EmitGlobalAtomicExchange32(EmitContext&) {
     throw NotImplementedException("GLASM instruction");
 }
 
