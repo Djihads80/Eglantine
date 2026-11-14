@@ -84,10 +84,13 @@ jobs:
           release: ${{ inputs.release }}
           save-cache: ${{ inputs.save_cache }}
 
+      # Only the .deb files: caching the directory itself fails to save, because tar cannot read
+      # archives/lock and archives/partial, so the archive was never restored and every run
+      # downloaded its packages again.
       - name: Cache APT packages
         uses: actions/cache@v6
         with:
-          path: /var/cache/apt/archives
+          path: /var/cache/apt/archives/*.deb
           key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/*.yml') }}
           restore-keys: |
             ${{ runner.os }}-apt-
