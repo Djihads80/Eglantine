@@ -237,14 +237,19 @@ bool HardwareContext::InitializeForDecoder(DecoderContext& decoder_context, cons
             continue;
         }
 
+        // Check codec support before creating the device: creating one (notably FFmpeg's own
+        // Vulkan device) for a codec that cannot use it, such as AV1 via libdav1d, only risks
+        // crashing the driver.
+        if (!decoder.SupportsDecodingOnDevice(&hw_pix_fmt, type)) {
+            continue;
+        }
+
         if (!this->InitializeWithType(type)) {
             continue;
         }
 
-        if (decoder.SupportsDecodingOnDevice(&hw_pix_fmt, type)) {
-            decoder_context.InitializeHardwareDecoder(*this, hw_pix_fmt);
-            return true;
-        }
+        decoder_context.InitializeHardwareDecoder(*this, hw_pix_fmt);
+        return true;
     }
 
     return false;
