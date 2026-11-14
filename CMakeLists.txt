@@ -286,6 +286,15 @@ set(EGLANTINE_UPDATE_REPO "Eglantine-Community/Eglantine" CACHE STRING "GitHub o
 set(EGLANTINE_RELEASE_PLATFORM "" CACHE STRING "Release asset platform of this build, e.g. windows-x86_64, linux-aarch64-pgo, macos-arm64")
 set(EGLANTINE_FOLLOW_BRANCH "" CACHE STRING "Branch of the update repository this build follows for tester builds; set by CI branch builds")
 
+# GetSCMRev (CMakeModules/GetSCMRev.cmake) reads GIT-COMMIT, GIT-REFSPEC,
+# GIT-TAG and GIT-RELEASE from the source root so a build with no .git still
+# reports the identity the CI handed it. GIT-NIGHTLY does the same for this
+# option, so a builder that cannot pass -D (a Nix derivation, a source tarball)
+# can still mark a nightly without growing an extra package per qualifier.
+if (EXISTS ${CMAKE_SOURCE_DIR}/GIT-NIGHTLY)
+    set(NIGHTLY_BUILD ON)
+endif()
+
 cmake_dependent_option(YUZU_ROOM "Enable dedicated room functionality" ON "NOT ANDROID" OFF)
 cmake_dependent_option(YUZU_ROOM_STANDALONE "Enable standalone room executable" ON "YUZU_ROOM" OFF)
 

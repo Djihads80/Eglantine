@@ -37,7 +37,7 @@ commits() { git log --no-merges --pretty='- %s (`%h`)' "$@" 2>/dev/null | head -
       printf '%s\n\n' "$section"
       ;;
     daily)
-      printf 'Automatic daily build of `nx2` at `%s`.\n\n## Changes since the previous daily build\n\n' "$short"
+      printf 'Automatic daily build of `%s` at `%s`.\n\n## Changes since the previous daily build\n\n' "${BRANCH:-nx2}" "$short"
       if [[ -n "${PREV_TAG:-}" ]]; then commits "$PREV_TAG..$sha"; else commits -n 30 "$sha"; fi
       printf '\n'
       ;;

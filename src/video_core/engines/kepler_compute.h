@@ -392,6 +392,7 @@ private:
         u32 upscale_failures{};
     };
     std::unordered_map<GPUVAddr, RejectedComputeProgram> rejected_compute_programs;
+    u64 seen_unreject_epoch{}; ///< Nx2Debug::UnrejectEpoch when the map was last valid
     bool ProcessNativeMethod(Core::System& system, u32 method, u32 argument, bool is_last_call);
     NativeQmdScheduler native_qmd;
     std::array<u32, 0xc00>* native_data_ram{};

@@ -38,6 +38,30 @@ namespace VideoCommon::GPUThread {
 
 namespace {
 
+/// Switch 2: start a command list no sooner than Nx2GpuLatency::Latency() after the game
+/// submitted it, or once a game thread waits on the GPU (nx2_gpu_latency.h).
+template <typename StopToken>
+void HoldForGpuLatency(const SubmitListCommand& list, const StopToken& stop_token) {
+    const auto latency = Nx2GpuLatency::Latency();
+    if (latency.count() <= 0 || !Nx2GpuLatency::Steady() ||
+        !Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+        return;
+    }
+    const auto until = list.submit_time + latency;
+    for (auto now = std::chrono::steady_clock::now(); now < until;
+         now = std::chrono::steady_clock::now()) {
+        if (Nx2GpuLatency::GuestWaits() != list.guest_waits || stop_token.stop_requested()) {
+            return;
+        }
+        // Windows sleeps a millisecond or more at a time: sleep only while that much is left.
+        if (until - now > std::chrono::microseconds{1500}) {
+            std::this_thread::sleep_for(std::chrono::microseconds{500});
+        } else {
+            std::this_thread::yield();
+        }
+    }
+}
+
 // Tells a CPU thread waiting in PushCommand that its command ran.
 void SignalCommand(SynchState& state, u64 fence, bool block) {
     state.signaled_fence.store(fence);
@@ -226,6 +250,11 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
             }
             if (!std::holds_alternative<GPUTickCommand>(next.data)) {
                 last_progress = std::chrono::steady_clock::now();
+            }
+            // A blocking (synchronous GPU) submit already keeps the game thread waiting.
+            if (const auto* list = std::get_if<SubmitListCommand>(&next.data);
+                list != nullptr && !next.block) {
+                HoldForGpuLatency(*list, stop_token);
             }
             if (split.Active()) {
                 // Only command lists are parsed here; everything else runs on the back thread

@@ -1,10 +1,11 @@
 name: update-flake-lock
 
 on:
+  # Manual only. The weekly schedule used to open a bump PR that nothing ever
+  # built -- a GITHUB_TOKEN-authored PR does not trigger ci.yml, and nix.yml is
+  # dispatch-only -- so a bump that broke the package would sit there quietly.
+  # Run this by hand, then let the branch build before merging the PR.
   workflow_dispatch:
-  schedule:
-    # Weekly, Monday 00:00 UTC.
-    - cron: "0 0 * * 1"
 
 permissions:
   contents: write

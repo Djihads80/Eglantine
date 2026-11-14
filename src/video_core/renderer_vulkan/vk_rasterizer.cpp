@@ -2434,6 +2434,9 @@ void RasterizerVulkan::TickFrame() {
         }
         if (const auto change = VideoCore::Nx2Debug::TakeRejectChange()) {
             pipeline_cache.RefreshDebugRejections(change->unrejected);
+            if (change->unrejected) {
+                VideoCore::Nx2Debug::NoteUnrejectApplied();
+            }
             VideoCore::Nx2Debug::NoteRejectApplied(change->generation);
         }
         while (const auto read = VideoCore::Nx2Debug::TakeGpuRead()) {

@@ -21,6 +21,7 @@
 #include "core/hle/service/nvdrv/devices/nvhost_ctrl.h"
 #include "video_core/gpu.h"
 #include "video_core/host1x/host1x.h"
+#include "video_core/nx2_gpu_latency.h"
 
 namespace Service::Nvidia::Devices {
 
@@ -147,6 +148,7 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
 
     const auto check_failing = [&]() {
         if (events[slot].fails > 2) {
+            VideoCommon::Nx2GpuLatency::NoteGuestWait();
             {
                 auto lk = system.StallApplication();
                 host1x_syncpoint_manager.WaitHost(fence_id, target_value);
@@ -169,6 +171,10 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
         }
         return NvResult::Timeout;
     }
+
+    // The game will wait for GPU progress (a poll with no timeout doesn't): lists held for
+    // nx2_gpu_latency.h can start.
+    VideoCommon::Nx2GpuLatency::NoteGuestWait();
 
     auto& event = events[slot];
 
