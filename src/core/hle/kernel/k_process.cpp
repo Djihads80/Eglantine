@@ -23,6 +23,10 @@
 #ifdef HAS_NCE
 #include "core/arm/nce/arm_nce.h"
 #endif
+#ifdef HAS_HYPERVISOR
+#include "core/arm/hypervisor/arm_hypervisor.h"
+#include "core/arm/hypervisor/hv_vm.h"
+#endif
 
 namespace Kernel {
 
@@ -1318,6 +1322,12 @@ void KProcess::InitializeInterfaces(KernelCore& kernel) {
     if (this->IsApplication() && Settings::IsNceEnabled()) {
         for (size_t i = 0; i < Core::Hardware::NUM_CPU_CORES; i++)
             m_arm_interfaces[i] = std::make_unique<Core::ArmNce>(kernel.System(), true, i);
+    } else
+#endif
+#ifdef HAS_HYPERVISOR
+    if (auto* vm = Core::HvVm::Get(); vm && this->IsApplication() && this->Is64Bit()) {
+        for (size_t i = 0; i < Core::Hardware::NUM_CPU_CORES; i++)
+            m_arm_interfaces[i] = std::make_unique<Core::ArmHypervisor>(kernel.System(), *vm, i);
     } else
 #endif
         if (this->Is64Bit()) {

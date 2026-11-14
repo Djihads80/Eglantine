@@ -395,6 +395,14 @@ if (APPLE)
     set_target_properties(yuzu PROPERTIES MACOSX_BUNDLE TRUE)
     set_target_properties(yuzu PROPERTIES MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist)
 
+    # The Hypervisor CPU backend needs the hypervisor entitlement; an ad-hoc signature is enough.
+    if (HAS_HYPERVISOR AND NOT CMAKE_GENERATOR MATCHES "Xcode")
+        add_custom_command(TARGET yuzu POST_BUILD
+            # --deep: the bundle also holds files that aren't code (nx2_switches.txt in MacOS).
+            COMMAND codesign --force --deep --sign - --entitlements
+                    "${CMAKE_SOURCE_DIR}/dist/eglantine.entitlements" "$<TARGET_BUNDLE_DIR:yuzu>")
+    endif()
+
     set(CMAKE_FIND_LIBRARY_SUFFIXES ".dylib")
     find_library(MOLTENVK_LIBRARY MoltenVK REQUIRED)
     message(STATUS "Using MoltenVK at ${MOLTENVK_LIBRARY}.")
