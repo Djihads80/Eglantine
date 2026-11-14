@@ -298,6 +298,10 @@ struct TICEntry {
     constexpr bool IsBuffer() const {
         return header_version == TICHeaderVersion::OneDBuffer;
     }
+
+    constexpr bool UsesMaxwellGobLayout() const {
+        return load_store_hint != 0;
+    }
 };
 static_assert(sizeof(TICEntry) == 0x20, "TICEntry has wrong size");
 

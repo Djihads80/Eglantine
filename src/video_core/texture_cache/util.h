@@ -89,6 +89,7 @@ struct UnswizzlePlan {
     boost::container::small_vector<UnswizzleRowRun, 16> runs;
     size_t total_host_bytes{0};
     u32 bpp_log2{0};
+    bool native_tiling{false};
     bool layout_valid{true};
 };
 

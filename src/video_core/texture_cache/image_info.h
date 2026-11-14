@@ -52,6 +52,7 @@ struct ImageInfo {
     u32 num_samples = 1;
     u32 tile_width_spacing = 0;
     bool native_tiling = false;
+    bool maxwell_gob_layout = false;
     bool rescaleable = false;
     bool downscaleable = false;
     bool forced_flushed = false;
