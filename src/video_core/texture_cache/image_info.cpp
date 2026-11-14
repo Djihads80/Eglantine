@@ -4,9 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <algorithm>
-#include <array>
-#include <vector>
+#include <atomic>
 #include <fmt/ranges.h>
 
 #include "common/assert.h"
@@ -37,6 +35,21 @@ ImageInfo::ImageInfo(const TICEntry& config) noexcept {
     dma_downloaded = forced_flushed;
     format = PixelFormatFromTextureInfo(config.format, config.r_type, config.g_type, config.b_type,
                                         config.a_type, config.srgb_conversion);
+    // Log the raw TIC once per unknown format, to tell a real unmapped NX2 format from a
+    // zeroed/placeholder descriptor (format 0, all-UNORM).
+    if (static_cast<u32>(config.format.Value()) == 0) {
+        static std::atomic<bool> logged{};
+        if (!logged.exchange(true)) {
+            LOG_WARNING(HW_GPU,
+                        "format-0 TIC raw {:016x} {:016x} {:016x} {:016x}: type {} header_ver {} "
+                        "{}x{}x{} pitch {:#x} addr {:#x}",
+                        config.raw[0], config.raw[1], config.raw[2], config.raw[3],
+                        static_cast<unsigned>(config.texture_type.Value()),
+                        static_cast<unsigned>(config.header_version.Value()), config.Width(),
+                        config.Height(), config.Depth(),
+                        config.IsPitchLinear() ? config.Pitch() : 0, config.Address());
+        }
+    }
     num_samples = NumSamples(config.msaa_mode);
     resources.levels = config.max_mip_level + 1;
     if (config.IsPitchLinear()) {
